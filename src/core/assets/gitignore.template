@@ -1,0 +1,9 @@
+# Moonstone
+.moonstone/
+
+# Zig
+zig-cache/
+zig-out/
+
+# OS
+.DS_Store

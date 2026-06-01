@@ -1,0 +1,20 @@
+.{
+    .name = .moonstone,
+    .version = "0.1.3",
+    .fingerprint = 0xd2ec605bbb188f80, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .toml = .{
+            .url = "https://github.com/sam701/zig-toml/archive/master.tar.gz",
+            .hash = "toml-0.3.0-bV14BVqIAQANb68hDuVPZ72hrcIhT-fv_fcIbetQIAyg",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        // For example...
+        "LICENSE",
+        "README.md",
+    },
+}

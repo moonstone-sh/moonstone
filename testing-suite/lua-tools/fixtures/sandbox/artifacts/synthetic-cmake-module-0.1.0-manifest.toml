@@ -1,0 +1,21 @@
+[artifact]
+name = "synthetic-cmake-module"
+version = "0.1.0"
+kind = "lib"
+source_hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
+recipe_hash = "b3:1084014e280c5b8aebd844094bf0b097d0cd94e30f67edf7738b90e8dec2ce8f"
+artifact_hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
+target = "source"
+
+[compat]
+runtime_version = "lua@5.4.7"
+lua_abi = "lua-5.4"
+runtime_artifact_hash = ""
+
+[provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = []
+lua_cmodule = [{ name = "synthetic_cmake_module.so", path = "synthetic_cmake_module.so" }]

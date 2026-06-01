@@ -1,0 +1,40 @@
+FROM alpine:3.20
+
+# 1. Install system dependencies
+# - build-base: gcc, make, etc.
+# - cmake: for the cmake materializer
+# - python3: for the registry builder
+# - bash, tar, gzip, curl, xz: utilities
+RUN apk add --no-cache \
+    bash \
+    tar \
+    gzip \
+    curl \
+    xz \
+    zstd \
+    cmake \
+    build-base \
+    python3 \
+    py3-pip
+
+# 2. Install Zig 0.16.0
+ARG ZIG_VERSION=0.16.0
+RUN ARCH=$(uname -m) && \
+    ZIG_URL=$(curl -s https://ziglang.org/download/index.json | python3 -c "import sys, json; data = json.load(sys.stdin); print(data['$ZIG_VERSION']['$ARCH-linux']['tarball'])") && \
+    ZIG_TAR=$(basename $ZIG_URL) && \
+    ZIG_DIR=${ZIG_TAR%.tar.xz} && \
+    curl -L $ZIG_URL | tar -xJ -C /usr/local && \
+    ln -s /usr/local/$ZIG_DIR/zig /usr/local/bin/zig
+
+WORKDIR /app
+
+# 3. Setup Python environment first (cached)
+COPY testing-suite/setup_venv.sh testing-suite/registry-requirements.txt testing-suite/
+RUN ./testing-suite/setup_venv.sh
+
+# 4. Copy the whole project and build (invalidated on code change)
+COPY . .
+RUN zig build
+
+# Entry point: build synthetic registry then run the test suites
+CMD ["bash", "-c", "./testing-suite/run_lua_tool.sh registry-builder --output-dir fixtures/sandbox && ./run_all_synthetic_tests.sh"]

@@ -1,0 +1,21 @@
+[artifact]
+name = "luassert"
+version = "1.8.0"
+kind = "lib"
+source_hash = "b3:b8317e8c2843ef91f03d26e9a45917b0724b348b7c70d9aed7652804ca8ec8c7"
+recipe_hash = "b3:77106ef3a0ff60f3f8e80540c5b2616348a5ed8910525f967e75c67ca4b143cd"
+artifact_hash = "b3:842c1fc01b23bb0ddf7aa8beff57effd53d6e739281f1ddbe21ca395db7516b9"
+target = "any"
+
+[compat]
+runtime_version = "lua@5.4.7"
+lua_abi = "lua-5.4"
+runtime_artifact_hash = ""
+
+[provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = [{ name = "luassert", path = "lua/luassert.lua" }]
+lua_cmodule = []

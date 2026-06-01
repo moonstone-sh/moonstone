@@ -1,0 +1,48 @@
+[package]
+name = "lua"
+version = "5.4.6"
+kind = "runtime"
+description = "Lua 5.4.6 source runtime"
+
+[compat]
+runtimes = ["lua@5.4.6"]
+
+[source]
+kind = "archive"
+format = "tar.gz"
+hash = "b3:b148c49baa24e3fd54ceab40256fdebacf887fdc4e7e37e368f5cb64f6831123"
+
+[[artifact]]
+target = "source"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.6"
+runtime_artifact_hash = "b3:b148c49baa24e3fd54ceab40256fdebacf887fdc4e7e37e368f5cb64f6831123"
+format = "tar.gz"
+url = "../../../blobs/b3/b1/48/b148c49baa24e3fd54ceab40256fdebacf887fdc4e7e37e368f5cb64f6831123.tar.gz"
+hash = "b3:b148c49baa24e3fd54ceab40256fdebacf887fdc4e7e37e368f5cb64f6831123"
+recipe_hash = "b3:3e8c62dc2752c5ffb2d2b8e467e972ee64dcbe5c7c3d45d8d97c0cf19d5b701a"
+bytes = 363329
+
+[artifact.materialize]
+kind = "command"
+
+[[artifact.materialize.steps]]
+command = "make"
+args = ["generic", "CC=zig cc", "MYCFLAGS=-fPIC -DLUA_USE_POSIX -DLUA_USE_DLOPEN", "MYLDFLAGS=-Wl,-E", "MYLIBS=-lm -ldl"]
+
+[artifact.materialize.collect]
+bins = [{ name = "bin/lua", path = "${source}/src/lua" }, { name = "bin/luac", path = "${source}/src/luac" }]
+headers = [{ name = "include/lua.h", path = "${source}/src/lua.h" }, { name = "include/luaconf.h", path = "${source}/src/luaconf.h" }, { name = "include/lualib.h", path = "${source}/src/lualib.h" }, { name = "include/lauxlib.h", path = "${source}/src/lauxlib.h" }, { name = "include/lua.hpp", path = "${source}/src/lua.hpp" }]
+native_lib = [{ name = "lib/liblua.a", path = "${source}/src/liblua.a" }]
+
+[artifact.layout]
+strip_components = 1
+
+[artifact.provides]
+runtime = [{ name = "lua", version = "5.4.6", abi = "lua-5.4" }]
+bin = [{ name = "lua", path = "bin/lua" }, { name = "luac", path = "bin/luac" }]
+headers = [{ name = "lua.h", path = "include/lua.h" }, { name = "luaconf.h", path = "include/luaconf.h" }, { name = "lualib.h", path = "include/lualib.h" }, { name = "lauxlib.h", path = "include/lauxlib.h" }, { name = "lua.hpp", path = "include/lua.hpp" }]
+native_lib = [{ name = "lua", path = "lib/liblua.a" }]
+lua_module = []
+lua_cmodule = []

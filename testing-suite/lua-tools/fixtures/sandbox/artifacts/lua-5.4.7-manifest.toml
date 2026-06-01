@@ -1,0 +1,21 @@
+[artifact]
+name = "lua"
+version = "5.4.7"
+kind = "runtime"
+source_hash = "b3:e51c2f347e3185479d5ff95cae8ac77511db486853269443c56bedaa0a6ae629"
+recipe_hash = "b3:3a1d419b5d36c16de5f7627ec0cf723c1bd66e039ffc6cc6d0ae178825a4a621"
+artifact_hash = "b3:e51c2f347e3185479d5ff95cae8ac77511db486853269443c56bedaa0a6ae629"
+target = "source"
+
+[compat]
+runtime_version = "lua@5.4.7"
+lua_abi = "lua-5.4"
+runtime_artifact_hash = "b3:e51c2f347e3185479d5ff95cae8ac77511db486853269443c56bedaa0a6ae629"
+
+[provides]
+runtime = [{ name = "lua", version = "5.4.7", abi = "lua-5.4" }]
+bin = [{ name = "lua", path = "bin/lua" }, { name = "luac", path = "bin/luac" }]
+headers = [{ name = "lua.h", path = "include/lua.h" }, { name = "luaconf.h", path = "include/luaconf.h" }, { name = "lualib.h", path = "include/lualib.h" }, { name = "lauxlib.h", path = "include/lauxlib.h" }, { name = "lua.hpp", path = "include/lua.hpp" }]
+native_lib = [{ name = "lua", path = "lib/liblua.a" }]
+lua_module = []
+lua_cmodule = []

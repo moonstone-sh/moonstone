@@ -1,0 +1,68 @@
+# --- Zig ---
+zig-out/
+zig-cache/
+.zig-cache/
+.zig-global-cache/
+
+# --- Moonstone Projects & Tests ---
+.moonstone/
+moonstone.db
+moonstone.lock
+moonstone_test/
+fixtures/sandbox/
+/moonstone
+/moonstone.exe
+
+# --- Native Build Artifacts (C/C++, CMake, Make) ---
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+build/
+dist/
+bin/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+
+# --- Python / Testing Suite ---
+testing-suite/.venv/
+release-tools/.venv/
+testing-suite/cache/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- IDEs & Editor Configuration ---
+.vscode/
+.idea/
+*.code-workspace
+.direnv/
+.envrc
+.neoconf.json
+.DS_Store
+.AppleDouble
+.LSOverride
+*~
+*.swp
+*.swo
+
+# --- Archives & Temporary Files ---
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.xz
+*.tmp
+*.log
+*.bak
+
+# --- Documentation ---
+coverage/
+docs/_site/

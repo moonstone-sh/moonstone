@@ -1,0 +1,14 @@
+FROM python:3.12-alpine
+
+# Add build tools for C/C++ and CMake
+RUN apk add --no-cache bash tar gzip curl cmake build-base
+
+WORKDIR /app
+
+COPY testing-suite/registry-requirements.txt .
+RUN pip install --no-cache-dir -r registry-requirements.txt
+
+COPY testing-suite/fetch_registry_artifacts.py .
+COPY testing-suite/registry-builder.py .
+
+CMD ["python3", "registry-builder.py", "--output-dir", "/output"]

@@ -1,0 +1,21 @@
+[artifact]
+name = "inspect"
+version = "3.1.3"
+kind = "lib"
+source_hash = "b3:17e264ebf50f518cf29ffd6d1027d2aeefc1ff030568de02a260e7dc6701198a"
+recipe_hash = "b3:01ac0816a15c8a671d04891ba382d78e583ffeb194e0e8ffa907c389965cbd37"
+artifact_hash = "b3:4fbc162ba362c0ce2be49e979d65b2b7b9e403c8a06708c0b9b4e7e67afd4733"
+target = "any"
+
+[compat]
+runtime_version = "lua@5.4.7"
+lua_abi = "lua-5.4"
+runtime_artifact_hash = ""
+
+[provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = [{ name = "inspect", path = "lua/inspect.lua" }]
+lua_cmodule = []

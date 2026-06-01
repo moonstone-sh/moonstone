@@ -1,0 +1,34 @@
+[registry]
+id = "moonstone-synthetic"
+name = "Synthetic Test Registry"
+protocol = "moonstone.registry.v0"
+revision = 1
+generated_at = "2026-05-17T00:00:00Z"
+min_client = "0.1.0"
+
+[index]
+format = "toml"
+url = "index.toml"
+hash = "b3:3e37374ffa277c226abb656645eb0a34c19bf2411d1020b8fa77e6ef7be2ca1c"
+bytes = 2275
+revision = 1
+
+[index.compact]
+format = "sqlite-zstd"
+url = "index.sqlite.zst"
+compressed_hash = "b3:48e026499fdd841260bd3c543bc520d3ef254afecc7c1fb085aff3aceb2cf405"
+compressed_bytes = 4053
+content_hash = "b3:274607860827baa424f05b969da8d38aff646e8f21122b6774ee9d5b90797566"
+content_bytes = 69632
+revision = 1
+
+[blobs]
+algorithm = "blake3"
+layout = "shard"
+
+[capabilities]
+runtimes = true
+artifacts = true
+source_packages = true
+rocks_bridge = false
+private = false

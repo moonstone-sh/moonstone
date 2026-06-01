@@ -1,0 +1,46 @@
+[package]
+name = "synthetic-make-module"
+version = "0.1.0"
+kind = "lib"
+description = "Synthetic C module using Makefile"
+
+[compat]
+runtimes = ["lua@5.4.7"]
+
+[source]
+kind = "archive"
+format = "tar.gz"
+hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
+
+[[artifact]]
+target = "source"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+runtime_artifact_hash = ""
+format = "tar.gz"
+url = "../../../blobs/b3/10/b3/10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e.tar.gz"
+hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
+recipe_hash = "b3:cbc00a74f109affbf7829d593957b4f4e05bdb94457746e754186cbfdfec3235"
+bytes = 673
+
+[artifact.materialize]
+kind = "command"
+command = "make"
+args = ["install", "PREFIX=${out}"]
+[artifact.materialize.env]
+LUA_INCDIR = "${runtime.include}"
+
+[artifact.materialize.collect]
+lua_cmodules = [{ name = "synthetic_make_module.so", path = "${out}/synthetic_make_module.so" }]
+
+[artifact.layout]
+strip_components = 0
+
+[artifact.provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = []
+lua_cmodule = [{ name = "synthetic_make_module.so", path = "synthetic_make_module.so" }]

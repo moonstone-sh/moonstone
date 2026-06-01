@@ -1,0 +1,36 @@
+[package]
+name = "inspect"
+version = "3.1.3"
+kind = "lib"
+description = "Human-readable representation of Lua tables"
+
+[compat]
+runtimes = ["lua@5.4.7"]
+
+[source]
+kind = "archive"
+format = "tar.gz"
+hash = "b3:17e264ebf50f518cf29ffd6d1027d2aeefc1ff030568de02a260e7dc6701198a"
+
+[[artifact]]
+target = "any"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+runtime_artifact_hash = ""
+format = "tar.gz"
+url = "../../../blobs/b3/4f/bc/4fbc162ba362c0ce2be49e979d65b2b7b9e403c8a06708c0b9b4e7e67afd4733.tar.gz"
+hash = "b3:4fbc162ba362c0ce2be49e979d65b2b7b9e403c8a06708c0b9b4e7e67afd4733"
+recipe_hash = "b3:01ac0816a15c8a671d04891ba382d78e583ffeb194e0e8ffa907c389965cbd37"
+bytes = 3256
+
+[artifact.layout]
+strip_components = 0
+
+[artifact.provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = [{ name = "inspect", path = "lua/inspect.lua" }]
+lua_cmodule = []

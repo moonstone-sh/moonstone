@@ -1,0 +1,22 @@
+[package]
+name = "moonstone-testing-tools"
+version = "0.1.0"
+kind = "script"
+
+[runtime]
+name = "lua"
+version = "5.4"
+abi = "5.4"
+
+[dependencies.libs]
+"luasocket" = "rocks:luasocket@^3.1.0-1"
+"luafilesystem" = "rocks:luafilesystem@^1.9.0-1"
+"dkjson" = "rocks:dkjson@^2.9-1"
+
+[scripts]
+"generate-sandbox" = "lua src/moon-tools.lua generate-sandbox \"$@\""
+"registry-builder" = "lua src/moon-tools.lua registry-builder \"$@\""
+"generate-mock-rocks" = "lua src/moon-tools.lua generate-mock-rocks \"$@\""
+"tool" = "lua src/moon-tools.lua \"$@\""
+"registry-verify" = "lua src/moon-tools.lua registry-verify \"$@\""
+"fetch-registry-artifacts" = "lua src/moon-tools.lua fetch-registry-artifacts \"$@\""

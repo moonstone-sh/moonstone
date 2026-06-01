@@ -1,0 +1,80 @@
+[[package]]
+name = "lua"
+version = "5.4.7"
+kind = "runtime"
+descriptor = "packages/lua/5.4.7/package.toml"
+descriptor_hash = "b3:4522b72db1ea7ccbc4355567ec37853fb3dd01fbe0f6be02bc2f5ebfa50656c1"
+targets = ["source"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "lua"
+version = "5.4.6"
+kind = "runtime"
+descriptor = "packages/lua/5.4.6/package.toml"
+descriptor_hash = "b3:e55345b3653e79d81bd53e127709d3f127b879b521f7361ea1f47b495aa1b57e"
+targets = ["source"]
+runtimes = ["lua@5.4.6"]
+
+[[package]]
+name = "inspect"
+version = "3.1.3"
+kind = "lib"
+descriptor = "packages/inspect/3.1.3/package.toml"
+descriptor_hash = "b3:048ec8f79873216b5204a750cdac93aa2708ab7eb46b0198266d4771f15401ae"
+targets = ["any"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "inspect"
+version = "3.1.2"
+kind = "lib"
+descriptor = "packages/inspect/3.1.2/package.toml"
+descriptor_hash = "b3:4c90b22b9c4fb43338d80cbfd54db8b3db3a35247ff4a7842377358e653135b1"
+targets = ["any"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "luassert"
+version = "1.9.0"
+kind = "lib"
+descriptor = "packages/luassert/1.9.0/package.toml"
+descriptor_hash = "b3:f8916ebf1cebc08665f3d3d3c0dae73bd363a7db03bcfa9dd8e3f7e5e9ddd297"
+targets = ["any"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "luassert"
+version = "1.8.0"
+kind = "lib"
+descriptor = "packages/luassert/1.8.0/package.toml"
+descriptor_hash = "b3:0c5470edfc06a1a214071cc9096e9e064b62a5d80e167f94d73c2b94125596e9"
+targets = ["any"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "synthetic-cmodule"
+version = "0.1.0"
+kind = "lib"
+descriptor = "packages/synthetic-cmodule/0.1.0/package.toml"
+descriptor_hash = "b3:00a281a9f22ac612b8fd13837a7c392e129c1685a1dac7625e40b2705137b0cc"
+targets = ["source"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "synthetic-make-module"
+version = "0.1.0"
+kind = "lib"
+descriptor = "packages/synthetic-make-module/0.1.0/package.toml"
+descriptor_hash = "b3:5f93ff361b921159f7ab0f0cc775cd603f138ef148019e4f1b158fbe92348a6a"
+targets = ["source"]
+runtimes = ["lua@5.4.7"]
+
+[[package]]
+name = "synthetic-cmake-module"
+version = "0.1.0"
+kind = "lib"
+descriptor = "packages/synthetic-cmake-module/0.1.0/package.toml"
+descriptor_hash = "b3:9424294cc741fab68c69d787bc82bf54908dc56aa5190347b5bbc5ee87277fbd"
+targets = ["source"]
+runtimes = ["lua@5.4.7"]

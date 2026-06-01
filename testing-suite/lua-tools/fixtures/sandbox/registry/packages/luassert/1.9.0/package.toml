@@ -1,0 +1,36 @@
+[package]
+name = "luassert"
+version = "1.9.0"
+kind = "lib"
+description = "Assertion library for Lua"
+
+[compat]
+runtimes = ["lua@5.4.7"]
+
+[source]
+kind = "archive"
+format = "tar.gz"
+hash = "b3:4a1bc1962912c5d8acfc13d839844f64f4f22533041964158d8fb3987828a5dd"
+
+[[artifact]]
+target = "any"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+runtime_artifact_hash = ""
+format = "tar.gz"
+url = "../../../blobs/b3/56/84/5684acf1cf9b9cc34cbfdfaa6e2f4c5b9884285dfcaf880b10a97860be8e203c.tar.gz"
+hash = "b3:5684acf1cf9b9cc34cbfdfaa6e2f4c5b9884285dfcaf880b10a97860be8e203c"
+recipe_hash = "b3:f29b04a3f29c526412efacd681ff4e20dc0d66f961ac7ed2003b0a206c919589"
+bytes = 21809
+
+[artifact.layout]
+strip_components = 0
+
+[artifact.provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = [{ name = "luassert", path = "lua/luassert.lua" }]
+lua_cmodule = []

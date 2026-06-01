@@ -1,0 +1,21 @@
+[artifact]
+name = "synthetic-make-module"
+version = "0.1.0"
+kind = "lib"
+source_hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
+recipe_hash = "b3:cbc00a74f109affbf7829d593957b4f4e05bdb94457746e754186cbfdfec3235"
+artifact_hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
+target = "source"
+
+[compat]
+runtime_version = "lua@5.4.7"
+lua_abi = "lua-5.4"
+runtime_artifact_hash = ""
+
+[provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = []
+lua_cmodule = [{ name = "synthetic_make_module.so", path = "synthetic_make_module.so" }]

@@ -1,0 +1,41 @@
+[moonstone]
+version = "0.1.0"
+default_runtime = "lua-5.4.6"
+auto_update_shims = true
+
+[paths]
+# Custom locations for store, cache, and shims (Unix/XDG defaults)
+store = "~/.local/share/moonstone/v0/store"
+cache = "~/.cache/moonstone"
+shims = "~/.local/share/moonstone/v0/shims"
+downloads = "~/.cache/moonstone/downloads"
+
+[cli]
+# Behavior toggles for UX and diagnostics
+color = true
+verbose = false
+confirm_on_remove = true
+
+[globals]
+# Default Lua family used when installing packages with `-g`
+default_family = "lua54"
+
+[network]
+# Optional proxy and fetch settings
+proxy = ""
+timeout = 30
+verify_tls = true
+retries = 3
+retry_delay = 1
+
+[telemetry]
+# Opt-in analytics or usage metrics (false by default)
+enabled = false
+
+# [registries]
+# Configure additional package registries.  Project-level registries in
+# moonstone.toml override these with the same name.
+#
+# moonstone = { url = "https://moonstone.sh/registry/v0", priority = 10 }
+# company   = { url = "https://registry.company.internal/v0", token = "mst_...", priority = 20 }
+# local     = { path = "./synthetic-playground/registry", priority = 5 }

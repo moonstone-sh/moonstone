@@ -1,0 +1,18 @@
+{
+  "workspace": {
+    "library": [
+      ".moonstone/env/share/lua/{{lua_ver}}"
+    ],
+    "checkThirdParty": false,
+    "useGitIgnore": false,
+    "ignoreDir": [
+      ".moonstone/env/bin",
+      ".moonstone/env/lib",
+      ".moonstone/env/include",
+      "zig-cache",
+      "zig-out",
+      ".git"
+    ]
+  }
+}
+

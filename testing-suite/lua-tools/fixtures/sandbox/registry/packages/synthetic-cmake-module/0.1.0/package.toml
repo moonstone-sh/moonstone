@@ -1,0 +1,42 @@
+[package]
+name = "synthetic-cmake-module"
+version = "0.1.0"
+kind = "lib"
+description = "Synthetic C module for testing CMake materialization"
+
+[compat]
+runtimes = ["lua@5.4.7"]
+
+[source]
+kind = "archive"
+format = "tar.gz"
+hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
+
+[[artifact]]
+target = "source"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+runtime_artifact_hash = ""
+format = "tar.gz"
+url = "../../../blobs/b3/5c/c3/5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6.tar.gz"
+hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
+recipe_hash = "b3:1084014e280c5b8aebd844094bf0b097d0cd94e30f67edf7738b90e8dec2ce8f"
+bytes = 727
+
+[artifact.materialize]
+kind = "cmake"
+
+[artifact.materialize.collect]
+lua_cmodules = [{ name = "synthetic_cmake_module.so", path = "${build}/synthetic_cmake_module.so" }]
+
+[artifact.layout]
+strip_components = 0
+
+[artifact.provides]
+runtime = []
+bin = []
+headers = []
+native_lib = []
+lua_module = []
+lua_cmodule = [{ name = "synthetic_cmake_module.so", path = "synthetic_cmake_module.so" }]

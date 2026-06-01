@@ -1,0 +1,9 @@
+.git
+.zig-cache
+zig-out
+.zig-global-cache
+scripts/.venv
+sandbox/registry
+sandbox/artifacts
+sandbox/my-app/.moonstone
+sandbox/my-lib/.moonstone
