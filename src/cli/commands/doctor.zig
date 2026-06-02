@@ -440,7 +440,7 @@ pub const DoctorCommand = struct {
         // ── 9. System tools ───────────────────────────────────────────────
         var tools_ok = true;
         var tools_msg: []const u8 = "";
-        const sys_tools = [_][]const u8{ "gcc", "make", "tar", "zig", "python3", "zstd" };
+        const sys_tools = [_][]const u8{ "gcc", "make", "tar", "zig", "zstd" };
         var missing_tools = std.ArrayList([]const u8).empty;
         defer missing_tools.deinit(allocator);
 

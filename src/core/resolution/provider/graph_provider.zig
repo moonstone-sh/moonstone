@@ -470,7 +470,7 @@ pub const RegistryProvider = struct {
 
             if (!already_present) {
                 const cand_opt: ?candidate_mod.Candidate = rocks_resolver.resolve(self.allocator, self.io, name, "*", self.options, self.env.?) catch |err| blk: {
-                    if (err == error.PackageNotFound or err == error.RocksVersionDiscoveryFailed or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
+                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
                         break :blk null;
                     }
                     return err;

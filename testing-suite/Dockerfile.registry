@@ -1,14 +1,35 @@
-FROM python:3.12-alpine
+FROM debian:bookworm-slim
 
-# Add build tools for C/C++ and CMake
-RUN apk add --no-cache bash tar gzip curl cmake build-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    tar \
+    gzip \
+    curl \
+    unzip \
+    xz-utils \
+    zstd \
+    sqlite3 \
+    b3sum \
+    jq \
+    cmake \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ZIG_VERSION=0.16.0
+RUN ARCH=$(uname -m) && \
+    ZIG_URL=$(curl -s https://ziglang.org/download/index.json | jq -r --arg version "$ZIG_VERSION" --arg target "$ARCH-linux" '.[$version][$target].tarball') && \
+    ZIG_TAR=$(basename "$ZIG_URL") && \
+    ZIG_DIR=${ZIG_TAR%.tar.xz} && \
+    curl -L "$ZIG_URL" | tar -xJ -C /usr/local && \
+    ln -s "/usr/local/$ZIG_DIR/zig" /usr/local/bin/zig
+
+RUN curl -fsSL https://moonstone.sh/install | sh
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-COPY testing-suite/registry-requirements.txt .
-RUN pip install --no-cache-dir -r registry-requirements.txt
+COPY testing-suite/run_lua_tool.sh testing-suite/run_lua_tool.sh
+COPY testing-suite/lua-tools testing-suite/lua-tools
 
-COPY testing-suite/fetch_registry_artifacts.py .
-COPY testing-suite/registry-builder.py .
-
-CMD ["python3", "registry-builder.py", "--output-dir", "/output"]
+CMD ["bash", "testing-suite/run_lua_tool.sh", "registry-builder", "--output-dir", "/output"]

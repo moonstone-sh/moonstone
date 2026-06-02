@@ -42,5 +42,5 @@ This matrix tracks failure-mode coverage for Moonstone commands, with emphasis o
 
 - Prefer contract tests for command/protocol/mutation behavior.
 - Prefer scenario tests for multi-step resolver/materializer flows.
-- Use the Python LuaRocks mock server modes for deterministic HTTP failure responses; `testing-suite/run_lua_tool.sh generate-mock-rocks` dispatches to it directly so rocks tests do not depend on real LuaRocks bootstrap.
+- Use the Moonstone-managed LuaRocks mock server modes for deterministic HTTP failure responses; `testing-suite/run_lua_tool.sh generate-mock-rocks` runs the `testing-suite/lua-tools` project so rocks tests do not depend on Python tooling.
 - Keep tests deterministic by setting `[network] retries = 0` unless the test is explicitly about retry behavior.

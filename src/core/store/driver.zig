@@ -105,7 +105,8 @@ pub const StoreDriver = struct {
         var db: ?*c.sqlite3 = null;
         const rc = c.sqlite3_open(db_path, &db);
         if (rc != c.SQLITE_OK) {
-            return error.SQLiteOpenError;
+            if (db) |handle| _ = c.sqlite3_close(handle);
+            return sqliteError(rc);
         }
 
         var self = StoreDriver{
@@ -153,7 +154,8 @@ pub const StoreDriver = struct {
             defer self.allocator.free(sql);
             const sql_z = try self.allocator.dupeZ(u8, sql);
             defer self.allocator.free(sql_z);
-            if (c.sqlite3_exec(self.db, sql_z, null, null, null) != c.SQLITE_OK) return error.SQLiteExecError;
+            const rc = c.sqlite3_exec(self.db, sql_z, null, null, null);
+            if (rc != c.SQLITE_OK) return sqliteError(rc);
         }
     }
 
@@ -217,13 +219,24 @@ pub const StoreDriver = struct {
             \\  registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
             \\);
         ;
-        if (c.sqlite3_exec(self.db, schema, null, null, null) != c.SQLITE_OK) return error.SQLiteExecError;
+        const rc = c.sqlite3_exec(self.db, schema, null, null, null);
+        if (rc != c.SQLITE_OK) return sqliteError(rc);
         // Migration: add new columns if they don't exist (ignored if already present)
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN lua_api TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN runtime_artifact_hash TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN resolver TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN source TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN native_compat_required INTEGER DEFAULT 0;", null, null, null);
+    }
+
+    fn sqliteError(rc: c_int) anyerror {
+        return switch (rc) {
+            c.SQLITE_CANTOPEN => error.SQLiteCantOpen,
+            c.SQLITE_READONLY => error.SQLiteReadOnly,
+            c.SQLITE_CORRUPT, c.SQLITE_NOTADB => error.SQLiteCorrupt,
+            c.SQLITE_BUSY, c.SQLITE_LOCKED => error.SQLiteBusy,
+            else => error.SQLiteExecError,
+        };
     }
 
     pub fn register_link(self: StoreDriver, entry: LinkEntry) !void {

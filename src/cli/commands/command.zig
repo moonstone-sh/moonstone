@@ -209,6 +209,14 @@ pub fn reportError(
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks registry is unreachable or returned an invalid manifest" });
             } else if (err == error.RockspecNotFound) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks package metadata was found, but no usable rockspec was available" });
+            } else if (err == error.SQLiteCantOpen) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone could not open its SQLite index. Check that the Moonstone data directory exists and is writable, or set MOONSTONE_HOME to a writable directory." });
+            } else if (err == error.SQLiteReadOnly) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is read-only. Check permissions for the Moonstone data directory, or set MOONSTONE_HOME to a writable directory." });
+            } else if (err == error.SQLiteBusy) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes." });
+            } else if (err == error.SQLiteCorrupt) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it." });
             } else {
                 try emitter.fail(io, about, value, .{ .error_name = err_name });
             }
@@ -256,6 +264,14 @@ pub fn reportError(
                 try stdout.print("Error: package not found or no compatible version was available.\n", .{});
             } else if (err == error.LockfileOutOfSync) {
                 try stdout.print("Error: moonstone.lock is out of sync with moonstone.toml. Run 'moon sync' to update it.\n", .{});
+            } else if (err == error.SQLiteCantOpen) {
+                try stdout.print("Error: Moonstone could not open its SQLite index. Check that the Moonstone data directory exists and is writable, or set MOONSTONE_HOME to a writable directory.\n", .{});
+            } else if (err == error.SQLiteReadOnly) {
+                try stdout.print("Error: Moonstone's SQLite index is read-only. Check permissions for the Moonstone data directory, or set MOONSTONE_HOME to a writable directory.\n", .{});
+            } else if (err == error.SQLiteBusy) {
+                try stdout.print("Error: Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes.\n", .{});
+            } else if (err == error.SQLiteCorrupt) {
+                try stdout.print("Error: Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it.\n", .{});
             } else {
                 try stdout.print("Error: {s} during {s}\n", .{ @errorName(err), about });
             }

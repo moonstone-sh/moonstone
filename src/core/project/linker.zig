@@ -234,7 +234,25 @@ pub fn link_project_env_at(
     var bit = bin_map.iterator();
     while (bit.next()) |entry| {
         const name = entry.key_ptr.*;
-        const target_path = entry.value_ptr.path;
+        const provision_path = entry.value_ptr.path;
+        var fallback_path: ?[]const u8 = null;
+        defer if (fallback_path) |path| allocator.free(path);
+
+        const target_path = blk: {
+            std.Io.Dir.cwd().access(io, provision_path, .{}) catch |err| {
+                if (err != error.FileNotFound) return err;
+                if (std.mem.eql(u8, name, "luac")) continue;
+                if (!std.mem.eql(u8, name, "lua")) return err;
+                const parent = std.fs.path.dirname(provision_path) orelse return err;
+                const luajit_path = try std.fs.path.join(allocator, &.{ parent, "luajit" });
+                fallback_path = luajit_path;
+                std.Io.Dir.cwd().access(io, luajit_path, .{}) catch |fallback_err| {
+                    return fallback_err;
+                };
+                break :blk luajit_path;
+            };
+            break :blk provision_path;
+        };
 
         bin_dir.symLink(io, target_path, name, .{}) catch |err| {
             if (err == error.PathAlreadyExists) {

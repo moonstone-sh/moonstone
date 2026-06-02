@@ -150,13 +150,7 @@ pub const init_command = struct {
             const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
             defer allocator.free(index_db_path_z);
 
-            var idx = moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z) catch |err| {
-                if (err == error.SQLiteOpenError) {
-                    // Try to create it if it doesn't exist? No, createDirPath already ran.
-                    return err;
-                }
-                return err;
-            };
+            var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
             defer idx.deinit();
             const lr = moonstone.store.links.LinkStore.init(&idx);
             const found = try lr.get(final_name);

@@ -200,7 +200,7 @@ pub const add_command = struct {
             mat.runtime_path = rt_res_mat.path;
         }
 
-        const lua_exe = try std.fs.path.join(allocator, &.{ mat.runtime_path.?, "files", "bin", "lua" });
+        const lua_exe = try moonstone.resolution.sources.luarocks.find_runtime_lua_executable(allocator, io, mat.runtime_path.?);
         defer allocator.free(lua_exe);
 
         var targets = std.ArrayList(moonstone.resolution.solver.term.Term).empty;

@@ -94,7 +94,7 @@ Moonstone v0 uses a content-addressed storage (CAS) model:
 
 - **Zig 0.16.0**
 - **POSIX system** (Linux/macOS)
-- **Common Tools**: `gcc`, `make`, `tar`, `zstd`, `python3` (for testing/scripts)
+- **Common Tools**: `gcc`, `make`, `cmake`, `tar`, `curl`, `zstd`, `sqlite3`, `b3sum` (for testing scripts)
 
 ## 🪪 License
 

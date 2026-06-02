@@ -53,7 +53,8 @@ You will need:
 
 - Zig matching the version declared by the project
 - Git
-- Python 3, for registry/testing tools
+- Moonstone, for the `testing-suite/lua-tools` project
+- Python 3, only for release packaging and publishing
 - a POSIX-like shell for scenario tests
 - optional Docker, for isolated test runs
 
@@ -99,6 +100,8 @@ For broader scenario coverage:
 ```
 
 Some scenario tests may require network access, local registry fixtures, or platform-specific tooling. When reporting a failure, include the command you ran, your OS/architecture, Zig version, and relevant output.
+
+Registry generation, sandbox synchronization, artifact fetching, and LuaRocks mock servers are provided by the Moonstone-managed `testing-suite/lua-tools` project. Run a tool with `./testing-suite/run_lua_tool.sh <command>`.
 
 ## Before opening a pull request
 

@@ -606,6 +606,20 @@ fn compute_dir_hash(allocator: std.mem.Allocator, io: std.Io, dir_path: []const 
     return try std.fmt.allocPrint(allocator, "b3:{s}", .{raw});
 }
 
+pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8) ![]const u8 {
+    const binaries = [_][]const u8{ "lua", "luajit" };
+    for (binaries) |binary| {
+        const executable = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin", binary });
+        std.Io.Dir.cwd().access(io, executable, .{}) catch |err| {
+            allocator.free(executable);
+            if (err == error.FileNotFound) continue;
+            return err;
+        };
+        return executable;
+    }
+    return error.RuntimeRequiredForParsing;
+}
+
 fn find_source_root(allocator: std.mem.Allocator, io: std.Io, source_dir: []const u8) ![]const u8 {
     var dir = try std.Io.Dir.cwd().openDir(io, source_dir, .{ .iterate = true });
     defer dir.close(io);
@@ -1013,21 +1027,9 @@ pub fn resolve(
     defer allocator.free(rockspec_content);
 
     // Phase 4: Classify
-    const lua_exe = blk: {
-        const rt_path = options.runtime_path orelse {
-            return error.RuntimeRequiredForParsing;
-        };
-        break :blk try std.fs.path.join(allocator, &.{ rt_path, "files", "bin", "lua" });
-    };
+    const rt_path = options.runtime_path orelse return error.RuntimeRequiredForParsing;
+    const lua_exe = try find_runtime_lua_executable(allocator, io, rt_path);
     defer allocator.free(lua_exe);
-
-    // Verify lua_exe exists
-    std.Io.Dir.cwd().access(io, lua_exe, .{}) catch |err| {
-        if (err == error.FileNotFound) {
-            return error.RuntimeRequiredForParsing;
-        }
-        return err;
-    };
 
     var rock_parsed = try luarocks.parse_rockspec(allocator, io, rockspec_content, lua_exe);
     defer rock_parsed.deinit();
