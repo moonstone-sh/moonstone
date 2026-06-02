@@ -84,8 +84,17 @@ fn doFetch(
     var redirect_buf: [4096]u8 = undefined;
     var resp = try req.receiveHead(&redirect_buf);
 
+    const decompress_buffer: []u8 = switch (resp.head.content_encoding) {
+        .identity => &.{},
+        .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer if (resp.head.content_encoding != .identity) allocator.free(decompress_buffer);
+
     var transfer_buf: [8192]u8 = undefined;
-    var reader = resp.reader(&transfer_buf);
+    var decompress: std.http.Decompress = undefined;
+    var reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buffer);
     const body = try reader.allocRemaining(allocator, std.Io.Limit.limited(50 * 1024 * 1024));
 
     return .{
