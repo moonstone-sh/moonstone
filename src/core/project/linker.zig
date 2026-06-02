@@ -523,6 +523,14 @@ pub fn link_project_env_at(
     
     try aw.writer.flush();
     try env_toml_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+
+    refreshLspConfig(io, project_root);
+}
+
+fn refreshLspConfig(io: std.Io, project_root: std.Io.Dir) void {
+    const file = project_root.openFile(io, ".luarc.json", .{ .mode = .read_write }) catch return;
+    defer file.close(io);
+    file.setTimestampsNow(io) catch {};
 }
 
 fn symlinkTree(allocator: std.mem.Allocator, io: std.Io, dest_parent_dir: std.Io.Dir, src_path: []const u8) !void {
