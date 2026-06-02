@@ -1,4 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+fn luarocks_platform() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "macosx",
+        .windows => "win32",
+        else => "unix",
+    };
+}
 
 pub const ModuleDefinition = struct {
     sources: ?[]const []const u8 = null,
@@ -55,7 +64,7 @@ pub fn parse_rockspec(allocator: std.mem.Allocator, io: std.Io, content: []const
     rs_file.close(io);
 
     const res = try std.process.run(allocator, io, .{
-        .argv = &.{ lua_bin, bridge_path, rs_path },
+        .argv = &.{ lua_bin, bridge_path, rs_path, luarocks_platform() },
     });
     defer {
         allocator.free(res.stdout);

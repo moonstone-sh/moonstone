@@ -93,7 +93,7 @@ local final_data = type(res) == "table" and res or env
 -- 4. Clean and Normalize for JSON
 -- We only care about fields used by Moonstone
 local function current_platform()
-    local forced = os.getenv("MOONSTONE_LUAROCKS_PLATFORM")
+    local forced = arg[2] or os.getenv("MOONSTONE_LUAROCKS_PLATFORM")
     if forced and forced ~= "" then return forced end
     if jit and jit.os == "OSX" then return "macosx" end
     if jit and jit.os == "Windows" then return "win32" end

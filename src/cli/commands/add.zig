@@ -2,6 +2,17 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
 
+fn packageNamesMatch(left: []const u8, right: []const u8) bool {
+    return std.mem.eql(u8, left, right) or std.ascii.eqlIgnoreCase(left, right);
+}
+
+fn solutionContainsPackage(solution: *const std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact), name: []const u8) bool {
+    for (solution.keys()) |candidate_name| {
+        if (packageNamesMatch(candidate_name, name)) return true;
+    }
+    return false;
+}
+
 pub const add_command = struct {
     pub const name = "add";
     pub const description = "Add a dependency to the project";
@@ -276,7 +287,7 @@ pub const add_command = struct {
             const parsed = try moonstone.domain.package_spec.parsePackageSpec(allocator, pkg_spec);
             defer parsed.deinit(allocator);
 
-            if (solution.contains(parsed.name)) continue;
+            if (solutionContainsPackage(&solution, parsed.name)) continue;
             var direct_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
             var direct_kinds_len: usize = 0;
             if (parsed.resolver) |resolver_kind| {
@@ -383,7 +394,7 @@ pub const add_command = struct {
                     null;
                 defer if (path_candidate) |*candidate| candidate.deinit(allocator);
                 const parsed_name = if (path_candidate) |candidate| candidate.name else parsed.name;
-                if (std.mem.eql(u8, parsed_name, pkg_name)) {
+                if (packageNamesMatch(parsed_name, pkg_name)) {
                     is_explicit = true;
                     explicit_spec = try allocator.dupe(u8, pkg_spec);
                     if (parsed.registry) |r| {
