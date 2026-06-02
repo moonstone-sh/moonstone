@@ -42,13 +42,12 @@ pub const SelfInstallCommand = struct {
         var paths = try moonstone.platform.fs.resolve_moonstone(allocator, ctx.env, io);
         defer paths.deinit(allocator);
 
-        std.Io.Dir.cwd().createDirPath(io, paths.bin) catch |err| {
-            try stdout.print("Cannot install Moonstone to {s}: {s}. Fix the directory permissions and retry.\n", .{ paths.bin, @errorName(err) });
-            return err;
-        };
         try std.Io.Dir.cwd().createDirPath(io, paths.tmp);
-        checkWritable(allocator, io, paths.bin) catch |err| {
-            try stdout.print("Cannot install Moonstone to {s}: {s}. Fix the directory permissions and retry.\n", .{ paths.bin, @errorName(err) });
+        const destination = try std.process.executablePathAlloc(io, allocator);
+        defer allocator.free(destination);
+        const destination_dir = std.fs.path.dirname(destination) orelse return error.InvalidExecutablePath;
+        checkWritable(allocator, io, destination_dir) catch |err| {
+            try stdout.print("Cannot install Moonstone to {s}: {s}. Fix the directory permissions and retry.\n", .{ destination, @errorName(err) });
             return err;
         };
 
@@ -105,8 +104,6 @@ pub const SelfInstallCommand = struct {
 
         const extracted = try std.fs.path.join(allocator, &.{ work_dir, "moon" });
         defer allocator.free(extracted);
-        const destination = try std.fs.path.join(allocator, &.{ paths.bin, "moon" });
-        defer allocator.free(destination);
         try std.Io.Dir.renameAbsolute(extracted, destination, io);
 
         try stdout.print("Installed Moonstone {s} to {s}\nRun `moon setup` to configure shims.\n", .{ selected_version, destination });
