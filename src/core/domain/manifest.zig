@@ -623,12 +623,16 @@ pub const RemotePackageDescriptor = struct {
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
                     const role = dep.get("role").?.string;
+                    const resolver = dep.get("resolver").?.string;
                     const name = dep.get("name").?.string;
                     const constraint = dep.get("constraint").?.string;
+                    const spec = try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ resolver, name, constraint });
                     if (std.mem.eql(u8, role, "lib")) {
-                        try self.dependencies.libs.put(allocator, try allocator.dupe(u8, name), try allocator.dupe(u8, constraint));
+                        try self.dependencies.libs.put(allocator, try allocator.dupe(u8, name), spec);
                     } else if (std.mem.eql(u8, role, "bin")) {
-                        try self.dependencies.bins.put(allocator, try allocator.dupe(u8, name), try allocator.dupe(u8, constraint));
+                        try self.dependencies.bins.put(allocator, try allocator.dupe(u8, name), spec);
+                    } else {
+                        allocator.free(spec);
                     }
                 }
             }
@@ -1138,8 +1142,12 @@ pub const MoonstoneToml = struct {
     }
 
     pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, dev: bool, kind: Kind) !void {
-        _ = kind;
-        const target_map = if (dev) &self.dependencies.dev_libs else &self.dependencies.libs;
+        const target_map = if (kind == .bin)
+            if (dev) &self.dependencies.dev_bins else &self.dependencies.bins
+        else if (dev)
+            &self.dependencies.dev_libs
+        else
+            &self.dependencies.libs;
         if (target_map.get(name)) |old| allocator.free(old);
         try target_map.put(allocator, try allocator.dupe(u8, name), try allocator.dupe(u8, spec));
     }

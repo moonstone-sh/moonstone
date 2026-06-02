@@ -542,10 +542,24 @@ pub fn link_project_env_at(
     try aw.writer.flush();
     try env_toml_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
 
-    refreshLspConfig(io, project_root);
+    refreshLspConfig(allocator, io, project_root);
 }
 
-fn refreshLspConfig(io: std.Io, project_root: std.Io.Dir) void {
+fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.Io.Dir) void {
+    const content = project_root.readFileAlloc(io, ".luarc.json", allocator, std.Io.Limit.limited(1024 * 1024)) catch return;
+    defer allocator.free(content);
+
+    const legacy_path = ".moonstone/env/lua/";
+    if (std.mem.indexOf(u8, content, legacy_path) != null) {
+        const migrated = std.mem.replaceOwned(u8, allocator, content, legacy_path, ".moonstone/env/share/lua/") catch return;
+        defer allocator.free(migrated);
+
+        const file = project_root.createFile(io, ".luarc.json", .{}) catch return;
+        defer file.close(io);
+        file.writeStreamingAll(io, migrated) catch return;
+        return;
+    }
+
     const file = project_root.openFile(io, ".luarc.json", .{ .mode = .read_write }) catch return;
     defer file.close(io);
     file.setTimestampsNow(io) catch {};

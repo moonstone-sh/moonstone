@@ -4,6 +4,31 @@ const registry = @import("../registry/registry.zig");
 const fs = @import("../platform/fs.zig");
 const store = @import("../store.zig");
 const resolver = @import("../resolution/root.zig");
+const package_spec = @import("../domain/package_spec.zig");
+
+fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePackageDescriptor) ![]manifest.StoreDependency {
+    var dependencies = std.ArrayList(manifest.StoreDependency).empty;
+    errdefer {
+        for (dependencies.items) |*dependency| dependency.deinit(allocator);
+        dependencies.deinit(allocator);
+    }
+
+    inline for (.{ .{ &desc.dependencies.libs, manifest.Kind.lib }, .{ &desc.dependencies.bins, manifest.Kind.bin } }) |entry| {
+        var it = entry[0].iterator();
+        while (it.next()) |dependency| {
+            const spec = try package_spec.parsePackageSpec(allocator, dependency.value_ptr.*);
+            defer spec.deinit(allocator);
+            try dependencies.append(allocator, .{
+                .name = try allocator.dupe(u8, spec.name),
+                .constraint = try allocator.dupe(u8, spec.constraint orelse "*"),
+                .resolver = if (spec.resolver) |kind| try allocator.dupe(u8, kind.asString()) else null,
+                .kind = entry[1],
+            });
+        }
+    }
+
+    return try dependencies.toOwnedSlice(allocator);
+}
 
 pub const MaterializeResult = struct {
     path: []const u8,
@@ -327,7 +352,12 @@ pub const Materializer = struct {
         }
 
         // 5. Move to sharded store (Default prebuilt path)
-        const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, tmp_path, desc, art, "moonstone", "moonstone", &.{});
+        const dependencies = try descriptorDependencies(self.allocator, desc);
+        defer {
+            for (dependencies) |*dependency| dependency.deinit(self.allocator);
+            self.allocator.free(dependencies);
+        }
+        const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, tmp_path, desc, art, "moonstone", "moonstone", dependencies);
         return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art.hash) };
     }
 

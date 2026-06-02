@@ -48,7 +48,11 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
         }
     }
 
-    result.name = try allocator.dupe(u8, current);
+    const name = try allocator.dupe(u8, current);
+    if (result.resolver == .rocks) {
+        for (name) |*char| char.* = std.ascii.toLower(char.*);
+    }
+    result.name = name;
     return result;
 }
 
@@ -57,4 +61,14 @@ pub fn canonicalOfficialRuntime(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "luajit")) return "@moonstone/luajit";
     if (std.mem.eql(u8, name, "love")) return "@moonstone/love";
     return name;
+}
+
+test "parsePackageSpec normalizes explicit LuaRocks names" {
+    const allocator = std.testing.allocator;
+    const spec = try parsePackageSpec(allocator, "rocks:LuaSocket@^3.1.0-1");
+    defer spec.deinit(allocator);
+
+    try std.testing.expectEqual(root.ResolverKind.rocks, spec.resolver.?);
+    try std.testing.expectEqualStrings("luasocket", spec.name);
+    try std.testing.expectEqualStrings("^3.1.0-1", spec.constraint.?);
 }

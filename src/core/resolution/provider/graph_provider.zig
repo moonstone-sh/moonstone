@@ -171,9 +171,9 @@ pub const RegistryProvider = struct {
         // 2. Check pinned/remote-resolved artifacts
         const req_version = semver.Version.parse(request.version) catch return null;
         for (self.artifacts.items) |*art| {
-            if (std.mem.eql(u8, art.name, request.name)) {
+            if (packageNamesMatch(art.name, request.name)) {
                 const v = semver.Version.parse(art.version) catch continue;
-                if (v.compare(req_version) == 0) {
+                if (v.compare(req_version) == 0 or luarocksVersionsMatch(art.version, request.version)) {
                     // Flesh out remote_desc if missing
                     if (art.location == .remote and art.origin == .moonstone_registry and art.remote_desc == null) {
                         const r = art.origin.moonstone_registry;
@@ -274,6 +274,15 @@ pub const RegistryProvider = struct {
         }
 
         return null;
+    }
+
+    fn luarocksVersionsMatch(candidate: []const u8, requested: []const u8) bool {
+        const requested_revision = std.mem.lastIndexOfScalar(u8, requested, '+') orelse return false;
+        if (std.mem.lastIndexOfScalar(u8, candidate, '-')) |candidate_revision| {
+            return std.mem.eql(u8, candidate[0..candidate_revision], requested[0..requested_revision]) and
+                std.mem.eql(u8, candidate[candidate_revision + 1 ..], requested[requested_revision + 1 ..]);
+        }
+        return false;
     }
 
 
@@ -682,16 +691,24 @@ pub const RegistryProvider = struct {
 
                 var lib_it = desc.dependencies.libs.iterator();
                 while (lib_it.next()) |entry| {
+                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
+                    defer spec.deinit(self.allocator);
                     try terms.append(self.allocator, .{
-                        .name = try arena.dupe(u8, entry.key_ptr.*),
-                        .range = try semver.VersionRange.parse(arena, entry.value_ptr.*),
+                        .name = try arena.dupe(u8, spec.name),
+                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                        .resolver = spec.resolver,
                     });
                 }
                 var bin_it = desc.dependencies.bins.iterator();
                 while (bin_it.next()) |entry| {
+                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
+                    defer spec.deinit(self.allocator);
                     try terms.append(self.allocator, .{
-                        .name = try arena.dupe(u8, entry.key_ptr.*),
-                        .range = try semver.VersionRange.parse(arena, entry.value_ptr.*),
+                        .name = try arena.dupe(u8, spec.name),
+                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                        .resolver = spec.resolver,
                     });
                 }
                 return try terms.toOwnedSlice(self.allocator);
@@ -837,7 +854,7 @@ pub const RegistryProvider = struct {
 };
 
 fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
-    if (std.mem.eql(u8, index_name, requested_name)) return true;
+    if (std.ascii.eqlIgnoreCase(index_name, requested_name)) return true;
     if (std.mem.eql(u8, requested_name, "@moonstone/lua")) return std.mem.eql(u8, index_name, "lua");
     if (std.mem.eql(u8, requested_name, "@moonstone/luajit")) return std.mem.eql(u8, index_name, "luajit");
     if (std.mem.eql(u8, requested_name, "@moonstone/love")) return std.mem.eql(u8, index_name, "love");

@@ -5,6 +5,20 @@ const router = @import("../router.zig");
 
 pub const sync_command = SyncCommand;
 
+fn solutionContainsPackage(solution: *const std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact), name: []const u8) bool {
+    for (solution.keys()) |candidate_name| {
+        if (std.ascii.eqlIgnoreCase(candidate_name, name)) return true;
+    }
+    return false;
+}
+
+fn solutionFetchSwapRemovePackage(solution: *std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact), name: []const u8) ?std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).KV {
+    for (solution.keys()) |candidate_name| {
+        if (std.ascii.eqlIgnoreCase(candidate_name, name)) return solution.fetchSwapRemove(candidate_name);
+    }
+    return null;
+}
+
 const SyncReport = struct {
     requested_targets: usize = 0,
     resolved_packages: usize = 0,
@@ -275,18 +289,19 @@ pub const SyncCommand = struct {
         });
 
         // Add explicit dependencies
-        var dep_it = mt.dependencies.libs.iterator();
-        while (dep_it.next()) |entry| {
-            const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-            defer spec.deinit(allocator);
-            
-            try targets.append(allocator, .{
-                .name = try allocator.dupe(u8, entry.key_ptr.*),
-                .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
-                .resolver = spec.resolver,
-                .registry = if (spec.registry) |r| try allocator.dupe(u8, r) else if (spec.resolver == .path) try allocator.dupe(u8, spec.name) else null,
-            });
+        inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins }) |dependencies| {
+            var dep_it = dependencies.iterator();
+            while (dep_it.next()) |entry| {
+                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
+                defer spec.deinit(allocator);
 
+                try targets.append(allocator, .{
+                    .name = try allocator.dupe(u8, if (spec.resolver == .rocks) spec.name else entry.key_ptr.*),
+                    .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
+                    .resolver = spec.resolver,
+                    .registry = if (spec.registry) |r| try allocator.dupe(u8, r) else if (spec.resolver == .path) try allocator.dupe(u8, spec.name) else null,
+                });
+            }
         }
 
 
@@ -458,13 +473,14 @@ pub const SyncCommand = struct {
                 }
                 return err;
             };
-            var dep_fallback_it = mt.dependencies.libs.iterator();
+            inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins }) |dependencies| {
+            var dep_fallback_it = dependencies.iterator();
             while (dep_fallback_it.next()) |entry| {
                 const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
                 defer spec.deinit(allocator);
 
                 const force_direct = spec.resolver != null or spec.registry != null;
-                if (solution.contains(entry.key_ptr.*) and !force_direct) continue;
+                if (solutionContainsPackage(&solution, entry.key_ptr.*) and !force_direct) continue;
 
                 var direct_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
                 var direct_kinds_len: usize = 0;
@@ -536,18 +552,19 @@ pub const SyncCommand = struct {
                 }
                 var resolved_direct = resolved_direct_opt orelse {
                     if (spec.resolver) |resolver_kind| switch (resolver_kind) {
-                        .path, .link, .artifact => if (solution.contains(entry.key_ptr.*)) continue,
+                        .path, .link, .artifact => if (solutionContainsPackage(&solution, entry.key_ptr.*)) continue,
                         else => {},
                     };
                     return error.PackageNotFound;
                 };
                 errdefer resolved_direct.deinit(allocator);
 
-                if (solution.fetchSwapRemove(entry.key_ptr.*)) |old| {
+                if (solutionFetchSwapRemovePackage(&solution, entry.key_ptr.*)) |old| {
                     allocator.free(old.key);
                     old.value.deinit(allocator);
                 }
                 try solution.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), resolved_direct);
+            }
             }
 
             report.requested_targets = targets.items.len;
