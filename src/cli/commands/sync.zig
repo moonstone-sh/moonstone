@@ -134,6 +134,11 @@ pub const SyncCommand = struct {
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, mt_content);
         defer mt.deinit(allocator);
 
+        if (mt.runtimeName().len == 0) {
+            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [runtime]. Run `moon use lua@5.4` or `moon use luajit@2.1` to select one." } };
+            return error.MissingRuntime;
+        }
+
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
         defer { var p = paths; p.deinit(allocator); }
 

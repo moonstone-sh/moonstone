@@ -606,7 +606,9 @@ pub const RemotePackageDescriptor = struct {
             .source = null,
         };
 
-        const p_val = table.get("package").?.table;
+        const package_val = table.get("package") orelse return error.MissingPackageSection;
+        if (package_val != .table) return error.InvalidPackageSection;
+        const p_val = package_val.table;
         self.package = .{
             .name = try allocator.dupe(u8, p_val.get("name").?.string),
             .version = try allocator.dupe(u8, p_val.get("version").?.string),
@@ -917,20 +919,43 @@ pub const MoonstoneToml = struct {
         const table = res.value;
 
         var self: MoonstoneToml = undefined;
-        const p_val = table.get("package").?.table;
-        const r_val = table.get("runtime").?.table;
+        const package_val = table.get("package") orelse return error.MissingPackageSection;
+        if (package_val != .table) return error.InvalidPackageSection;
+        const p_val = package_val.table;
+        const r_val = if (table.get("runtime")) |runtime_val| blk: {
+            if (runtime_val != .table) return error.InvalidRuntimeSection;
+            break :blk runtime_val.table;
+        } else null;
 
+        const package_name = p_val.get("name") orelse return error.MissingPackageName;
+        if (package_name != .string) return error.InvalidPackageName;
+        const package_version = p_val.get("version") orelse return error.MissingPackageVersion;
+        if (package_version != .string) return error.InvalidPackageVersion;
+        const package_kind = p_val.get("kind") orelse return error.MissingPackageKind;
+        if (package_kind != .string) return error.InvalidPackageKind;
         self.package = .{
-            .name = try allocator.dupe(u8, p_val.get("name").?.string),
-            .version = try allocator.dupe(u8, p_val.get("version").?.string),
-            .kind = Kind.from_string(p_val.get("kind").?.string) catch .lib,
+            .name = try allocator.dupe(u8, package_name.string),
+            .version = try allocator.dupe(u8, package_version.string),
+            .kind = Kind.from_string(package_kind.string) catch .lib,
         };
-        const runtime_name = if (r_val.get("name")) |n| n.string else "lua";
-        const runtime_version = if (r_val.get("version")) |v| v.string else "5.4";
-        const runtime_abi = if (r_val.get("abi")) |a|
-            try allocator.dupe(u8, a.string)
+        const runtime_name = if (r_val) |runtime| blk: {
+            const value = runtime.get("name") orelse break :blk "lua";
+            if (value != .string) return error.InvalidRuntimeName;
+            break :blk value.string;
+        } else "";
+        const runtime_version = if (r_val) |runtime| blk: {
+            const value = runtime.get("version") orelse break :blk "5.4";
+            if (value != .string) return error.InvalidRuntimeVersion;
+            break :blk value.string;
+        } else "";
+        const runtime_abi = if (r_val) |runtime|
+            if (runtime.get("abi")) |a| blk: {
+                if (a != .string) return error.InvalidRuntimeAbi;
+                break :blk try allocator.dupe(u8, a.string);
+            } else
+                try inferRuntimeAbi(allocator, runtime_name, runtime_version)
         else
-            try inferRuntimeAbi(allocator, runtime_name, runtime_version);
+            try allocator.dupe(u8, "");
 
         self.runtime = .{
             .name = try allocator.dupe(u8, runtime_name),
@@ -955,7 +980,7 @@ pub const MoonstoneToml = struct {
         }
         
         self.scripts = .{};
-        if (table.get("scripts")) |s_val| {
+        if (table.get("scripts") orelse table.get("commands")) |s_val| {
             if (s_val == .table) {
                 var it = s_val.table.iterator();
                 while (it.next()) |entry| {
@@ -1228,6 +1253,65 @@ pub const Recipe = struct {
         if (self.output_collection_rules) |o| allocator.free(o);
     }
 };
+
+test "MoonstoneToml parse allows missing runtime for moon use repair" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "repairable"
+        \\version = "0.1.0"
+        \\kind = "script"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    try std.testing.expectEqualStrings("", manifest.runtime.name);
+    try std.testing.expectEqualStrings("", manifest.runtime.version);
+    try std.testing.expectEqualStrings("", manifest.runtime.abi);
+}
+
+test "MoonstoneToml parse rejects non-table runtime" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "invalid-runtime"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\runtime = "lua@5.4"
+    ;
+
+    try std.testing.expectError(error.InvalidRuntimeSection, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml parse rejects missing package section" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[runtime]
+        \\name = "lua"
+        \\version = "5.4"
+    ;
+
+    try std.testing.expectError(error.MissingPackageSection, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml parse migrates legacy commands to scripts" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "legacy-commands"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[commands]
+        \\export = "lua src/main.lua"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    try std.testing.expectEqualStrings("lua src/main.lua", manifest.scripts.get("export").?);
+}
 
 
 test "StoreManifest round-trip with dependencies" {

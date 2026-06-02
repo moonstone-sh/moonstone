@@ -159,6 +159,24 @@ pub const CommonError = error{
     AlreadyReported,
 };
 
+fn manifestErrorDetail(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.MissingPackageSection => "moonstone.toml is missing the required [package] section.",
+        error.InvalidPackageSection => "moonstone.toml [package] must be a TOML table.",
+        error.MissingPackageName => "moonstone.toml [package] is missing name.",
+        error.InvalidPackageName => "moonstone.toml [package].name must be a string.",
+        error.MissingPackageVersion => "moonstone.toml [package] is missing version.",
+        error.InvalidPackageVersion => "moonstone.toml [package].version must be a string.",
+        error.MissingPackageKind => "moonstone.toml [package] is missing kind.",
+        error.InvalidPackageKind => "moonstone.toml [package].kind must be a string.",
+        error.InvalidRuntimeSection => "moonstone.toml [runtime] must be a TOML table.",
+        error.InvalidRuntimeName => "moonstone.toml [runtime].name must be a string.",
+        error.InvalidRuntimeVersion => "moonstone.toml [runtime].version must be a string.",
+        error.InvalidRuntimeAbi => "moonstone.toml [runtime].abi must be a string.",
+        else => null,
+    };
+}
+
 pub fn reportError(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -217,6 +235,8 @@ pub fn reportError(
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes." });
             } else if (err == error.SQLiteCorrupt) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it." });
+            } else if (manifestErrorDetail(err)) |error_detail| {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = error_detail });
             } else {
                 try emitter.fail(io, about, value, .{ .error_name = err_name });
             }
@@ -272,6 +292,8 @@ pub fn reportError(
                 try stdout.print("Error: Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes.\n", .{});
             } else if (err == error.SQLiteCorrupt) {
                 try stdout.print("Error: Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it.\n", .{});
+            } else if (manifestErrorDetail(err)) |error_detail| {
+                try stdout.print("Error: {s}\n", .{error_detail});
             } else {
                 try stdout.print("Error: {s} during {s}\n", .{ @errorName(err), about });
             }
