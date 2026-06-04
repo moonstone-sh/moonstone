@@ -236,3 +236,69 @@ fn build_run_env(
         .lua_ver_dot = lua_ver_dot,
     };
 }
+
+
+pub const EnvMode = enum {
+    runtime,
+    dev,
+};
+
+/// Check if a binary in .moonstone/env/bin should be visible for the given mode.
+/// Returns true if allowed (or no lockfile), false if dev-only and mode is runtime.
+pub fn isEnvEntryAllowed(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    project_root: []const u8,
+    entry_name: []const u8,
+    mode: EnvMode,
+) !bool {
+    if (mode == .dev) return true;
+
+    // Runtime mode: check lockfile groups
+    const lock_path = try std.fs.path.join(allocator, &.{ project_root, "moonstone.lock" });
+    defer allocator.free(lock_path);
+
+    var content: ?[]const u8 = null;
+    if (std.Io.Dir.cwd().access(io, lock_path, .{})) |_| {
+        content = try std.Io.Dir.cwd().readFileAlloc(io, lock_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
+    } else |err| {
+        if (err != error.FileNotFound) return err;
+    }
+    defer if (content) |c| allocator.free(c);
+    if (content == null) return true;
+
+    var lf = try @import("../domain/lockfile.zig").LockFile.parse(allocator, content.?);
+    defer lf.deinit();
+
+    // Read symlink target
+    const bin_path = try std.fs.path.join(allocator, &.{ project_root, ".moonstone", "env", "bin", entry_name });
+    defer allocator.free(bin_path);
+
+    const cwd = try std.process.currentPathAlloc(io, allocator);
+    defer allocator.free(cwd);
+    const abs_bin_path = try std.fs.path.resolve(allocator, &.{ cwd, bin_path });
+    defer allocator.free(abs_bin_path);
+
+    var link_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const link_len = std.Io.Dir.readLinkAbsolute(io, abs_bin_path, &link_buf) catch |err| {
+        if (err == error.NotLink) return true;
+        return err;
+    };
+    const target = link_buf[0..link_len];
+
+    // Match lockfile entry by searching for artifact hash in the symlink target path
+    for (lf.packages.items) |pkg| {
+        if (pkg.artifact_hash.len <= 3) continue;
+        const hash_suffix = pkg.artifact_hash[3..]; // strip "b3:" prefix
+        if (std.mem.indexOf(u8, target, hash_suffix) != null) {
+            if (pkg.groups.len == 0) return true; // backward compat
+            for (pkg.groups) |g| {
+                if (std.mem.eql(u8, g, "libs") or std.mem.eql(u8, g, "bins")) return true;
+            }
+            return false;
+        }
+    }
+
+    // Not in lockfile (e.g. runtime), allow
+    return true;
+}

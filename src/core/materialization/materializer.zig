@@ -13,7 +13,7 @@ fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePac
         dependencies.deinit(allocator);
     }
 
-    inline for (.{ .{ &desc.dependencies.libs, manifest.Kind.lib }, .{ &desc.dependencies.bins, manifest.Kind.bin } }) |entry| {
+    inline for (.{ .{ &desc.dependencies.libs, manifest.Kind.lib }, .{ &desc.dependencies.bins, manifest.Kind.bin }, .{ &desc.dependencies.dev_libs, manifest.Kind.lib }, .{ &desc.dependencies.dev_bins, manifest.Kind.bin } }) |entry| {
         var it = entry[0].iterator();
         while (it.next()) |dependency| {
             const spec = try package_spec.parsePackageSpec(allocator, dependency.value_ptr.*);

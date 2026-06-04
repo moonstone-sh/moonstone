@@ -711,6 +711,28 @@ pub const RegistryProvider = struct {
                         .resolver = spec.resolver,
                     });
                 }
+                var dev_lib_it = desc.dependencies.dev_libs.iterator();
+                while (dev_lib_it.next()) |entry| {
+                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
+                    defer spec.deinit(self.allocator);
+                    try terms.append(self.allocator, .{
+                        .name = try arena.dupe(u8, spec.name),
+                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                        .resolver = spec.resolver,
+                    });
+                }
+                var dev_bin_it = desc.dependencies.dev_bins.iterator();
+                while (dev_bin_it.next()) |entry| {
+                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
+                    defer spec.deinit(self.allocator);
+                    try terms.append(self.allocator, .{
+                        .name = try arena.dupe(u8, spec.name),
+                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                        .resolver = spec.resolver,
+                    });
+                }
                 return try terms.toOwnedSlice(self.allocator);
             }
 
@@ -736,7 +758,7 @@ pub const RegistryProvider = struct {
                         }
                     }
 
-                    inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins }) |dependencies| {
+                    inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins, &mt.dependencies.dev_libs, &mt.dependencies.dev_bins }) |dependencies| {
                         var dependency_it = dependencies.iterator();
                         while (dependency_it.next()) |entry| {
                             const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);

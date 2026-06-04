@@ -18,6 +18,7 @@ pub const LockEntry = struct {
     resolver: []const u8 = &.{},
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
+    groups: []const []const u8 = &.{},
 
     pub fn deinit(self: LockEntry, allocator: std.mem.Allocator) void {
         if (self.name.len > 0) allocator.free(self.name);
@@ -32,6 +33,8 @@ pub const LockEntry = struct {
         if (self.source.len > 0) allocator.free(self.source);
         if (self.resolver.len > 0) allocator.free(self.resolver);
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
+        for (self.groups) |g| allocator.free(g);
+        if (self.groups.len > 0) allocator.free(self.groups);
     }
 };
 
@@ -100,6 +103,20 @@ pub const LockFile = struct {
                     .resolver = if (t.get("resolver")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .link_mode = if (t.get("link_mode")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .reproducible = reproducible,
+                    .groups = blk: {
+                        if (t.get("groups")) |g| {
+                            if (g == .array) {
+                                var list = std.ArrayList([]const u8).empty;
+                                for (g.array.items) |item| {
+                                    if (item == .string) {
+                                        try list.append(allocator, try allocator.dupe(u8, item.string));
+                                    }
+                                }
+                                break :blk try list.toOwnedSlice(allocator);
+                            }
+                        }
+                        break :blk &.{};
+                    },
                 });
             }
         }

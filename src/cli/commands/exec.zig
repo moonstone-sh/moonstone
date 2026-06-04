@@ -9,7 +9,7 @@ pub const ExecCommand = struct {
 
     positionals: []const []const u8 = &.{},
     prod: bool = false,
-    dev: bool = true,
+    dev: bool = false,
     runtime: ?[]const u8 = null,
     target: ?[]const u8 = null,
     json: bool = false,
@@ -102,7 +102,18 @@ pub const ExecCommand = struct {
         
         if (std.Io.Dir.openFileAbsolute(io, bin_exec, .{})) |file| {
             file.close(io);
-            argv[0] = try allocator.dupe(u8, bin_exec);
+            // In runtime mode, verify the binary is not dev-only
+            var allow = true;
+            if (!self.dev) {
+                allow = moonstone.project.run_env.isEnvEntryAllowed(allocator, io, ".", self.positionals[0], .runtime) catch true;
+            }
+            if (allow) {
+                argv[0] = try allocator.dupe(u8, bin_exec);
+            } else {
+                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "'{s}' is a development-only binary. Use 'moon exec --dev {s}' to run it.", .{ self.positionals[0], self.positionals[0] }) } };
+                return error.DevOnlyBinary;
+            }
         } else |err| {
             // If we are trying to run 'lua' or 'luac' and we didn't find them in the bin dir,
             // we should NOT fallback to bare name if we are called from a shim.
@@ -117,11 +128,18 @@ pub const ExecCommand = struct {
             try stdout.flush();
         }
 
-        var term = try std.process.spawn(io, .{
+        var term = std.process.spawn(io, .{
             .argv = argv,
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
+                return error.CommandNotFound;
+            }
+            return err;
+        };
 
         const wait_res = try term.wait(io);
 

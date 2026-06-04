@@ -531,6 +531,7 @@ pub const RemotePackageDescriptor = struct {
         version: []const u8,
         kind: Kind,
         description: ?[]const u8 = null,
+        readme: ?[]const u8 = null,
     },
     compat: struct {
         runtimes: []const []const u8 = &.{},
@@ -538,6 +539,8 @@ pub const RemotePackageDescriptor = struct {
     dependencies: struct {
         libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
         bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+        dev_libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+        dev_bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     } = .{},
     artifact: []const RemoteArtifact = &.{},
     source: ?struct {
@@ -553,6 +556,7 @@ pub const RemotePackageDescriptor = struct {
         res.package.version = try allocator.dupe(u8, self.package.version);
         res.package.kind = self.package.kind;
         res.package.description = if (self.package.description) |d| try allocator.dupe(u8, d) else null;
+        res.package.readme = if (self.package.readme) |r| try allocator.dupe(u8, r) else null;
 
         var rts = std.ArrayList([]const u8).empty;
         for (self.compat.runtimes) |rt| try rts.append(allocator, try allocator.dupe(u8, rt));
@@ -568,6 +572,18 @@ pub const RemotePackageDescriptor = struct {
         var bin_it = self.dependencies.bins.iterator();
         while (bin_it.next()) |entry| {
             try res.dependencies.bins.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
+        }
+
+        res.dependencies.dev_libs = .empty;
+        var dev_lib_it = self.dependencies.dev_libs.iterator();
+        while (dev_lib_it.next()) |entry| {
+            try res.dependencies.dev_libs.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
+        }
+
+        res.dependencies.dev_bins = .empty;
+        var dev_bin_it = self.dependencies.dev_bins.iterator();
+        while (dev_bin_it.next()) |entry| {
+            try res.dependencies.dev_bins.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
         }
 
         var arts = std.ArrayList(RemoteArtifact).empty;
@@ -614,6 +630,7 @@ pub const RemotePackageDescriptor = struct {
             .version = try allocator.dupe(u8, p_val.get("version").?.string),
             .kind = Kind.from_string(p_val.get("kind").?.string) catch .lib,
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
+            .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
         errdefer self.deinit(allocator);
 
@@ -631,6 +648,10 @@ pub const RemotePackageDescriptor = struct {
                         try self.dependencies.libs.put(allocator, try allocator.dupe(u8, name), spec);
                     } else if (std.mem.eql(u8, role, "bin")) {
                         try self.dependencies.bins.put(allocator, try allocator.dupe(u8, name), spec);
+                    } else if (std.mem.eql(u8, role, "dev_lib")) {
+                        try self.dependencies.dev_libs.put(allocator, try allocator.dupe(u8, name), spec);
+                    } else if (std.mem.eql(u8, role, "dev_bin")) {
+                        try self.dependencies.dev_bins.put(allocator, try allocator.dupe(u8, name), spec);
                     } else {
                         allocator.free(spec);
                     }
@@ -726,6 +747,7 @@ pub const RemotePackageDescriptor = struct {
         allocator.free(self.package.name);
         allocator.free(self.package.version);
         if (self.package.description) |d| allocator.free(d);
+        if (self.package.readme) |r| allocator.free(r);
 
         for (self.compat.runtimes) |rt| allocator.free(rt);
         allocator.free(self.compat.runtimes);
