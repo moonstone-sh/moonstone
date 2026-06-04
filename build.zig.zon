@@ -1,6 +1,6 @@
 .{
     .name = .moonstone,
-    .version = "0.1.11",
+    .version = "0.1.12",
     .fingerprint = 0xd2ec605bbb188f80, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

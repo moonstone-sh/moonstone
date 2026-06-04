@@ -913,6 +913,7 @@ pub const MoonstoneToml = struct {
         name: []const u8,
         version: []const u8,
         kind: Kind,
+        description: ?[]const u8 = null,
     },
     runtime: struct {
         name: []const u8,
@@ -963,6 +964,7 @@ pub const MoonstoneToml = struct {
             .name = try allocator.dupe(u8, package_name.string),
             .version = try allocator.dupe(u8, package_version.string),
             .kind = Kind.from_string(package_kind.string) catch .lib,
+            .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
         };
         const runtime_name = if (r_val) |runtime| blk: {
             const value = runtime.get("name") orelse break :blk "lua";
@@ -1050,6 +1052,7 @@ pub const MoonstoneToml = struct {
     pub fn deinit(self: *MoonstoneToml, allocator: std.mem.Allocator) void {
         allocator.free(self.package.name);
         allocator.free(self.package.version);
+        if (self.package.description) |d| allocator.free(d);
         allocator.free(self.runtime.name);
         allocator.free(self.runtime.version);
         allocator.free(self.runtime.abi);
@@ -1090,6 +1093,10 @@ pub const MoonstoneToml = struct {
         try writeTomlString(writer, self.package.version);
         try writer.print("\nkind = ", .{});
         try writeTomlString(writer, @tagName(self.package.kind));
+        if (self.package.description) |d| {
+            try writer.print("\ndescription = ", .{});
+            try writeTomlString(writer, d);
+        }
         try writer.print("\n", .{});
 
         try writer.print("\n[runtime]\n", .{});

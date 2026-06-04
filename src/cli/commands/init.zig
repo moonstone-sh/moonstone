@@ -13,6 +13,7 @@ pub const init_command = struct {
     positionals: []const []const u8 = &.{},
     name: ?[]const u8 = null,
     version: ?[]const u8 = null,
+    description: ?[]const u8 = null,
     kind: ?[]const u8 = null,
     runtime: ?[]const u8 = null,
     template: ?[]const u8 = null,
@@ -36,6 +37,7 @@ pub const init_command = struct {
             \\Flags:
             \\  --name <name>    Project name (default: basename of target directory)
             \\  --version <v>    Initial version (default: 0.1.0)
+            \\  --description <d> Project description
             \\  --kind <kind>    Package kind: script|lib|bin|runtime (default: script)
             \\  --lib            Shortcut for --kind lib
             \\  --bin            Shortcut for --kind bin
@@ -339,6 +341,7 @@ pub const init_command = struct {
             .name = try allocator.dupe(u8, final_name),
             .version = try allocator.dupe(u8, self.version orelse "0.1.0"),
             .kind = pkg_kind,
+            .description = if (self.description) |d| try allocator.dupe(u8, d) else try allocator.dupe(u8, "A new Moonstone Lua project"),
         };
         
         pkg.runtime = .{

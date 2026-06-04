@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
         .root = null,
     };
 
-    const App = router.CommandNode.group("moon", "Moonstone - Deterministic Lua project environments", &.{
+    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management", &.{
         router.CommandNode.from(command_mod.add),
         router.CommandNode.from(command_mod.sync),
         router.CommandNode.from(command_mod.install),
