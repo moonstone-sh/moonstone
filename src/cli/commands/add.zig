@@ -22,7 +22,9 @@ pub const add_command = struct {
     save_tilde: bool = false,
     dry_run: bool = false,
     json: bool = false,
+    role: ?[]const u8 = null,
     dev: bool = false,
+    tool: bool = false,
     bin: bool = false,
     lib: bool = false,
     offline: bool = false,
@@ -37,7 +39,10 @@ pub const add_command = struct {
             \\Add a dependency to the project.
             \\
             \\Flags:
-            \\  --dev            Add as a development dependency
+            \\  --role <role>    Set dependency role (dev, tool, runtime, helper, peer, optional)
+            \\  --dev            Alias for --role dev
+            \\  --tool           Alias for --role tool
+            \\  --optional       Mark dependency as optional
             \\  --bin            Treat as a binary dependency
             \\  --lib            Treat as a library dependency
             \\  --save-exact     Save exact version (e.g. 1.2.3)
@@ -516,7 +521,19 @@ pub const add_command = struct {
                     if (self.lib) break :blk moonstone.domain.manifest.Kind.lib;
                     break :blk resolved.kind;
                 };
-                try mt.add_dependency(allocator, pkg_name, final_ver, self.dev, effective_kind);
+                const target_role: moonstone.domain.manifest.DependencyRole = blk: {
+                    if (self.role) |r| {
+                        break :blk moonstone.domain.manifest.DependencyRole.fromString(r) orelse {
+                            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Unknown role '{s}'. Valid roles: dev, tool, runtime, helper, peer, optional.", .{r}) } };
+                            return error.InvalidArgument;
+                        };
+                    }
+                    if (self.dev) break :blk .dev;
+                    if (self.tool) break :blk .tool;
+                    break :blk .runtime;
+                };
+                try mt.add_dependency(allocator, pkg_name, final_ver, target_role, false);
+                _ = effective_kind;
                 try added_list.append(allocator, try allocator.dupe(u8, pkg_name));
             }
 

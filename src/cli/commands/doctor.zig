@@ -369,7 +369,7 @@ pub const DoctorCommand = struct {
                         if (moonstone.domain.manifest.MoonstoneToml.parse(allocator, mc)) |parsed_mt| {
                             var mt = parsed_mt;
                             defer mt.deinit(allocator);
-                            const missing_deps = try countMissingLockedDeps(allocator, &mt, &lf);
+                            const missing_deps = countMissingLockedDeps(&mt, &lf);
                             if (missing_deps > 0) {
                                 lockfile_sync_ok = false;
                                 const suffix = if (missing_deps == 1) "y" else "ies";
@@ -513,29 +513,13 @@ pub const DoctorCommand = struct {
         }
     }
 
-    fn countMissingLockedDeps(allocator: std.mem.Allocator, mt: *moonstone.domain.manifest.MoonstoneToml, lf: *moonstone.domain.lockfile.LockFile) !usize {
+    fn countMissingLockedDeps(mt: *moonstone.domain.manifest.MoonstoneToml, lf: *moonstone.domain.lockfile.LockFile) usize {
         var missing: usize = 0;
-        missing += try countMissingLockedDepsInMap(allocator, &mt.dependencies.libs, lf);
-        missing += try countMissingLockedDepsInMap(allocator, &mt.dependencies.bins, lf);
-        missing += try countMissingLockedDepsInMap(allocator, &mt.dependencies.dev_libs, lf);
-        missing += try countMissingLockedDepsInMap(allocator, &mt.dependencies.dev_bins, lf);
-        return missing;
-    }
-
-    fn countMissingLockedDepsInMap(
-        allocator: std.mem.Allocator,
-        deps: *std.StringArrayHashMapUnmanaged([]const u8),
-        lf: *moonstone.domain.lockfile.LockFile,
-    ) !usize {
-        var missing: usize = 0;
-        var it = deps.iterator();
-        while (it.next()) |entry| {
-            const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-            defer spec.deinit(allocator);
-            if (spec.resolver) |resolver| {
-                if (resolver == .link or resolver == .path or resolver == .artifact) continue;
+        for (mt.dependencies.items) |dep| {
+            if (dep.resolver) |r| {
+                if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
             }
-            if (lf.find(entry.key_ptr.*) == null) missing += 1;
+            if (lf.find(dep.name) == null) missing += 1;
         }
         return missing;
     }

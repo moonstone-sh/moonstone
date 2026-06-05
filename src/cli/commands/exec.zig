@@ -2,6 +2,7 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
+const toml = @import("toml");
 
 pub const ExecCommand = struct {
     pub const name = "exec";
@@ -64,17 +65,87 @@ pub const ExecCommand = struct {
         defer allocator.free(depth_val);
         try run_env.env_map.put("MOONSTONE_EXEC_DEPTH", depth_val);
 
+        // Check for isolated runtime env metadata for this binary
+        const bin_runtime_env_path = try std.fs.path.join(allocator, &.{ ".moonstone", "env", "bin-runtime", self.positionals[0], "env.toml" });
+        defer allocator.free(bin_runtime_env_path);
+
+        if (std.Io.Dir.cwd().access(io, bin_runtime_env_path, .{})) |_| {
+            const env_content = try std.Io.Dir.cwd().readFileAlloc(io, bin_runtime_env_path, allocator, std.Io.Limit.limited(1024 * 1024));
+            defer allocator.free(env_content);
+
+            var parser = toml.Parser(toml.Table).init(allocator);
+            defer parser.deinit();
+            var res = try parser.parseString(env_content);
+            defer res.deinit();
+
+            if (res.value.get("env")) |env_val| {
+                const env_table = env_val.table;
+
+                if (env_table.get("path_prepend")) |pp| {
+                    for (pp.array.items) |item| {
+                        const path_to_prepend = item.string;
+                        const old_path = run_env.env_map.get("PATH") orelse "";
+                        const new_path = if (old_path.len > 0)
+                            try std.fmt.allocPrint(allocator, "{s}:{s}", .{ path_to_prepend, old_path })
+                        else
+                            try allocator.dupe(u8, path_to_prepend);
+                        defer allocator.free(new_path);
+                        try run_env.env_map.put("PATH", new_path);
+                    }
+                }
+
+                if (env_table.get("lua_path")) |lp| {
+                    var lua_path_list = std.ArrayList(u8).empty;
+                    defer lua_path_list.deinit(allocator);
+                    for (lp.array.items, 0..) |item, i| {
+                        if (i > 0) try lua_path_list.appendSlice(allocator, ";");
+                        try lua_path_list.appendSlice(allocator, item.string);
+                    }
+                    // Prepend to existing project LUA_PATH
+                    if (run_env.env_map.get("LUA_PATH")) |old_lp| {
+                        if (old_lp.len > 0) {
+                            try lua_path_list.appendSlice(allocator, ";");
+                            try lua_path_list.appendSlice(allocator, old_lp);
+                        }
+                    }
+                    try lua_path_list.appendSlice(allocator, ";;");
+                    try run_env.env_map.put("LUA_PATH", lua_path_list.items);
+                }
+
+                if (env_table.get("lua_cpath")) |lp| {
+                    var lua_cpath_list = std.ArrayList(u8).empty;
+                    defer lua_cpath_list.deinit(allocator);
+                    for (lp.array.items, 0..) |item, i| {
+                        if (i > 0) try lua_cpath_list.appendSlice(allocator, ";");
+                        try lua_cpath_list.appendSlice(allocator, item.string);
+                    }
+                    // Prepend to existing project LUA_CPATH
+                    if (run_env.env_map.get("LUA_CPATH")) |old_lp| {
+                        if (old_lp.len > 0) {
+                            try lua_cpath_list.appendSlice(allocator, ";");
+                            try lua_cpath_list.appendSlice(allocator, old_lp);
+                        }
+                    }
+                    try lua_cpath_list.appendSlice(allocator, ";;");
+                    try run_env.env_map.put("LUA_CPATH", lua_cpath_list.items);
+                }
+            }
+        } else |_| {}
+
         // Filter out shims directory from PATH to avoid looping back to them if absolute resolution fails
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
-        
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
+
         const real_shims = std.Io.Dir.cwd().realPathFileAlloc(io, paths.shims, allocator) catch try allocator.dupe(u8, paths.shims);
         defer allocator.free(real_shims);
 
         if (run_env.env_map.get("PATH")) |path_val| {
             var new_path = std.ArrayList(u8).empty;
             defer new_path.deinit(allocator);
-            
+
             var it = std.mem.splitScalar(u8, path_val, ':');
             var first = true;
             while (it.next()) |p| {
@@ -99,7 +170,7 @@ pub const ExecCommand = struct {
         // Try to resolve executable in environment's bin directory first
         const bin_exec = try std.fs.path.join(allocator, &.{ run_env.bin_path, self.positionals[0] });
         defer allocator.free(bin_exec);
-        
+
         if (std.Io.Dir.openFileAbsolute(io, bin_exec, .{})) |file| {
             file.close(io);
             // In runtime mode, verify the binary is not dev-only

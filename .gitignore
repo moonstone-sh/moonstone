@@ -31,10 +31,8 @@ cmake_install.cmake
 install_manifest.txt
 Makefile
 
-# --- Python / Testing Suite ---
-testing-suite/.venv/
+# --- Python / Release Tooling ---
 release-tools/.venv/
-testing-suite/cache/
 __pycache__/
 *.py[cod]
 *$py.class

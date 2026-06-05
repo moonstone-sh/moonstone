@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{
                     .{ .name = "moonstone", .module = mod },
                     .{ .name = "build_options", .module = build_options_mod },
+                    .{ .name = "toml", .module = toml.module("toml") },
                 },
             }),
         });
@@ -149,6 +150,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "moonstone", .module = native_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "toml", .module = native_toml.module("toml") },
             },
         }),
     });

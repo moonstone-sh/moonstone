@@ -13,18 +13,14 @@ fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePac
         dependencies.deinit(allocator);
     }
 
-    inline for (.{ .{ &desc.dependencies.libs, manifest.Kind.lib }, .{ &desc.dependencies.bins, manifest.Kind.bin }, .{ &desc.dependencies.dev_libs, manifest.Kind.lib }, .{ &desc.dependencies.dev_bins, manifest.Kind.bin } }) |entry| {
-        var it = entry[0].iterator();
-        while (it.next()) |dependency| {
-            const spec = try package_spec.parsePackageSpec(allocator, dependency.value_ptr.*);
-            defer spec.deinit(allocator);
-            try dependencies.append(allocator, .{
-                .name = try allocator.dupe(u8, spec.name),
-                .constraint = try allocator.dupe(u8, spec.constraint orelse "*"),
-                .resolver = if (spec.resolver) |kind| try allocator.dupe(u8, kind.asString()) else null,
-                .kind = entry[1],
-            });
-        }
+    for (desc.dependencies) |dep| {
+        try dependencies.append(allocator, .{
+            .name = try allocator.dupe(u8, dep.name),
+            .constraint = try allocator.dupe(u8, dep.constraint),
+            .resolver = if (dep.resolver) |r| try allocator.dupe(u8, r) else null,
+            .role = dep.role,
+            .optional = dep.optional,
+        });
     }
 
     return try dependencies.toOwnedSlice(allocator);
@@ -49,16 +45,16 @@ pub const Materializer = struct {
     on_event_context: ?*anyopaque = null,
 
     pub fn materialize_remote(
-        self: *Materializer, 
+        self: *Materializer,
         registry_url: []const u8,
         token: ?[]const u8,
         descriptor_path: []const u8,
-        desc: manifest.RemotePackageDescriptor, 
+        desc: manifest.RemotePackageDescriptor,
         artifact_idx: usize,
     ) !MaterializeResult {
         const art = desc.artifact[artifact_idx];
         const is_source = std.mem.eql(u8, art.kind, "source");
-        
+
         var client = registry.RegistryClient.init(self.allocator, self.io, registry_url, token, self.environ_map);
         client.on_event = self.on_event;
         client.on_event_context = self.on_event_context;
@@ -79,18 +75,20 @@ pub const Materializer = struct {
 
         if (art.hash.len > 0) {
             if (!std.mem.eql(u8, actual_hash, art.hash)) {
-
                 return error.HashMismatch;
             }
         }
 
         // 3. Setup tmp path and unpack
         const paths = try fs.resolve_moonstone(self.allocator, self.environ_map, self.io);
-        defer { var p = paths; p.deinit(self.allocator); }
+        defer {
+            var p = paths;
+            p.deinit(self.allocator);
+        }
 
         const tmp_dir_name = try std.fmt.allocPrint(self.allocator, "unpack-{s}", .{actual_hash[3..15]});
         defer self.allocator.free(tmp_dir_name);
-        
+
         const tmp_path = try std.fs.path.join(self.allocator, &.{ paths.tmp, tmp_dir_name });
         defer self.allocator.free(tmp_path);
 
@@ -102,7 +100,7 @@ pub const Materializer = struct {
         if (self.runtime_path == null and desc.package.kind == .runtime) {
             self.runtime_path = tmp_path;
         }
-        
+
         // Write blob to tmp for unpacking
         if (!std.mem.eql(u8, art.format, "tar.gz") and !std.mem.eql(u8, art.format, "tar.zst") and !std.mem.eql(u8, art.format, "zip")) return error.UnsupportedArchiveFormat;
         const blob_name = try std.fmt.allocPrint(self.allocator, "blob.{s}", .{art.format});

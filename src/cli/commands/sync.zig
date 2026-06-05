@@ -18,6 +18,37 @@ fn solutionFetchSwapRemovePackage(solution: *std.StringArrayHashMapUnmanaged(moo
     }
     return null;
 }
+fn projectedArtifactFromPkg(
+    allocator: std.mem.Allocator,
+    mt: *const moonstone.domain.manifest.MoonstoneToml,
+    pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
+    art_path: ?[]const u8,
+    artifact_hash: []const u8,
+    role: moonstone.domain.manifest.DependencyRole,
+) !moonstone.project.linker.ProjectedArtifact {
+    var constraint: []const u8 = &.{};
+    var resolver: ?[]const u8 = null;
+    for (mt.dependencies.items) |dep| {
+        if (std.mem.eql(u8, dep.name, pkg.name)) {
+            constraint = try allocator.dupe(u8, dep.constraint);
+            if (dep.resolver) |r| resolver = try allocator.dupe(u8, r);
+            break;
+        }
+    }
+    const pa_path = if (art_path) |p| try allocator.dupe(u8, p) else null;
+    return .{
+        .name = try allocator.dupe(u8, pkg.name),
+        .version = try allocator.dupe(u8, pkg.version),
+        .constraint = constraint,
+        .resolver = resolver,
+        .role = role,
+        .artifact_hash = try allocator.dupe(u8, artifact_hash),
+        .lua_abi = if (pkg.lua_abi) |abi| try allocator.dupe(u8, abi) else null,
+        .lua_api = if (pkg.lua_api) |api| try allocator.dupe(u8, api) else null,
+        .target = try allocator.dupe(u8, "native"),
+        .path = pa_path,
+    };
+}
 
 const SyncReport = struct {
     requested_targets: usize = 0,
@@ -154,14 +185,17 @@ pub const SyncCommand = struct {
         }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
         defer allocator.free(index_db_path);
         const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
         defer allocator.free(index_db_path_z);
-        
+
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
@@ -175,10 +209,7 @@ pub const SyncCommand = struct {
             var locked_preflight = try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
             defer locked_preflight.deinit();
 
-            if (!try lockedDependenciesMatch(allocator, &mt.dependencies.libs, &locked_preflight)) return error.LockfileOutOfSync;
-            if (!try lockedDependenciesMatch(allocator, &mt.dependencies.bins, &locked_preflight)) return error.LockfileOutOfSync;
-            if (!try lockedDependenciesMatch(allocator, &mt.dependencies.dev_libs, &locked_preflight)) return error.LockfileOutOfSync;
-            if (!try lockedDependenciesMatch(allocator, &mt.dependencies.dev_bins, &locked_preflight)) return error.LockfileOutOfSync;
+            if (!lockedDependenciesMatch(mt.dependencies.items, &locked_preflight)) return error.LockfileOutOfSync;
         }
 
         if (self.check) {
@@ -198,7 +229,6 @@ pub const SyncCommand = struct {
         const resolve_started_ns = nowNs(io);
         const pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName());
         const pkg_ver = mt.runtimeConstraint();
-
 
         var coordinator = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
         var rt_res = try coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
@@ -254,7 +284,7 @@ pub const SyncCommand = struct {
                 else => {},
             },
         }
-        
+
         mat.runtime_path = rt_mat_res.path;
 
         const rt_recipe_options = moonstone.store.facade.RecipeOptions{
@@ -289,21 +319,20 @@ pub const SyncCommand = struct {
         });
 
         // Add explicit dependencies
-        inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins, &mt.dependencies.dev_libs, &mt.dependencies.dev_bins }) |dependencies| {
-            var dep_it = dependencies.iterator();
-            while (dep_it.next()) |entry| {
-                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-                defer spec.deinit(allocator);
+        for (mt.dependencies.items) |dep| {
+            const raw_spec = try dep.toSpecString(allocator);
+            defer allocator.free(raw_spec);
+            const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
+            defer spec.deinit(allocator);
 
-                try targets.append(allocator, .{
-                    .name = try allocator.dupe(u8, if (spec.resolver == .rocks) spec.name else entry.key_ptr.*),
-                    .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
-                    .resolver = spec.resolver,
-                    .registry = if (spec.registry) |r| try allocator.dupe(u8, r) else if (spec.resolver == .path) try allocator.dupe(u8, spec.name) else null,
-                });
-            }
+            try targets.append(allocator, .{
+                .name = try allocator.dupe(u8, if (spec.resolver == .rocks) spec.name else dep.name),
+                .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
+                .resolver = spec.resolver,
+                .registry = if (spec.registry) |r| try allocator.dupe(u8, r) else if (spec.resolver == .path) try allocator.dupe(u8, spec.name) else null,
+                .role = dep.role,
+            });
         }
-
 
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
         provider_impl.init(allocator, io, idx, registries, .{
@@ -473,14 +502,16 @@ pub const SyncCommand = struct {
                 }
                 return err;
             };
-            inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins, &mt.dependencies.dev_libs, &mt.dependencies.dev_bins }) |dependencies| {
-            var dep_fallback_it = dependencies.iterator();
-            while (dep_fallback_it.next()) |entry| {
-                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
+            for (mt.dependencies.items) |dep| {
+                const raw_spec = try dep.toSpecString(allocator);
+                defer allocator.free(raw_spec);
+                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                 defer spec.deinit(allocator);
 
+                const dep_name = if (spec.resolver == .rocks) spec.name else dep.name;
+
                 const force_direct = spec.resolver != null or spec.registry != null;
-                if (solutionContainsPackage(&solution, entry.key_ptr.*) and !force_direct) continue;
+                if (solutionContainsPackage(&solution, dep_name) and !force_direct) continue;
 
                 var direct_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
                 var direct_kinds_len: usize = 0;
@@ -500,8 +531,8 @@ pub const SyncCommand = struct {
                 var resolved_direct_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
                 const resolver_query_name = if (spec.resolver) |resolver_kind| switch (resolver_kind) {
                     .path, .link, .artifact => spec.name,
-                    else => entry.key_ptr.*,
-                } else entry.key_ptr.*;
+                    else => dep_name,
+                } else dep_name;
                 for (direct_kinds_buf[0..direct_kinds_len]) |kind| {
                     resolved_direct_opt = coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
                         .offline = self.offline,
@@ -520,7 +551,7 @@ pub const SyncCommand = struct {
                     if (spec.registry) |registry_name| {
                         for (registries) |reg| {
                             if (!std.mem.eql(u8, reg.name, registry_name)) continue;
-                            const remote = coordinator.resolve_remote(entry.key_ptr.*, spec.constraint orelse "*", reg.url, reg.token, .{
+                            const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
                                 .offline = self.offline,
                                 .runtime = active_lua_abi,
                                 .runtime_artifact_hash = rt_res.artifact_hash,
@@ -529,7 +560,7 @@ pub const SyncCommand = struct {
                                 .on_event_context = &resolve_cb_ctx,
                             }, env) catch continue;
                             resolved_direct_opt = .{
-                                .name = try allocator.dupe(u8, entry.key_ptr.*),
+                                .name = try allocator.dupe(u8, dep_name),
                                 .version = try allocator.dupe(u8, remote.desc.package.version),
                                 .kind = remote.desc.package.kind,
                                 .artifact_hash = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].hash),
@@ -552,19 +583,18 @@ pub const SyncCommand = struct {
                 }
                 var resolved_direct = resolved_direct_opt orelse {
                     if (spec.resolver) |resolver_kind| switch (resolver_kind) {
-                        .path, .link, .artifact => if (solutionContainsPackage(&solution, entry.key_ptr.*)) continue,
+                        .path, .link, .artifact => if (solutionContainsPackage(&solution, dep_name)) continue,
                         else => {},
                     };
                     return error.PackageNotFound;
                 };
                 errdefer resolved_direct.deinit(allocator);
 
-                if (solutionFetchSwapRemovePackage(&solution, entry.key_ptr.*)) |old| {
+                if (solutionFetchSwapRemovePackage(&solution, dep_name)) |old| {
                     allocator.free(old.key);
                     old.value.deinit(allocator);
                 }
-                try solution.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), resolved_direct);
-            }
+                try solution.put(allocator, try allocator.dupe(u8, dep_name), resolved_direct);
             }
 
             report.requested_targets = targets.items.len;
@@ -590,15 +620,15 @@ pub const SyncCommand = struct {
         }
 
         // Compute dependency groups for each resolved package
-        var package_groups = std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)).empty;
+        var package_roles = std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)).empty;
         defer {
-            var git = package_groups.iterator();
+            var git = package_roles.iterator();
             while (git.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
                 for (entry.value_ptr.items) |g| allocator.free(g);
                 entry.value_ptr.deinit(allocator);
             }
-            package_groups.deinit(allocator);
+            package_roles.deinit(allocator);
         }
 
         const GroupCtx = struct {
@@ -618,25 +648,17 @@ pub const SyncCommand = struct {
             }
         };
 
-        var group_ctx = GroupCtx{ .allocator = allocator, .groups = &package_groups };
+        var group_ctx = GroupCtx{ .allocator = allocator, .groups = &package_roles };
 
         // Step 1: Mark direct root dependencies
-        const root_groups = .{
-            .{ "libs", &mt.dependencies.libs },
-            .{ "bins", &mt.dependencies.bins },
-            .{ "dev_libs", &mt.dependencies.dev_libs },
-            .{ "dev_bins", &mt.dependencies.dev_bins },
-        };
-        inline for (root_groups) |rg| {
-            const group_name = rg[0];
-            const deps = rg[1];
-            var it = deps.iterator();
-            while (it.next()) |entry| {
-                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-                defer spec.deinit(allocator);
-                const dep_pkg_name = if (spec.resolver == .rocks) spec.name else entry.key_ptr.*;
-                try group_ctx.addGroup(dep_pkg_name, group_name);
-            }
+        for (mt.dependencies.items) |dep| {
+            const raw_spec = try dep.toSpecString(allocator);
+            defer allocator.free(raw_spec);
+            const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
+            defer spec.deinit(allocator);
+            const dep_pkg_name = if (spec.resolver == .rocks) spec.name else dep.name;
+            const group_name = @tagName(dep.role);
+            try group_ctx.addGroup(dep_pkg_name, group_name);
         }
 
         // Step 2: Build dependency graph from resolved packages
@@ -665,14 +687,10 @@ pub const SyncCommand = struct {
                     }
 
                     if (pkg.remote_desc) |desc| {
-                        var lit = desc.dependencies.libs.iterator();
-                        while (lit.next()) |e| try deps.append(allocator, try allocator.dupe(u8, e.key_ptr.*));
-                        var bit = desc.dependencies.bins.iterator();
-                        while (bit.next()) |e| try deps.append(allocator, try allocator.dupe(u8, e.key_ptr.*));
-                        var dlit = desc.dependencies.dev_libs.iterator();
-                        while (dlit.next()) |e| try deps.append(allocator, try allocator.dupe(u8, e.key_ptr.*));
-                        var dbit = desc.dependencies.dev_bins.iterator();
-                        while (dbit.next()) |e| try deps.append(allocator, try allocator.dupe(u8, e.key_ptr.*));
+                        for (desc.dependencies) |dep| {
+                            const dep_name = dep.name;
+                            try deps.append(allocator, try allocator.dupe(u8, dep_name));
+                        }
                     } else if (pkg.local_path) |lp| {
                         if (std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path")) {
                             const manifest_path = try std.fs.path.join(allocator, &.{ lp, "moonstone.toml" });
@@ -687,14 +705,13 @@ pub const SyncCommand = struct {
                                 defer allocator.free(c);
                                 var lmt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, c);
                                 defer lmt.deinit(allocator);
-                                inline for (.{ &lmt.dependencies.libs, &lmt.dependencies.bins, &lmt.dependencies.dev_libs, &lmt.dependencies.dev_bins }) |dep_map| {
-                                    var dit2 = dep_map.iterator();
-                                    while (dit2.next()) |e| {
-                                        const dspec = try moonstone.domain.package_spec.parsePackageSpec(allocator, e.value_ptr.*);
-                                        defer dspec.deinit(allocator);
-                                        const dname = if (dspec.resolver == .rocks) dspec.name else e.key_ptr.*;
-                                        try deps.append(allocator, try allocator.dupe(u8, dname));
-                                    }
+                                for (lmt.dependencies.items) |dep| {
+                                    const raw_spec = try dep.toSpecString(allocator);
+                                    defer allocator.free(raw_spec);
+                                    const dspec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
+                                    defer dspec.deinit(allocator);
+                                    const dname = if (dspec.resolver == .rocks) dspec.name else dep.name;
+                                    try deps.append(allocator, try allocator.dupe(u8, dname));
                                 }
                             }
                         } else {
@@ -738,7 +755,7 @@ pub const SyncCommand = struct {
                 queue.deinit(allocator);
             }
 
-            var rgit = package_groups.iterator();
+            var rgit = package_roles.iterator();
             while (rgit.next()) |entry| {
                 for (entry.value_ptr.items) |g| {
                     try queue.append(allocator, .{
@@ -797,10 +814,20 @@ pub const SyncCommand = struct {
             live_links.deinit(allocator);
         }
 
-        var artifact_hashes = std.ArrayList([]const u8).empty;
+        var projected_artifacts = std.ArrayList(moonstone.project.linker.ProjectedArtifact).empty;
         defer {
-            for (artifact_hashes.items) |h| allocator.free(h);
-            artifact_hashes.deinit(allocator);
+            for (projected_artifacts.items) |pa| {
+                allocator.free(pa.name);
+                allocator.free(pa.version);
+                allocator.free(pa.constraint);
+                if (pa.resolver) |r| allocator.free(r);
+                allocator.free(pa.artifact_hash);
+                if (pa.lua_abi) |a| allocator.free(a);
+                if (pa.lua_api) |a| allocator.free(a);
+                if (pa.target) |t| allocator.free(t);
+                if (pa.path) |p| allocator.free(p);
+            }
+            projected_artifacts.deinit(allocator);
         }
 
         const is_rt_live = std.mem.eql(u8, rt_mat_res.artifact_hash, "link") or std.mem.eql(u8, rt_mat_res.artifact_hash, "path");
@@ -814,7 +841,7 @@ pub const SyncCommand = struct {
                 .pkg_kind = .runtime,
             });
         } else {
-            try artifact_hashes.append(allocator, try allocator.dupe(u8, rt_mat_res.artifact_hash));
+            try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &rt_res, rt_mat_res.path, rt_mat_res.artifact_hash, .runtime));
         }
 
         var next_lock = moonstone.domain.lockfile.LockFile.init(allocator);
@@ -852,14 +879,14 @@ pub const SyncCommand = struct {
                         if (!std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) return error.LockfileOutOfSync;
                     } else {
                         const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
-                        var entry_groups = std.ArrayList([]const u8).empty;
+                        var entry_roles = std.ArrayList([]const u8).empty;
                         defer {
-                            for (entry_groups.items) |g| allocator.free(g);
-                            entry_groups.deinit(allocator);
+                            for (entry_roles.items) |g| allocator.free(g);
+                            entry_roles.deinit(allocator);
                         }
-                        if (package_groups.get(pkg.name)) |glist| {
+                        if (package_roles.get(pkg.name)) |glist| {
                             for (glist.items) |g| {
-                                try entry_groups.append(allocator, try allocator.dupe(u8, g));
+                                try entry_roles.append(allocator, try allocator.dupe(u8, g));
                             }
                         }
                         try next_lock.packages.append(allocator, .{
@@ -881,10 +908,17 @@ pub const SyncCommand = struct {
                                 else => "store",
                             }),
                             .source = if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
-                            .groups = try entry_groups.toOwnedSlice(allocator),
+                            .roles = try entry_roles.toOwnedSlice(allocator),
                         });
                     }
-                    try artifact_hashes.append(allocator, try allocator.dupe(u8, pkg.artifact_hash));
+                    if (package_roles.get(pkg.name)) |glist| {
+                        for (glist.items) |g| {
+                            const role = moonstone.domain.manifest.DependencyRole.fromString(g) orelse .runtime;
+                            try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, pkg.local_path, pkg.artifact_hash, role));
+                        }
+                    } else {
+                        try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, pkg.local_path, pkg.artifact_hash, .runtime));
+                    }
                     report.store_hits += 1;
                     continue;
                 }
@@ -926,14 +960,14 @@ pub const SyncCommand = struct {
                 if (!std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) return error.LockfileOutOfSync;
             } else if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
                 const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
-                var entry_groups = std.ArrayList([]const u8).empty;
+                var entry_roles = std.ArrayList([]const u8).empty;
                 defer {
-                    for (entry_groups.items) |g| allocator.free(g);
-                    entry_groups.deinit(allocator);
+                    for (entry_roles.items) |g| allocator.free(g);
+                    entry_roles.deinit(allocator);
                 }
-                if (package_groups.get(pkg.name)) |glist| {
+                if (package_roles.get(pkg.name)) |glist| {
                     for (glist.items) |g| {
-                        try entry_groups.append(allocator, try allocator.dupe(u8, g));
+                        try entry_roles.append(allocator, try allocator.dupe(u8, g));
                     }
                 }
                 try next_lock.packages.append(allocator, .{
@@ -955,11 +989,18 @@ pub const SyncCommand = struct {
                         else => "store",
                     }),
                     .source = if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
-                    .groups = try entry_groups.toOwnedSlice(allocator),
+                    .roles = try entry_roles.toOwnedSlice(allocator),
                 });
             }
             if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
-                try artifact_hashes.append(allocator, try allocator.dupe(u8, m_res.artifact_hash));
+                if (package_roles.get(pkg.name)) |glist| {
+                    for (glist.items) |g| {
+                        const role = moonstone.domain.manifest.DependencyRole.fromString(g) orelse .runtime;
+                        try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, m_res.path, m_res.artifact_hash, role));
+                    }
+                } else {
+                    try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, m_res.path, m_res.artifact_hash, .runtime));
+                }
             }
         }
         report.materialize_ms = elapsedMs(io, materialize_started_ns);
@@ -983,15 +1024,15 @@ pub const SyncCommand = struct {
             try lock_file.writeStreamingAll(io, aw.written());
         }
 
-        // 4. Link environment
+        // 5. Link environment
         const link_started_ns = nowNs(io);
         if (emitter) |e| {
-            try e.emit(io, .STATUS, name, "env.link.begin", .{ .artifacts = artifact_hashes.items.len, .links = live_links.items.len });
+            try e.emit(io, .STATUS, name, "env.link.begin", .{ .artifacts = projected_artifacts.items.len, .links = live_links.items.len });
         } else {
             try stdout.print("Linking project environment...\n", .{});
         }
-        try moonstone.project.linker.link_project_env(allocator, io, std.Io.Dir.cwd(), idx, artifact_hashes.items, live_links.items);
-        report.linked = artifact_hashes.items.len + live_links.items.len;
+        try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env);
+        report.linked = projected_artifacts.items.len + live_links.items.len;
         report.env_refreshed = true;
         report.link_ms = elapsedMs(io, link_started_ns);
         report.total_ms = elapsedMs(io, started_ns);
@@ -1041,10 +1082,7 @@ pub const SyncCommand = struct {
         };
         defer lf.deinit();
 
-        issues += try self.checkDependencyMap(allocator, io, emitter, stdout, "dependencies.libs", &mt.dependencies.libs, &lf, idx);
-        issues += try self.checkDependencyMap(allocator, io, emitter, stdout, "dependencies.bins", &mt.dependencies.bins, &lf, idx);
-        issues += try self.checkDependencyMap(allocator, io, emitter, stdout, "dependencies.dev_libs", &mt.dependencies.dev_libs, &lf, idx);
-        issues += try self.checkDependencyMap(allocator, io, emitter, stdout, "dependencies.dev_bins", &mt.dependencies.dev_bins, &lf, idx);
+        issues += try self.checkDependencies(allocator, io, emitter, stdout, "dependencies", mt.dependencies.items, &lf, idx);
 
         if (lf.packages.items.len > 0) {
             var missing_artifacts: usize = 0;
@@ -1088,59 +1126,59 @@ pub const SyncCommand = struct {
         }
     }
 
-    fn checkDependencyMap(
+    fn checkDependencies(
         self: SyncCommand,
         allocator: std.mem.Allocator,
         io: std.Io,
         emitter: ?*ndjson.Emitter,
         stdout: *std.Io.Writer,
         about: []const u8,
-        deps: *std.StringArrayHashMapUnmanaged([]const u8),
+        deps: []const moonstone.domain.manifest.StoreDependency,
         lf: *moonstone.domain.lockfile.LockFile,
         idx: *moonstone.store.driver.StoreDriver,
     ) !usize {
         _ = self;
         var issues: usize = 0;
-        var it = deps.iterator();
-        while (it.next()) |entry| {
-            const dep_name = entry.key_ptr.*;
-            const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-            defer spec.deinit(allocator);
+        for (deps) |dep| {
+            const dep_name = dep.name;
 
-            if (spec.resolver) |resolver| {
-                switch (resolver) {
-                    .path => {
-                        std.Io.Dir.cwd().access(io, spec.name, .{}) catch {
-                            issues += 1;
-                            const msg = try std.fmt.allocPrint(allocator, "path dependency {s} target does not exist: {s}", .{ dep_name, spec.name });
-                            defer allocator.free(msg);
-                            try reportCheck(emitter, io, stdout, about, false, msg);
-                        };
-                        continue;
-                    },
-                    .link => {
-                        const link_store = moonstone.store.links.LinkStore.init(idx);
-                        if (try link_store.get(spec.name)) |link_entry| {
-                            var mut_entry = link_entry;
-                            mut_entry.deinit(allocator);
-                        } else {
-                            issues += 1;
-                            const msg = try std.fmt.allocPrint(allocator, "link dependency {s} is not registered; run 'moon link' from the {s} project directory, then retry 'moon add link:{s}'.", .{ dep_name, spec.name, spec.name });
-                            defer allocator.free(msg);
-                            try reportCheck(emitter, io, stdout, about, false, msg);
-                        }
-                        continue;
-                    },
-                    .artifact => {
-                        if (!(idx.has_artifact(spec.name) catch false)) {
-                            issues += 1;
-                            const msg = try std.fmt.allocPrint(allocator, "artifact dependency {s} is missing from the store: {s}", .{ dep_name, spec.name });
-                            defer allocator.free(msg);
-                            try reportCheck(emitter, io, stdout, about, false, msg);
-                        }
-                        continue;
-                    },
-                    else => {},
+            if (dep.resolver) |resolver_name| {
+                const resolver = moonstone.resolution.ResolverKind.fromString(resolver_name) catch null;
+                if (resolver) |res| {
+                    switch (res) {
+                        .path => {
+                            std.Io.Dir.cwd().access(io, dep.constraint, .{}) catch {
+                                issues += 1;
+                                const msg = try std.fmt.allocPrint(allocator, "path dependency {s} target does not exist: {s}", .{ dep_name, dep.constraint });
+                                defer allocator.free(msg);
+                                try reportCheck(emitter, io, stdout, about, false, msg);
+                            };
+                            continue;
+                        },
+                        .link => {
+                            const link_store = moonstone.store.links.LinkStore.init(idx);
+                            if (try link_store.get(dep.constraint)) |link_entry| {
+                                var mut_entry = link_entry;
+                                mut_entry.deinit(allocator);
+                            } else {
+                                issues += 1;
+                                const msg = try std.fmt.allocPrint(allocator, "link dependency {s} is not registered; run 'moon link' from the {s} project directory, then retry 'moon add link:{s}'.", .{ dep_name, dep.constraint, dep.constraint });
+                                defer allocator.free(msg);
+                                try reportCheck(emitter, io, stdout, about, false, msg);
+                            }
+                            continue;
+                        },
+                        .artifact => {
+                            if (!(idx.has_artifact(dep.constraint) catch false)) {
+                                issues += 1;
+                                const msg = try std.fmt.allocPrint(allocator, "artifact dependency {s} is missing from the store: {s}", .{ dep_name, dep.constraint });
+                                defer allocator.free(msg);
+                                try reportCheck(emitter, io, stdout, about, false, msg);
+                            }
+                            continue;
+                        },
+                        else => {},
+                    }
                 }
             }
 
@@ -1152,7 +1190,7 @@ pub const SyncCommand = struct {
                 continue;
             };
 
-            const constraint = spec.constraint orelse "*";
+            const constraint = if (dep.constraint.len > 0) dep.constraint else "*";
             if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) {
                 issues += 1;
                 const msg = try std.fmt.allocPrint(allocator, "locked dependency {s}@{s} does not satisfy {s}; run 'moon sync'.", .{ dep_name, lock_entry.version, constraint });
@@ -1166,23 +1204,18 @@ pub const SyncCommand = struct {
 };
 
 fn lockedDependenciesMatch(
-    allocator: std.mem.Allocator,
-    deps: *std.StringArrayHashMapUnmanaged([]const u8),
+    deps: []const moonstone.domain.manifest.StoreDependency,
     lf: *moonstone.domain.lockfile.LockFile,
-) !bool {
-    var it = deps.iterator();
-    while (it.next()) |entry| {
-        const dep_name = entry.key_ptr.*;
-        const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, entry.value_ptr.*);
-        defer spec.deinit(allocator);
+) bool {
+    for (deps) |dep| {
+        const dep_name = dep.name;
 
-        if (spec.resolver) |resolver| switch (resolver) {
-            .path, .link, .artifact => continue,
-            else => {},
-        };
+        if (dep.resolver) |r| {
+            if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
+        }
 
         const lock_entry = lf.find(dep_name) orelse return false;
-        const constraint = spec.constraint orelse "*";
+        const constraint = if (dep.constraint.len > 0) dep.constraint else "*";
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }
     return true;
@@ -1204,7 +1237,9 @@ fn countEnvIssues(allocator: std.mem.Allocator, io: std.Io) !usize {
     };
     defer env_dir.close(io);
 
-    env_dir.access(io, "bin/lua", .{}) catch { issues += 1; };
+    env_dir.access(io, "bin/lua", .{}) catch {
+        issues += 1;
+    };
     const env_abs = std.Io.Dir.cwd().realPathFileAlloc(io, ".moonstone/env", allocator) catch try allocator.dupe(u8, ".moonstone/env");
     defer allocator.free(env_abs);
     issues += try countBrokenSymlinks(allocator, io, env_dir, env_abs);
@@ -1234,7 +1269,9 @@ fn countBrokenSymlinks(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir
             else
                 try std.fs.path.join(allocator, &.{ abs_dir_path, target });
             defer allocator.free(target_path);
-            std.Io.Dir.cwd().access(io, target_path, .{}) catch { broken += 1; };
+            std.Io.Dir.cwd().access(io, target_path, .{}) catch {
+                broken += 1;
+            };
         }
     }
     return broken;

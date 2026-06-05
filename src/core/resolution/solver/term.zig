@@ -8,6 +8,7 @@ pub const Term = struct {
     range: semver.VersionRange,
     registry: ?[]const u8 = null,
     resolver: ?root.ResolverKind = null,
+    role: @import("../../domain/dependency_role.zig").DependencyRole = .runtime,
 
     pub fn deinit(self: Term, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -21,6 +22,7 @@ pub const Term = struct {
             .range = try self.range.clone(allocator),
             .registry = if (self.registry) |r| try allocator.dupe(u8, r) else null,
             .resolver = self.resolver,
+            .role = self.role,
         };
     }
 };

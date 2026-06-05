@@ -917,7 +917,7 @@ fn commit_synthetic_artifact(
             .name = try allocator.dupe(u8, dep.name),
             .constraint = try allocator.dupe(u8, dep.constraint),
             .resolver = if (dep.resolver) |r| try allocator.dupe(u8, r) else null,
-            .kind = dep.kind,
+            .role = dep.role,
             .optional = dep.optional,
         };
     }
@@ -1185,7 +1185,7 @@ pub fn resolve(
                 .name = try allocator.dupe(u8, parsed.name),
                 .constraint = try allocator.dupe(u8, parsed.constraint orelse "*"),
                 .resolver = try allocator.dupe(u8, "rocks"),
-                .kind = .lib,
+                .role = .runtime,
             });
         }
     }

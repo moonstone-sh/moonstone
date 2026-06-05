@@ -69,7 +69,21 @@ Before publishing, test your package locally:
    [[registries]]
    url = "file:///path/to/local/registry"
    ```
-5. Try adding it: `moon add mypackage`.
+5. Try adding it:
+   ```bash
+   # Default role is runtime
+   moon add mypackage
+
+   # Or specify a role explicitly
+   moon add mypackage --role runtime
+   moon add mypackage --dev
+   moon add mypackage --tool
+   moon add mypackage --helper
+   moon add mypackage --peer
+   moon add mypackage --optional
+   ```
+
+See [Dependency Roles](DEPENDENCY-ROLES.md) for the full role taxonomy and [Glossary](GLOSSARY.md) for term disambiguation.
 
 ## 4. For the Brave: Manual Submission
 

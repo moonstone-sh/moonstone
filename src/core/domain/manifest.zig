@@ -20,6 +20,9 @@ pub const Kind = enum {
     }
 };
 
+pub const dependency_role = @import("dependency_role.zig");
+pub const DependencyRole = dependency_role.DependencyRole;
+
 pub const RuntimeProvision = struct {
     name: []const u8,
     version: []const u8,
@@ -49,16 +52,22 @@ pub const RuntimeProvision = struct {
 pub const FeatureProvision = struct {
     name: []const u8,
     path: []const u8,
+    entry_point: ?[]const u8 = null,
+    module: ?[]const u8 = null,
 
     pub fn deinit(self: FeatureProvision, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.path);
+        if (self.entry_point) |ep| allocator.free(ep);
+        if (self.module) |m| allocator.free(m);
     }
 
     pub fn clone(self: FeatureProvision, allocator: std.mem.Allocator) !FeatureProvision {
         return FeatureProvision{
             .name = try allocator.dupe(u8, self.name),
             .path = try allocator.dupe(u8, self.path),
+            .entry_point = if (self.entry_point) |ep| try allocator.dupe(u8, ep) else null,
+            .module = if (self.module) |m| try allocator.dupe(u8, m) else null,
         };
     }
 };
@@ -416,25 +425,32 @@ pub const MaterializeConfig = struct {
         for (self.cmake_args) |ca| allocator.free(ca);
         allocator.free(self.cmake_args);
     }
-
 };
 
 pub const Provides = struct {
     runtime: []const RuntimeProvision = &.{},
     bin: []const FeatureProvision = &.{},
+    bin_lua: []const FeatureProvision = &.{},
     headers: []const FeatureProvision = &.{},
     native_lib: []const FeatureProvision = &.{},
     lua_module: []const FeatureProvision = &.{},
     lua_cmodule: []const FeatureProvision = &.{},
+    script: []const FeatureProvision = &.{},
+    asset: []const FeatureProvision = &.{},
+    ballad_plugin: []const FeatureProvision = &.{},
 
     pub fn clone(self: Provides, allocator: std.mem.Allocator) !Provides {
         var res = Provides{};
         res.runtime = try self.cloneList(RuntimeProvision, self.runtime, allocator);
         res.bin = try self.cloneList(FeatureProvision, self.bin, allocator);
+        res.bin_lua = try self.cloneList(FeatureProvision, self.bin_lua, allocator);
         res.headers = try self.cloneList(FeatureProvision, self.headers, allocator);
         res.native_lib = try self.cloneList(FeatureProvision, self.native_lib, allocator);
         res.lua_module = try self.cloneList(FeatureProvision, self.lua_module, allocator);
         res.lua_cmodule = try self.cloneList(FeatureProvision, self.lua_cmodule, allocator);
+        res.script = try self.cloneList(FeatureProvision, self.script, allocator);
+        res.asset = try self.cloneList(FeatureProvision, self.asset, allocator);
+        res.ballad_plugin = try self.cloneList(FeatureProvision, self.ballad_plugin, allocator);
         return res;
     }
 
@@ -446,6 +462,8 @@ pub const Provides = struct {
         allocator.free(self.runtime);
         for (self.bin) |p| p.deinit(allocator);
         allocator.free(self.bin);
+        for (self.bin_lua) |p| p.deinit(allocator);
+        allocator.free(self.bin_lua);
         for (self.headers) |p| p.deinit(allocator);
         allocator.free(self.headers);
         for (self.native_lib) |p| p.deinit(allocator);
@@ -454,6 +472,12 @@ pub const Provides = struct {
         allocator.free(self.lua_module);
         for (self.lua_cmodule) |p| p.deinit(allocator);
         allocator.free(self.lua_cmodule);
+        for (self.script) |p| p.deinit(allocator);
+        allocator.free(self.script);
+        for (self.asset) |p| p.deinit(allocator);
+        allocator.free(self.asset);
+        for (self.ballad_plugin) |p| p.deinit(allocator);
+        allocator.free(self.ballad_plugin);
     }
 
     fn cloneList(self: Provides, comptime T: type, list: []const T, allocator: std.mem.Allocator) ![]const T {
@@ -483,7 +507,6 @@ pub const RemoteArtifact = struct {
     } = .{},
     materialize: ?MaterializeConfig = null,
     provides: Provides = .{},
-
 
     pub fn clone(self: RemoteArtifact, allocator: std.mem.Allocator) !RemoteArtifact {
         var res: RemoteArtifact = undefined;
@@ -522,7 +545,6 @@ pub const RemoteArtifact = struct {
         if (self.materialize) |*m| m.deinit(allocator);
         self.provides.deinit(allocator);
     }
-
 };
 
 pub const RemotePackageDescriptor = struct {
@@ -533,15 +555,16 @@ pub const RemotePackageDescriptor = struct {
         description: ?[]const u8 = null,
         readme: ?[]const u8 = null,
     },
+    runtime_bundled: ?struct {
+        name: []const u8,
+        version: []const u8,
+        target: []const u8,
+        artifact_hash: []const u8,
+    } = null,
     compat: struct {
         runtimes: []const []const u8 = &.{},
     },
-    dependencies: struct {
-        libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        dev_libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        dev_bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-    } = .{},
+    dependencies: []const StoreDependency = &.{},
     artifact: []const RemoteArtifact = &.{},
     source: ?struct {
         kind: []const u8,
@@ -558,33 +581,30 @@ pub const RemotePackageDescriptor = struct {
         res.package.description = if (self.package.description) |d| try allocator.dupe(u8, d) else null;
         res.package.readme = if (self.package.readme) |r| try allocator.dupe(u8, r) else null;
 
+        if (self.runtime_bundled) |rb| {
+            res.runtime_bundled = .{
+                .name = try allocator.dupe(u8, rb.name),
+                .version = try allocator.dupe(u8, rb.version),
+                .target = try allocator.dupe(u8, rb.target),
+                .artifact_hash = try allocator.dupe(u8, rb.artifact_hash),
+            };
+        } else res.runtime_bundled = null;
+
         var rts = std.ArrayList([]const u8).empty;
         for (self.compat.runtimes) |rt| try rts.append(allocator, try allocator.dupe(u8, rt));
         res.compat.runtimes = try rts.toOwnedSlice(allocator);
 
-        res.dependencies.libs = .empty;
-        var lib_it = self.dependencies.libs.iterator();
-        while (lib_it.next()) |entry| {
-            try res.dependencies.libs.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
+        var deps = std.ArrayList(StoreDependency).empty;
+        for (self.dependencies) |dep| {
+            try deps.append(allocator, .{
+                .name = try allocator.dupe(u8, dep.name),
+                .constraint = try allocator.dupe(u8, dep.constraint),
+                .resolver = if (dep.resolver) |r| try allocator.dupe(u8, r) else null,
+                .role = dep.role,
+                .optional = dep.optional,
+            });
         }
-
-        res.dependencies.bins = .empty;
-        var bin_it = self.dependencies.bins.iterator();
-        while (bin_it.next()) |entry| {
-            try res.dependencies.bins.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
-        }
-
-        res.dependencies.dev_libs = .empty;
-        var dev_lib_it = self.dependencies.dev_libs.iterator();
-        while (dev_lib_it.next()) |entry| {
-            try res.dependencies.dev_libs.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
-        }
-
-        res.dependencies.dev_bins = .empty;
-        var dev_bin_it = self.dependencies.dev_bins.iterator();
-        while (dev_bin_it.next()) |entry| {
-            try res.dependencies.dev_bins.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*));
-        }
+        res.dependencies = try deps.toOwnedSlice(allocator);
 
         var arts = std.ArrayList(RemoteArtifact).empty;
         for (self.artifact) |art| try arts.append(allocator, try art.clone(allocator));
@@ -617,7 +637,7 @@ pub const RemotePackageDescriptor = struct {
                 .kind = .lib,
             },
             .compat = .{ .runtimes = &.{} },
-            .dependencies = .{},
+            .dependencies = &.{},
             .artifact = &.{},
             .source = null,
         };
@@ -632,30 +652,42 @@ pub const RemotePackageDescriptor = struct {
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
             .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
+
+        if (table.get("runtime_bundled")) |rb_val| {
+            if (rb_val == .table) {
+                const rb_table = rb_val.table;
+                self.runtime_bundled = .{
+                    .name = try allocator.dupe(u8, rb_table.get("name").?.string),
+                    .version = try allocator.dupe(u8, rb_table.get("version").?.string),
+                    .target = try allocator.dupe(u8, rb_table.get("target").?.string),
+                    .artifact_hash = try allocator.dupe(u8, rb_table.get("artifact_hash").?.string),
+                };
+            }
+        }
+
         errdefer self.deinit(allocator);
 
         // dependencies
         if (table.get("dependencies")) |deps_val| {
             if (deps_val == .array) {
+                var deps = std.ArrayList(StoreDependency).empty;
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
-                    const role = dep.get("role").?.string;
-                    const resolver = dep.get("resolver").?.string;
-                    const name = dep.get("name").?.string;
-                    const constraint = dep.get("constraint").?.string;
-                    const spec = try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ resolver, name, constraint });
-                    if (std.mem.eql(u8, role, "lib")) {
-                        try self.dependencies.libs.put(allocator, try allocator.dupe(u8, name), spec);
-                    } else if (std.mem.eql(u8, role, "bin")) {
-                        try self.dependencies.bins.put(allocator, try allocator.dupe(u8, name), spec);
-                    } else if (std.mem.eql(u8, role, "dev_lib")) {
-                        try self.dependencies.dev_libs.put(allocator, try allocator.dupe(u8, name), spec);
-                    } else if (std.mem.eql(u8, role, "dev_bin")) {
-                        try self.dependencies.dev_bins.put(allocator, try allocator.dupe(u8, name), spec);
-                    } else {
-                        allocator.free(spec);
-                    }
+                    const role_str = dep.get("role").?.string;
+                    const role = DependencyRole.fromString(role_str) orelse .runtime;
+                    const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
+                    const name = try allocator.dupe(u8, dep.get("name").?.string);
+                    const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
+                    const optional = if (dep.get("optional")) |o| o.boolean else false;
+                    try deps.append(allocator, .{
+                        .name = name,
+                        .constraint = constraint,
+                        .resolver = resolver,
+                        .role = role,
+                        .optional = optional,
+                    });
                 }
+                self.dependencies = try deps.toOwnedSlice(allocator);
             }
         }
 
@@ -699,10 +731,14 @@ pub const RemotePackageDescriptor = struct {
                             if (prov_val == .array) {
                                 var runtimes = std.ArrayList(RuntimeProvision).empty;
                                 var bins = std.ArrayList(FeatureProvision).empty;
+                                var bin_luas = std.ArrayList(FeatureProvision).empty;
                                 var headers = std.ArrayList(FeatureProvision).empty;
                                 var native_libs = std.ArrayList(FeatureProvision).empty;
                                 var lua_modules = std.ArrayList(FeatureProvision).empty;
                                 var lua_cmodules = std.ArrayList(FeatureProvision).empty;
+                                var scripts = std.ArrayList(FeatureProvision).empty;
+                                var assets = std.ArrayList(FeatureProvision).empty;
+                                var ballad_plugins = std.ArrayList(FeatureProvision).empty;
                                 for (prov_val.array.items) |item| {
                                     const provision = item.table;
                                     const provision_kind = provision.get("kind").?.string;
@@ -713,24 +749,49 @@ pub const RemotePackageDescriptor = struct {
                                             .abi = try allocator.dupe(u8, provision.get("lua_abi").?.string),
                                         });
                                     } else {
-                                        const feature = FeatureProvision{
+                                        var feature = FeatureProvision{
                                             .name = try allocator.dupe(u8, provision.get("name").?.string),
                                             .path = try allocator.dupe(u8, provision.get("path").?.string),
                                         };
-                                        if (std.mem.eql(u8, provision_kind, "bin")) try bins.append(allocator, feature)
-                                        else if (std.mem.eql(u8, provision_kind, "include")) try headers.append(allocator, feature)
-                                        else if (std.mem.eql(u8, provision_kind, "lib")) try native_libs.append(allocator, feature)
-                                        else if (std.mem.eql(u8, provision_kind, "lua_module")) try lua_modules.append(allocator, feature)
-                                        else if (std.mem.eql(u8, provision_kind, "lua_cmodule")) try lua_cmodules.append(allocator, feature)
-                                        else feature.deinit(allocator);
+                                        if (provision.get("entry_point")) |ep| {
+                                            feature.entry_point = try allocator.dupe(u8, ep.string);
+                                        }
+                                        if (provision.get("module")) |m| {
+                                            feature.module = try allocator.dupe(u8, m.string);
+                                        }
+                                        if (std.mem.eql(u8, provision_kind, "bin")) {
+                                            try bins.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "bin_lua")) {
+                                            try bin_luas.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "include") or std.mem.eql(u8, provision_kind, "headers")) {
+                                            try headers.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "lib")) {
+                                            try native_libs.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "lua_module")) {
+                                            try lua_modules.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "lua_cmodule")) {
+                                            try lua_cmodules.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "script")) {
+                                            try scripts.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "asset")) {
+                                            try assets.append(allocator, feature);
+                                        } else if (std.mem.eql(u8, provision_kind, "ballad_plugin")) {
+                                            try ballad_plugins.append(allocator, feature);
+                                        } else {
+                                            feature.deinit(allocator);
+                                        }
                                     }
                                 }
                                 art.provides.runtime = try runtimes.toOwnedSlice(allocator);
                                 art.provides.bin = try bins.toOwnedSlice(allocator);
+                                art.provides.bin_lua = try bin_luas.toOwnedSlice(allocator);
                                 art.provides.headers = try headers.toOwnedSlice(allocator);
                                 art.provides.native_lib = try native_libs.toOwnedSlice(allocator);
                                 art.provides.lua_module = try lua_modules.toOwnedSlice(allocator);
                                 art.provides.lua_cmodule = try lua_cmodules.toOwnedSlice(allocator);
+                                art.provides.script = try scripts.toOwnedSlice(allocator);
+                                art.provides.asset = try assets.toOwnedSlice(allocator);
+                                art.provides.ballad_plugin = try ballad_plugins.toOwnedSlice(allocator);
                             }
                         }
                         try list.append(allocator, art);
@@ -749,22 +810,21 @@ pub const RemotePackageDescriptor = struct {
         if (self.package.description) |d| allocator.free(d);
         if (self.package.readme) |r| allocator.free(r);
 
+        if (self.runtime_bundled) |rb| {
+            allocator.free(rb.name);
+            allocator.free(rb.version);
+            allocator.free(rb.target);
+            allocator.free(rb.artifact_hash);
+        }
+
         for (self.compat.runtimes) |rt| allocator.free(rt);
         allocator.free(self.compat.runtimes);
 
-        var lib_it = self.dependencies.libs.iterator();
-        while (lib_it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
+        for (self.dependencies) |dep| {
+            var mut_dep = dep;
+            mut_dep.deinit(allocator);
         }
-        self.dependencies.libs.deinit(allocator);
-
-        var bin_dep_it = self.dependencies.bins.iterator();
-        while (bin_dep_it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        self.dependencies.bins.deinit(allocator);
+        allocator.free(self.dependencies);
 
         for (self.artifact) |art| {
             var mut_art = art;
@@ -785,13 +845,34 @@ pub const StoreDependency = struct {
     name: []const u8,
     constraint: []const u8 = "",
     resolver: ?[]const u8 = null,
-    kind: Kind = .lib,
+    role: DependencyRole = .runtime,
     optional: bool = false,
 
     pub fn deinit(self: *StoreDependency, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.constraint);
         if (self.resolver) |r| allocator.free(r);
+    }
+
+    /// Reconstruct a raw package-spec string suitable for parsePackageSpec.
+    /// Handles both flat-array format (resolver + name + constraint) and
+    /// sugar format (constraint may already contain resolver prefix).
+    pub fn toSpecString(self: StoreDependency, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.resolver) |resolver| {
+            if (self.constraint.len > 0) {
+                return try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ resolver, self.name, self.constraint });
+            } else {
+                return try std.fmt.allocPrint(allocator, "{s}:{s}", .{ resolver, self.name });
+            }
+        } else if (self.constraint.len > 0) {
+            if (std.mem.indexOfScalar(u8, self.constraint, ':') != null or std.mem.indexOfScalar(u8, self.constraint, '@') != null) {
+                return try allocator.dupe(u8, self.constraint);
+            } else {
+                return try std.fmt.allocPrint(allocator, "{s}@{s}", .{ self.name, self.constraint });
+            }
+        } else {
+            return try allocator.dupe(u8, self.name);
+        }
     }
 };
 
@@ -811,8 +892,8 @@ pub const StoreManifest = struct {
     } = .{},
     compat: struct {
         runtime_version: []const u8 = "", // e.g. lua@5.4.7
-        lua_abi: []const u8 = "",          // e.g. lua-5.4
-        lua_api: []const u8 = "",           // e.g. lua54
+        lua_abi: []const u8 = "", // e.g. lua-5.4
+        lua_api: []const u8 = "", // e.g. lua54
         runtime_artifact_hash: []const u8 = "", // exact binary identity
     } = .{},
 
@@ -820,7 +901,6 @@ pub const StoreManifest = struct {
     dependencies: []const StoreDependency = &.{},
 
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !StoreManifest {
-
         var parser = toml.Parser(StoreManifest).init(allocator);
         defer parser.deinit();
         const res = try parser.parseString(content);
@@ -841,14 +921,17 @@ pub const StoreManifest = struct {
         allocator.free(self.compat.lua_api);
         allocator.free(self.compat.runtime_artifact_hash);
         self.provides.deinit(allocator);
-        for (self.dependencies) |dep| { var mut_dep = dep; mut_dep.deinit(allocator); }
+        for (self.dependencies) |dep| {
+            var mut_dep = dep;
+            mut_dep.deinit(allocator);
+        }
         allocator.free(self.dependencies);
     }
 
     /// Serializes to TOML.
-    /// NOTE: Manual serialization is used here because the 'toml' library struggles with 
+    /// NOTE: Manual serialization is used here because the 'toml' library struggles with
     /// std.StringArrayHashMapUnmanaged and nested arena-allocated structures.
-    /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match 
+    /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match
     /// the library's expected structure more closely if automated serialization is desired.
     pub fn serialize(self: StoreManifest, allocator: std.mem.Allocator, writer: anytype) !void {
         _ = allocator;
@@ -878,7 +961,7 @@ pub const StoreManifest = struct {
             try writer.print("name = \"{s}\"\n", .{dep.name});
             try writer.print("constraint = \"{s}\"\n", .{dep.constraint});
             if (dep.resolver) |r| try writer.print("resolver = \"{s}\"\n", .{r});
-            try writer.print("kind = \"{s}\"\n", .{@tagName(dep.kind)});
+            try writer.print("role = \"{s}\"\n", .{@tagName(dep.role)});
             if (dep.optional) try writer.print("optional = true\n", .{});
         }
     }
@@ -893,19 +976,25 @@ pub const StoreManifest = struct {
             }
             try writer.print("]\n", .{});
         }
-        inline for (.{ "bin", "headers", "native_lib", "lua_module", "lua_cmodule" }) |field| {
+        inline for (.{ "bin", "bin_lua", "headers", "native_lib", "lua_module", "lua_cmodule", "script", "asset", "ballad_plugin" }) |field| {
             const list = @field(provs, field);
             if (list.len > 0) {
                 try writer.print("{s} = [", .{field});
                 for (list, 0..) |p, i| {
                     if (i > 0) try writer.print(", ", .{});
-                    try writer.print("{{ name = \"{s}\", path = \"{s}\" }}", .{ p.name, p.path });
+                    try writer.print("{{ name = \"{s}\", path = \"{s}\"", .{ p.name, p.path });
+                    if (p.entry_point) |ep| {
+                        try writer.print(", entry_point = \"{s}\"", .{ep});
+                    }
+                    if (p.module) |m| {
+                        try writer.print(", module = \"{s}\"", .{m});
+                    }
+                    try writer.print(" }}", .{});
                 }
                 try writer.print("]\n", .{});
             }
         }
     }
-
 };
 
 pub const MoonstoneToml = struct {
@@ -921,12 +1010,7 @@ pub const MoonstoneToml = struct {
         abi: []const u8,
     },
     resolution: ?ResolutionConfig = null,
-    dependencies: struct {
-        libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        dev_libs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        dev_bins: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-    } = .{},
+    dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
 
@@ -980,8 +1064,7 @@ pub const MoonstoneToml = struct {
             if (runtime.get("abi")) |a| blk: {
                 if (a != .string) return error.InvalidRuntimeAbi;
                 break :blk try allocator.dupe(u8, a.string);
-            } else
-                try inferRuntimeAbi(allocator, runtime_name, runtime_version)
+            } else try inferRuntimeAbi(allocator, runtime_name, runtime_version)
         else
             try allocator.dupe(u8, "");
 
@@ -991,22 +1074,88 @@ pub const MoonstoneToml = struct {
             .abi = runtime_abi,
         };
 
-        self.dependencies = .{};
+        self.dependencies = .empty;
         if (table.get("dependencies")) |deps_val| {
-            if (deps_val == .table) {
-                inline for (.{ "libs", "dev_libs", "bins", "dev_bins" }) |field| {
-                    if (deps_val.table.get(field)) |v| {
+            if (deps_val == .array) {
+                for (deps_val.array.items) |dep_val| {
+                    const dep = dep_val.table;
+                    const role_str = dep.get("role").?.string;
+                    const role = DependencyRole.fromString(role_str) orelse .runtime;
+                    const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
+                    const name = try allocator.dupe(u8, dep.get("name").?.string);
+                    const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
+                    const optional = if (dep.get("optional")) |o| o.boolean else false;
+                    try self.dependencies.append(allocator, .{
+                        .name = name,
+                        .constraint = constraint,
+                        .resolver = resolver,
+                        .role = role,
+                        .optional = optional,
+                    });
+                }
+            } else if (deps_val == .table) {
+                // Support authoring sugar [dependencies.<role>]
+                inline for (.{ "dev", "tool", "runtime", "helper", "peer", "optional" }) |role_name| {
+                    if (deps_val.table.get(role_name)) |v| {
                         if (v == .table) {
                             var it = v.table.iterator();
                             while (it.next()) |entry| {
-                                try @field(self.dependencies, field).put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.string));
+                                const role = DependencyRole.fromString(role_name) orelse unreachable;
+                                try self.dependencies.append(allocator, .{
+                                    .name = try allocator.dupe(u8, entry.key_ptr.*),
+                                    .constraint = try allocator.dupe(u8, entry.value_ptr.string),
+                                    .role = role,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Authoring aliases
+                const alias_mappings = .{
+                    .{ .field = "vendor-exec", .role = DependencyRole.helper },
+                    .{ .field = "runtime-exec", .role = DependencyRole.helper },
+                };
+                inline for (alias_mappings) |mapping| {
+                    if (deps_val.table.get(mapping.field)) |v| {
+                        if (v == .table) {
+                            var it = v.table.iterator();
+                            while (it.next()) |entry| {
+                                try self.dependencies.append(allocator, .{
+                                    .name = try allocator.dupe(u8, entry.key_ptr.*),
+                                    .constraint = try allocator.dupe(u8, entry.value_ptr.string),
+                                    .role = mapping.role,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Legacy support
+                const legacy_mappings = .{
+                    .{ .field = "libs", .role = DependencyRole.runtime },
+                    .{ .field = "bins", .role = DependencyRole.helper },
+                    .{ .field = "dev_libs", .role = DependencyRole.dev },
+                    .{ .field = "dev_bins", .role = DependencyRole.tool },
+                };
+                inline for (legacy_mappings) |mapping| {
+                    if (deps_val.table.get(mapping.field)) |v| {
+                        std.debug.print("WARNING: [dependencies.{s}] is deprecated. Please use [dependencies.{s}] instead.\n", .{ mapping.field, @tagName(mapping.role) });
+                        if (v == .table) {
+                            var it = v.table.iterator();
+                            while (it.next()) |entry| {
+                                try self.dependencies.append(allocator, .{
+                                    .name = try allocator.dupe(u8, entry.key_ptr.*),
+                                    .constraint = try allocator.dupe(u8, entry.value_ptr.string),
+                                    .role = mapping.role,
+                                });
                             }
                         }
                     }
                 }
             }
         }
-        
+
         self.scripts = .{};
         if (table.get("scripts") orelse table.get("commands")) |s_val| {
             if (s_val == .table) {
@@ -1019,18 +1168,7 @@ pub const MoonstoneToml = struct {
 
         self.registries = .{};
         if (table.get("registries")) |reg_val| {
-            if (reg_val == .table) {
-                var it = reg_val.table.iterator();
-                while (it.next()) |entry| {
-                    const rt = entry.value_ptr.table;
-                    try self.registries.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), .{
-                        .url = if (rt.get("url")) |u| try allocator.dupe(u8, u.string) else null,
-                        .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
-                        .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
-                        .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
-                    });
-                }
-            }
+            try extractRegistriesFromToml(allocator, reg_val, &self.registries);
         }
 
         self.resolution = null;
@@ -1056,8 +1194,14 @@ pub const MoonstoneToml = struct {
         allocator.free(self.runtime.name);
         allocator.free(self.runtime.version);
         allocator.free(self.runtime.abi);
-        
-        inline for (.{ &self.dependencies.libs, &self.dependencies.bins, &self.dependencies.dev_libs, &self.dependencies.dev_bins, &self.scripts }) |table| {
+
+        for (self.dependencies.items) |dep| {
+            var mut_dep = dep;
+            mut_dep.deinit(allocator);
+        }
+        self.dependencies.deinit(allocator);
+
+        inline for (.{&self.scripts}) |table| {
             var it = table.iterator();
             while (it.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
@@ -1080,9 +1224,9 @@ pub const MoonstoneToml = struct {
     }
 
     /// Serializes to TOML.
-    /// NOTE: Manual serialization is used here because the 'toml' library struggles with 
+    /// NOTE: Manual serialization is used here because the 'toml' library struggles with
     /// std.StringArrayHashMapUnmanaged and nested arena-allocated structures.
-    /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match 
+    /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match
     /// the library's expected structure more closely if automated serialization is desired.
     pub fn serialize(self: MoonstoneToml, allocator: std.mem.Allocator, writer: anytype) !void {
         _ = allocator;
@@ -1108,18 +1252,18 @@ pub const MoonstoneToml = struct {
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
 
-        inline for (.{ "libs", "dev_libs", "bins", "dev_bins" }) |field| {
-            const map = @field(self.dependencies, field);
-            if (map.count() > 0) {
-                try writer.print("\n[dependencies.{s}]\n", .{field});
-                var it = map.iterator();
-                while (it.next()) |entry| {
-                    try writeTomlString(writer, entry.key_ptr.*);
-                    try writer.print(" = ", .{});
-                    try writeTomlString(writer, entry.value_ptr.*);
-                    try writer.print("\n", .{});
-                }
+        for (self.dependencies.items) |dep| {
+            try writer.print("\n[[dependencies]]\n", .{});
+            try writer.print("name = ", .{});
+            try writeTomlString(writer, dep.name);
+            try writer.print("\nconstraint = ", .{});
+            try writeTomlString(writer, dep.constraint);
+            if (dep.resolver) |r| {
+                try writer.print("\nresolver = ", .{});
+                try writeTomlString(writer, r);
             }
+            try writer.print("\nrole = \"{s}\"\n", .{@tagName(dep.role)});
+            if (dep.optional) try writer.print("optional = true\n", .{});
         }
 
         if (self.scripts.count() > 0) {
@@ -1170,15 +1314,24 @@ pub const MoonstoneToml = struct {
         try writer.writeByte('"');
     }
 
-    pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, dev: bool, kind: Kind) !void {
-        const target_map = if (kind == .bin)
-            if (dev) &self.dependencies.dev_bins else &self.dependencies.bins
-        else if (dev)
-            &self.dependencies.dev_libs
-        else
-            &self.dependencies.libs;
-        if (target_map.get(name)) |old| allocator.free(old);
-        try target_map.put(allocator, try allocator.dupe(u8, name), try allocator.dupe(u8, spec));
+    pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool) !void {
+        // Check if it already exists, replace it
+        for (self.dependencies.items) |*dep| {
+            if (std.mem.eql(u8, dep.name, name)) {
+                allocator.free(dep.constraint);
+                dep.constraint = try allocator.dupe(u8, spec);
+                dep.role = role;
+                dep.optional = optional;
+                return;
+            }
+        }
+
+        try self.dependencies.append(allocator, .{
+            .name = try allocator.dupe(u8, name),
+            .constraint = try allocator.dupe(u8, spec),
+            .role = role,
+            .optional = optional,
+        });
     }
 
     pub fn runtimeName(self: MoonstoneToml) []const u8 {
@@ -1244,6 +1397,53 @@ pub const RegistryConfig = struct {
     }
 };
 
+/// Extract registries from a raw TOML value supporting both syntaxes:
+///   [registries."name"] or [registries.name]  (table of tables)
+///   [[registries]] with `name` field            (array of tables)
+///
+/// Populates `out_map` with registry name -> RegistryConfig.
+pub fn extractRegistriesFromToml(
+    allocator: std.mem.Allocator,
+    registries_value: toml.Value,
+    out_map: *std.StringArrayHashMapUnmanaged(RegistryConfig),
+) !void {
+    switch (registries_value) {
+        .table => |tab| {
+            // Dotted-table syntax: [registries."name"] or [registries.name]
+            var it = tab.iterator();
+            while (it.next()) |entry| {
+                const reg_name = entry.key_ptr.*;
+                if (std.mem.eql(u8, reg_name, "moonstone") or std.mem.eql(u8, reg_name, "rocks")) continue;
+                if (entry.value_ptr.* != .table) continue;
+                const rt = entry.value_ptr.table;
+                try out_map.put(allocator, try allocator.dupe(u8, reg_name), .{
+                    .url = if (rt.get("url")) |u| try allocator.dupe(u8, u.string) else null,
+                    .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
+                    .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
+                    .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
+                });
+            }
+        },
+        .array => |ar| {
+            // Array-table syntax: [[registries]]
+            for (ar.items) |item| {
+                if (item != .table) continue;
+                const rt = item.table;
+                const name_v = rt.get("name") orelse continue;
+                const reg_name = name_v.string;
+                if (std.mem.eql(u8, reg_name, "moonstone") or std.mem.eql(u8, reg_name, "rocks")) continue;
+                try out_map.put(allocator, try allocator.dupe(u8, reg_name), .{
+                    .url = if (rt.get("url")) |u| try allocator.dupe(u8, u.string) else null,
+                    .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
+                    .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
+                    .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
+                });
+            }
+        },
+        else => {},
+    }
+}
+
 pub const Recipe = struct {
     schema_version: u32 = 2,
     name: []const u8,
@@ -1251,8 +1451,8 @@ pub const Recipe = struct {
     source_hash: []const u8,
     materializer_kind: []const u8,
     materializer_version: []const u8,
-    lua_version: []const u8,           // e.g. lua@5.4.7
-    lua_abi: []const u8,               // e.g. lua-5.4
+    lua_version: []const u8, // e.g. lua@5.4.7
+    lua_abi: []const u8, // e.g. lua-5.4
     runtime_artifact_hash: []const u8, // exact binary identity
     target: []const u8,
     dependency_artifact_hashes: std.StringArrayHashMapUnmanaged([]const u8) = .{},
@@ -1350,9 +1550,7 @@ test "MoonstoneToml parse migrates legacy commands to scripts" {
     try std.testing.expectEqualStrings("lua src/main.lua", manifest.scripts.get("export").?);
 }
 
-
 test "StoreManifest round-trip with dependencies" {
-
     const toml_text =
         \\
         \\[artifact]
@@ -1373,7 +1571,7 @@ test "StoreManifest round-trip with dependencies" {
         \\name = "child"
         \\constraint = ">=1.0.0"
         \\resolver = "rocks"
-        \\kind = "lib"
+        \\role = "runtime"
     ;
     const sm = try StoreManifest.parse(std.heap.c_allocator, toml_text);
     // sm strings owned by parser arena; skip deinit to avoid allocator mismatch
@@ -1386,5 +1584,5 @@ test "StoreManifest round-trip with dependencies" {
     try std.testing.expectEqualStrings("child", sm.dependencies[0].name);
     try std.testing.expectEqualStrings(">=1.0.0", sm.dependencies[0].constraint);
     try std.testing.expectEqualStrings("rocks", sm.dependencies[0].resolver.?);
-    try std.testing.expectEqual(Kind.lib, sm.dependencies[0].kind);
+    try std.testing.expectEqual(DependencyRole.runtime, sm.dependencies[0].role);
 }

@@ -7,6 +7,7 @@ pub const ResolveOptions = struct {
     runtime_path: ?[]const u8 = null,
     locked: bool = false,
     prefer_local: bool = false,
+    target: ?[]const u8 = null,
     on_event: ?ResolveCallback = null,
     runtime_artifact_hash: ?[]const u8 = null,
     on_event_context: ?*anyopaque = null,

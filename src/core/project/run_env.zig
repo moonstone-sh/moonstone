@@ -291,9 +291,9 @@ pub fn isEnvEntryAllowed(
         if (pkg.artifact_hash.len <= 3) continue;
         const hash_suffix = pkg.artifact_hash[3..]; // strip "b3:" prefix
         if (std.mem.indexOf(u8, target, hash_suffix) != null) {
-            if (pkg.groups.len == 0) return true; // backward compat
-            for (pkg.groups) |g| {
-                if (std.mem.eql(u8, g, "libs") or std.mem.eql(u8, g, "bins")) return true;
+            if (pkg.roles.len == 0) return true; // backward compat
+            for (pkg.roles) |g| {
+                if (std.mem.eql(u8, g, "runtime") or std.mem.eql(u8, g, "dev") or std.mem.eql(u8, g, "libs") or std.mem.eql(u8, g, "bins")) return true;
             }
             return false;
         }

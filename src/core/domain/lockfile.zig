@@ -18,7 +18,7 @@ pub const LockEntry = struct {
     resolver: []const u8 = &.{},
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
-    groups: []const []const u8 = &.{},
+    roles: []const []const u8 = &.{},
 
     pub fn deinit(self: LockEntry, allocator: std.mem.Allocator) void {
         if (self.name.len > 0) allocator.free(self.name);
@@ -33,8 +33,8 @@ pub const LockEntry = struct {
         if (self.source.len > 0) allocator.free(self.source);
         if (self.resolver.len > 0) allocator.free(self.resolver);
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
-        for (self.groups) |g| allocator.free(g);
-        if (self.groups.len > 0) allocator.free(self.groups);
+        for (self.roles) |g| allocator.free(g);
+        if (self.roles.len > 0) allocator.free(self.roles);
     }
 };
 
@@ -68,6 +68,7 @@ pub const LockFile = struct {
     }
 
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !LockFile {
+        if (content.len == 0) return LockFile.init(allocator);
         var parser = toml.Parser(toml.Table).init(allocator);
         defer parser.deinit();
 
@@ -103,8 +104,8 @@ pub const LockFile = struct {
                     .resolver = if (t.get("resolver")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .link_mode = if (t.get("link_mode")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .reproducible = reproducible,
-                    .groups = blk: {
-                        if (t.get("groups")) |g| {
+                    .roles = blk: {
+                        if (t.get("roles")) |g| {
                             if (g == .array) {
                                 var list = std.ArrayList([]const u8).empty;
                                 for (g.array.items) |item| {

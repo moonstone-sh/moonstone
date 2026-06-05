@@ -84,7 +84,10 @@ pub const Coordinator = struct {
                 .version = try self.allocator.dupe(u8, res.desc.package.version),
                 .kind = res.desc.package.kind,
                 .artifact_hash = try self.allocator.dupe(u8, art.hash),
+                .runtime = try self.allocator.dupe(u8, art.runtime),
+                .runtime_artifact_hash = try self.allocator.dupe(u8, art.runtime_artifact_hash),
                 .lua_abi = try self.allocator.dupe(u8, art.lua_abi),
+                .lua_api = try self.allocator.dupe(u8, art.lua_api),
                 .origin = .{
                     .moonstone_registry = .{
                         .url = try self.allocator.dupe(u8, reg.url),
@@ -98,6 +101,7 @@ pub const Coordinator = struct {
                 .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
                 .descriptor_path = try self.allocator.dupe(u8, res.descriptor_path),
                 .artifact_idx = res.artifact_idx,
+                .location = .remote,
             };
         }
 
@@ -123,6 +127,7 @@ pub const Coordinator = struct {
 
         const query = driver_mod.ArtifactQuery{
             .name = pkg_name,
+            .target = options.target,
         };
         const candidates = try index.findCandidates(query);
         defer {
@@ -141,11 +146,15 @@ pub const Coordinator = struct {
             }
             if (!semver.matches(cand.version, constraint)) continue;
 
-            // Runtime ABI compatibility check
+            // 2. ABI compatibility (if applicable)
             if (options.runtime) |active_abi| {
                 if (cand.kind != .runtime) {
-                    if (cand.lua_abi) |candidate_abi| {
-                        if (!options_mod.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                    // If the candidate declares its own isolated runtime, it doesn't need to match the project runtime
+                    const has_isolated_runtime = if (cand.runtime) |r| r.len > 0 else false;
+                    if (!has_isolated_runtime) {
+                        if (cand.lua_abi) |candidate_abi| {
+                            if (!options_mod.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                        }
                     }
                 }
             }
@@ -177,6 +186,9 @@ pub const Coordinator = struct {
                 .kind = cand.kind,
                 .artifact_hash = try self.allocator.dupe(u8, cand.artifact_hash),
                 .lua_abi = if (cand.lua_abi) |a| try self.allocator.dupe(u8, a) else null,
+                .lua_api = if (cand.lua_api) |a| try self.allocator.dupe(u8, a) else null,
+                .runtime = if (cand.runtime) |r| try self.allocator.dupe(u8, r) else null,
+                .runtime_artifact_hash = if (cand.runtime_artifact_hash) |h| try self.allocator.dupe(u8, h) else "",
                 .local_path = try self.allocator.dupe(u8, cand.path),
                 .origin = origin,
                 .location = .local_store,

@@ -226,15 +226,21 @@ pub fn materializeLocalProject(
             .artifact_hash = artifact_hash,
             .target = "native",
         },
+        .origin = .{
+            .resolver = "local",
+            .source = project_path,
+        },
         .compat = .{
             .runtime_version = "lua@5.4", // Placeholder for local
             .lua_abi = lua_abi,
+            .lua_api = lua_abi,
             .runtime_artifact_hash = "",
         },
 
         .provides = .{
             .runtime = &.{},
             .bin = &.{},
+            .bin_lua = &.{},
             .headers = &.{},
             .native_lib = &.{},
             .lua_module = try allocator.dupe(manifest.FeatureProvision, lua_modules.items),
@@ -313,7 +319,22 @@ pub fn commit_to_store(
     // 2. Generate store manifest.toml
     const source_hash = remote_art.hash;
     const artifact_hash = remote_art.hash;
-    
+
+    const runtime_version = if (remote_art.runtime.len > 0)
+        remote_art.runtime
+    else if (remote_desc.runtime_bundled) |rb|
+        try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rb.name, rb.version })
+    else
+        "lua@unknown";
+    defer if (remote_art.runtime.len == 0 and remote_desc.runtime_bundled != null) allocator.free(runtime_version);
+
+    const runtime_artifact_hash = if (remote_art.runtime_artifact_hash.len > 0)
+        remote_art.runtime_artifact_hash
+    else if (remote_desc.runtime_bundled) |rb|
+        rb.artifact_hash
+    else
+        "";
+
     const sm = manifest.StoreManifest{
         .artifact = .{
             .name = remote_desc.package.name,
@@ -329,21 +350,13 @@ pub fn commit_to_store(
             .source = source,
         },
         .compat = .{
-            .runtime_version = "lua@unknown", // TODO: Get from desc
+            .runtime_version = runtime_version,
             .lua_abi = remote_art.lua_abi,
-            .lua_api = remote_art.lua_abi,
-            .runtime_artifact_hash = "", // TODO: Get from context
+            .lua_api = remote_art.lua_api,
+            .runtime_artifact_hash = runtime_artifact_hash,
         },
+        .provides = remote_art.provides,
         .dependencies = dependencies,
-
-        .provides = .{
-            .runtime = remote_art.provides.runtime,
-            .bin = remote_art.provides.bin,
-            .headers = remote_art.provides.headers,
-            .native_lib = remote_art.provides.native_lib,
-            .lua_module = remote_art.provides.lua_module,
-            .lua_cmodule = remote_art.provides.lua_cmodule,
-        },
     };
 
     const manifest_path = try std.fs.path.join(allocator, &.{ final_art_path, "manifest.toml" });

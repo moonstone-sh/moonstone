@@ -89,25 +89,30 @@ pub const ListCommand = struct {
             }
         }.run_internal;
 
-        // Iterate through all dependency tables
-        const tables = [_]*std.StringArrayHashMapUnmanaged([]const u8){
-            &mt.dependencies.libs,
-            &mt.dependencies.bins,
-            &mt.dependencies.dev_libs,
-            &mt.dependencies.dev_bins,
-        };
+        // Iterate through all dependencies
+        for (mt.dependencies.items) |dep| {
+            const raw_spec = if (dep.resolver) |r|
+                if (std.mem.eql(u8, r, "moonstone"))
+                    try ctx.allocator.dupe(u8, dep.constraint)
+                else
+                    try std.fmt.allocPrint(ctx.allocator, "{s}:{s}@{s}", .{ r, dep.name, dep.constraint })
+            else
+                try std.fmt.allocPrint(ctx.allocator, "{s}@{s}", .{ dep.name, dep.constraint });
+            defer ctx.allocator.free(raw_spec);
 
-        for (tables) |table| {
-            var it = table.iterator();
-            while (it.next()) |entry| {
-                try printDep(entry.key_ptr.*, entry.value_ptr.*, lf_opt, self.json, emitter, ctx, &count);
-            }
+            try printDep(dep.name, raw_spec, lf_opt, self.json, emitter, ctx, &count);
         }
 
-        if (emitter) |e| {
-            try e.terminate(ctx.io, name, "ok", .{ .count = count });
-        } else if (count == 0) {
-            try ctx.stdout.print("(no dependencies found)\n", .{});
+        if (count == 0) {
+            if (emitter) |e| {
+                try e.terminate(ctx.io, name, "ok", .{ .count = count });
+            } else {
+                try ctx.stdout.print("(no dependencies found)\n", .{});
+            }
+        } else {
+            if (emitter) |e| {
+                try e.terminate(ctx.io, name, "ok", .{ .count = count });
+            }
         }
     }
 };

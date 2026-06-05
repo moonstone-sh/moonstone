@@ -17,6 +17,7 @@ pub const StoreDependencyOrigin = struct {
     child_constraint: []const u8,
     child_resolver: ?root.ResolverKind,
     child_registry: ?[]const u8 = null,
+    child_role: @import("../../domain/dependency_role.zig").DependencyRole = .runtime,
 
     parent_name: []const u8,
     parent_version: []const u8,
@@ -238,8 +239,11 @@ pub const RegistryProvider = struct {
             if (v.compare(req_version) == 0) {
                 if (self.options.runtime) |active_abi| {
                     if (c.kind != .runtime) {
-                        if (c.lua_abi) |candidate_abi| {
-                            if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                        const has_isolated_runtime = if (c.runtime) |r| r.len > 0 else false;
+                        if (!has_isolated_runtime) {
+                            if (c.lua_abi) |candidate_abi| {
+                                if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                            }
                         }
                     }
                 }
@@ -284,8 +288,6 @@ pub const RegistryProvider = struct {
         }
         return false;
     }
-
-
 
     pub fn get_provider(self: *RegistryProvider) package_provider.PackageProvider {
         return .{
@@ -420,8 +422,11 @@ pub const RegistryProvider = struct {
                 }
                 if (self.options.runtime) |active_abi| {
                     if (cand.kind != .runtime) {
-                        if (cand.lua_abi) |candidate_abi| {
-                            if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                        const has_isolated_runtime = if (cand.runtime) |r| r.len > 0 else false;
+                        if (!has_isolated_runtime) {
+                            if (cand.lua_abi) |candidate_abi| {
+                                if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
+                            }
                         }
                     }
                 }
@@ -513,52 +518,52 @@ pub const RegistryProvider = struct {
                 defer if (private_idx) |private| private.deinit(self.allocator);
 
                 for (0..2) |index_number| {
-                const packages = if (index_number == 0) idx.package else if (private_idx) |private| private.package else continue;
-                for (packages) |pkg| {
-                    if (packageNamesMatch(pkg.name, name)) {
-                        const v = try semver.Version.parseCloned(arena, pkg.version);
-                        
-                        if (res_constraint) |_| {
-                            var already_present = false;
-                            for (versions.items) |v_existing| {
-                                if (v_existing.compare(v) == 0) {
-                                    already_present = true;
-                                    break;
+                    const packages = if (index_number == 0) idx.package else if (private_idx) |private| private.package else continue;
+                    for (packages) |pkg| {
+                        if (packageNamesMatch(pkg.name, name)) {
+                            const v = try semver.Version.parseCloned(arena, pkg.version);
+
+                            if (res_constraint) |_| {
+                                var already_present = false;
+                                for (versions.items) |v_existing| {
+                                    if (v_existing.compare(v) == 0) {
+                                        already_present = true;
+                                        break;
+                                    }
                                 }
+                                if (already_present) continue;
                             }
-                            if (already_present) continue;
-                        }
 
-                        var desc = client.fetch_descriptor(pkg.descriptor) catch continue;
-                        defer desc.deinit(self.allocator);
-                        const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
-                        const selected_artifact = desc.artifact[selected_artifact_idx];
-                        const desc_clone = try desc.clone(arena);
+                            var desc = client.fetch_descriptor(pkg.descriptor) catch continue;
+                            defer desc.deinit(self.allocator);
+                            const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
+                            const selected_artifact = desc.artifact[selected_artifact_idx];
+                            const desc_clone = try desc.clone(arena);
 
-                        try self.artifacts.append(arena, .{
-                            .name = try arena.dupe(u8, pkg.name),
-                            .kind = pkg.kind,
-                            .artifact_hash = try arena.dupe(u8, selected_artifact.hash),
-                            .version = try arena.dupe(u8, pkg.version),
-                            .lua_abi = try arena.dupe(u8, selected_artifact.lua_abi),
-                            .registry_url = try arena.dupe(u8, reg.url),
-                            .registry_token = if (reg.token) |t| try arena.dupe(u8, t) else null,
-                            .descriptor_path = try arena.dupe(u8, pkg.descriptor),
-                            .artifact_idx = selected_artifact_idx,
-                            .remote_desc = desc_clone,
-                            .origin = .{
-                                .moonstone_registry = .{
-                                    .url = try arena.dupe(u8, reg.url),
-                                    .token = if (reg.token) |t| try arena.dupe(u8, t) else null,
-                                    .descriptor_path = try arena.dupe(u8, pkg.descriptor),
-                                    .artifact_idx = selected_artifact_idx,
+                            try self.artifacts.append(arena, .{
+                                .name = try arena.dupe(u8, pkg.name),
+                                .kind = pkg.kind,
+                                .artifact_hash = try arena.dupe(u8, selected_artifact.hash),
+                                .version = try arena.dupe(u8, pkg.version),
+                                .lua_abi = try arena.dupe(u8, selected_artifact.lua_abi),
+                                .registry_url = try arena.dupe(u8, reg.url),
+                                .registry_token = if (reg.token) |t| try arena.dupe(u8, t) else null,
+                                .descriptor_path = try arena.dupe(u8, pkg.descriptor),
+                                .artifact_idx = selected_artifact_idx,
+                                .remote_desc = desc_clone,
+                                .origin = .{
+                                    .moonstone_registry = .{
+                                        .url = try arena.dupe(u8, reg.url),
+                                        .token = if (reg.token) |t| try arena.dupe(u8, t) else null,
+                                        .descriptor_path = try arena.dupe(u8, pkg.descriptor),
+                                        .artifact_idx = selected_artifact_idx,
+                                    },
                                 },
-                            },
-                        });
+                            });
 
-                        try versions.append(self.allocator, v);
+                            try versions.append(self.allocator, v);
+                        }
                     }
-                }
                 }
             }
         }
@@ -610,13 +615,13 @@ pub const RegistryProvider = struct {
         defer allocator.free(host);
 
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
                 return i;
             }
         }
 
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(art, options) and std.mem.eql(u8, art.target, "source")) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and std.mem.eql(u8, art.target, "source")) {
                 return i;
             }
         }
@@ -641,7 +646,13 @@ pub const RegistryProvider = struct {
         return try std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
     }
 
-    fn artifactMatchesRuntimeAbi(art: manifest.RemoteArtifact, options: root.ResolveOptions) bool {
+    fn artifactMatchesRuntimeAbi(kind: manifest.Kind, art: manifest.RemoteArtifact, options: root.ResolveOptions) bool {
+        // If it's a runtime artifact, it doesn't need to match the project's active ABI
+        if (kind == .runtime) return true;
+
+        // If the artifact declares its own isolated runtime, it doesn't need to match the project runtime
+        if (art.runtime.len > 0) return true;
+
         if (options.runtime) |active_abi| {
             return root.options.runtimeAbiMatches(active_abi, art.lua_abi);
         }
@@ -681,7 +692,7 @@ pub const RegistryProvider = struct {
                         rt_ver = rt[pos + 1 ..];
                     }
                     if (std.mem.eql(u8, rt_ver, "unknown")) continue;
-                    
+
                     try terms.append(self.allocator, .{
                         .name = try arena.dupe(u8, rt_name),
                         .range = try semver.VersionRange.parse(arena, rt_ver),
@@ -689,9 +700,9 @@ pub const RegistryProvider = struct {
                     });
                 }
 
-                var lib_it = desc.dependencies.libs.iterator();
-                while (lib_it.next()) |entry| {
-                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
+                for (desc.dependencies) |dep| {
+                    const raw_spec = try dep.toSpecString(arena);
+                    const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                     defer spec.deinit(self.allocator);
                     try terms.append(self.allocator, .{
                         .name = try arena.dupe(u8, spec.name),
@@ -700,39 +711,22 @@ pub const RegistryProvider = struct {
                         .resolver = spec.resolver,
                     });
                 }
-                var bin_it = desc.dependencies.bins.iterator();
-                while (bin_it.next()) |entry| {
-                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
-                    defer spec.deinit(self.allocator);
-                    try terms.append(self.allocator, .{
-                        .name = try arena.dupe(u8, spec.name),
-                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
-                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                        .resolver = spec.resolver,
-                    });
+
+                // Add runtime dependency if specified in the artifact
+                if (art.artifact_idx) |idx| {
+                    const selected_art = desc.artifact[idx];
+                    if (selected_art.runtime.len > 0) {
+                        const spec = try package_spec.parsePackageSpec(self.allocator, selected_art.runtime);
+                        defer spec.deinit(self.allocator);
+                        try terms.append(self.allocator, .{
+                            .name = try arena.dupe(u8, spec.name),
+                            .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                            .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                            .resolver = spec.resolver,
+                        });
+                    }
                 }
-                var dev_lib_it = desc.dependencies.dev_libs.iterator();
-                while (dev_lib_it.next()) |entry| {
-                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
-                    defer spec.deinit(self.allocator);
-                    try terms.append(self.allocator, .{
-                        .name = try arena.dupe(u8, spec.name),
-                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
-                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                        .resolver = spec.resolver,
-                    });
-                }
-                var dev_bin_it = desc.dependencies.dev_bins.iterator();
-                while (dev_bin_it.next()) |entry| {
-                    const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
-                    defer spec.deinit(self.allocator);
-                    try terms.append(self.allocator, .{
-                        .name = try arena.dupe(u8, spec.name),
-                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
-                        .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                        .resolver = spec.resolver,
-                    });
-                }
+
                 return try terms.toOwnedSlice(self.allocator);
             }
 
@@ -758,51 +752,52 @@ pub const RegistryProvider = struct {
                         }
                     }
 
-                    inline for (.{ &mt.dependencies.libs, &mt.dependencies.bins, &mt.dependencies.dev_libs, &mt.dependencies.dev_bins }) |dependencies| {
-                        var dependency_it = dependencies.iterator();
-                        while (dependency_it.next()) |entry| {
-                            const spec = try package_spec.parsePackageSpec(self.allocator, entry.value_ptr.*);
-                            defer spec.deinit(self.allocator);
+                    for (mt.dependencies.items) |dep| {
+                        const raw_spec = try dep.toSpecString(self.allocator);
+                        defer self.allocator.free(raw_spec);
+                        const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
+                        defer spec.deinit(self.allocator);
 
-                            var child_name = entry.key_ptr.*;
-                            var child_constraint = entry.value_ptr.*;
-                            var child_registry: ?[]const u8 = null;
-                            if (spec.resolver != null or spec.registry != null) {
-                                child_name = spec.name;
-                                child_constraint = spec.constraint orelse "*";
-                            }
-
-                            if (spec.resolver == .path) {
-                                const child_path = if (std.fs.path.isAbsolute(spec.name))
-                                    try arena.dupe(u8, spec.name)
-                                else
-                                    try std.fs.path.join(arena, &.{ lp, spec.name });
-                                const child = try path_resolver.resolve(arena, self.io, child_path, child_constraint, self.options);
-                                child_name = child.name;
-                                child_registry = child_path;
-                                try self.artifacts.append(arena, child);
-                            } else if (spec.registry) |registry_name| {
-                                child_registry = registry_name;
-                            }
-
-                            try self.store_dependency_origins.append(self.allocator, .{
-                                .child_name = try self.allocator.dupe(u8, child_name),
-                                .child_constraint = try self.allocator.dupe(u8, child_constraint),
-                                .child_resolver = spec.resolver,
-                                .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
-                                .parent_name = try self.allocator.dupe(u8, art.name),
-                                .parent_version = try self.allocator.dupe(u8, art.version),
-                                .parent_resolver = if (std.mem.eql(u8, art.artifact_hash, "link")) .link else .path,
-                                .parent_manifest_path = try self.allocator.dupe(u8, manifest_path),
-                            });
-
-                            try terms.append(self.allocator, .{
-                                .name = try arena.dupe(u8, child_name),
-                                .range = try semver.VersionRange.parse(arena, child_constraint),
-                                .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                                .resolver = spec.resolver,
-                            });
+                        var child_name = dep.name;
+                        var child_constraint = dep.constraint;
+                        var child_registry: ?[]const u8 = null;
+                        if (spec.resolver != null or spec.registry != null) {
+                            child_name = spec.name;
+                            child_constraint = spec.constraint orelse "*";
                         }
+
+                        if (spec.resolver == .path) {
+                            const child_path = if (std.fs.path.isAbsolute(spec.name))
+                                try arena.dupe(u8, spec.name)
+                            else
+                                try std.fs.path.join(arena, &.{ lp, spec.name });
+                            const child = try path_resolver.resolve(arena, self.io, child_path, child_constraint, self.options);
+                            child_name = child.name;
+                            child_registry = child_path;
+                            try self.artifacts.append(arena, child);
+                        } else if (spec.registry) |registry_name| {
+                            child_registry = registry_name;
+                        }
+
+                        try self.store_dependency_origins.append(self.allocator, .{
+                            .child_name = try self.allocator.dupe(u8, child_name),
+                            .child_constraint = try self.allocator.dupe(u8, child_constraint),
+                            .child_resolver = spec.resolver,
+                            .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                            .child_role = dep.role,
+                            .parent_name = try self.allocator.dupe(u8, art.name),
+                            .parent_version = try self.allocator.dupe(u8, art.version),
+                            .parent_resolver = if (std.mem.eql(u8, art.artifact_hash, "link")) .link else .path,
+                            .parent_manifest_path = try self.allocator.dupe(u8, manifest_path),
+                        });
+
+                        try terms.append(self.allocator, .{
+                            .name = try arena.dupe(u8, child_name),
+                            .range = try semver.VersionRange.parse(arena, child_constraint),
+                            .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                            .resolver = spec.resolver,
+                            .role = dep.role,
+                        });
                     }
                     return try terms.toOwnedSlice(self.allocator);
                 }
@@ -844,9 +839,7 @@ pub const RegistryProvider = struct {
 
                     for (sm.dependencies) |dep| {
                         const dep_resolver = if (dep.resolver) |r|
-                            if (std.mem.eql(u8, r, "rocks")) root.CoordinatorKind.rocks
-                            else if (std.mem.eql(u8, r, "moonstone")) root.CoordinatorKind.moonstone
-                            else root.CoordinatorKind.moonstone
+                            if (std.mem.eql(u8, r, "rocks")) root.CoordinatorKind.rocks else if (std.mem.eql(u8, r, "moonstone")) root.CoordinatorKind.moonstone else root.CoordinatorKind.moonstone
                         else
                             root.CoordinatorKind.moonstone;
 
@@ -854,6 +847,7 @@ pub const RegistryProvider = struct {
                             .child_name = try self.allocator.dupe(u8, dep.name),
                             .child_constraint = try self.allocator.dupe(u8, dep.constraint),
                             .child_resolver = dep_resolver,
+                            .child_role = dep.role,
                             .parent_name = try self.allocator.dupe(u8, art.name),
                             .parent_version = try self.allocator.dupe(u8, art.version),
                             .parent_resolver = parent_resolver,
@@ -864,6 +858,7 @@ pub const RegistryProvider = struct {
                             .name = try arena.dupe(u8, dep.name),
                             .range = try semver.VersionRange.parse(arena, dep.constraint),
                             .resolver = dep_resolver,
+                            .role = dep.role,
                         });
                     }
                     return try terms.toOwnedSlice(self.allocator);
@@ -877,8 +872,10 @@ pub const RegistryProvider = struct {
 
 fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(index_name, requested_name)) return true;
-    if (std.mem.eql(u8, requested_name, "@moonstone/lua")) return std.mem.eql(u8, index_name, "lua");
-    if (std.mem.eql(u8, requested_name, "@moonstone/luajit")) return std.mem.eql(u8, index_name, "luajit");
-    if (std.mem.eql(u8, requested_name, "@moonstone/love")) return std.mem.eql(u8, index_name, "love");
-    return false;
+
+    const canonical_req = if (std.mem.eql(u8, requested_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, requested_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, requested_name, "love")) @as([]const u8, "moonstone/love") else requested_name;
+
+    const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love") else index_name;
+
+    return std.mem.eql(u8, canonical_idx, canonical_req);
 }

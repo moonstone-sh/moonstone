@@ -26,25 +26,34 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
 
     var current = raw;
 
-    // 1. Check for resolver prefix
+    // 1. Check for resolver/registry prefix (colon notation)
     if (std.mem.indexOfScalar(u8, current, ':')) |colon_idx| {
         const prefix = current[0..colon_idx];
         if (root.ResolverKind.fromString(prefix)) |kind| {
             result.resolver = kind;
             current = current[colon_idx + 1 ..];
         } else |_| {
+            // Check if it's a reserved keyword we don't know about yet but shouldn't use as registry name
+            const reserved = &[_][]const u8{ "moonstone", "rocks", "links", "path", "artifact", "git", "http", "https" };
+            var is_reserved = false;
+            for (reserved) |res| {
+                if (std.mem.eql(u8, prefix, res)) {
+                    is_reserved = true;
+                    break;
+                }
+            }
+            // If it matches a known reserved resolver or common protocol, treat it as a registry reference
             result.registry = try allocator.dupe(u8, prefix);
             current = current[colon_idx + 1 ..];
         }
     }
 
-    // 2. Check for @ constraint
+    // 2. Check for @ constraint (at the end)
     if (std.mem.lastIndexOfScalar(u8, current, '@')) |at_idx| {
-        const is_scoped_name = std.mem.startsWith(u8, current, "@") and std.mem.indexOfScalar(u8, current, '/') != null;
         const has_url_scheme = std.mem.indexOf(u8, current[0..at_idx], "://") != null;
-        if (!has_url_scheme and (!is_scoped_name or at_idx > std.mem.indexOfScalar(u8, current, '/').?)) {
-            result.constraint = try allocator.dupe(u8, current[at_idx + 1 ..]);
-            current = current[0..at_idx];
+        if (!has_url_scheme) {
+             result.constraint = try allocator.dupe(u8, current[at_idx + 1 ..]);
+             current = current[0..at_idx];
         }
     }
 
@@ -57,9 +66,9 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
 }
 
 pub fn canonicalOfficialRuntime(name: []const u8) []const u8 {
-    if (std.mem.eql(u8, name, "lua")) return "@moonstone/lua";
-    if (std.mem.eql(u8, name, "luajit")) return "@moonstone/luajit";
-    if (std.mem.eql(u8, name, "love")) return "@moonstone/love";
+    if (std.mem.eql(u8, name, "lua")) return "moonstone/lua";
+    if (std.mem.eql(u8, name, "luajit")) return "moonstone/luajit";
+    if (std.mem.eql(u8, name, "love")) return "moonstone/love";
     return name;
 }
 

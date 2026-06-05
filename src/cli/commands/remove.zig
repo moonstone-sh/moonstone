@@ -28,8 +28,8 @@ pub const remove_command = struct {
             \\
             \\Flags:
             \\  --global     Unregister from the global link registry instead of current project
-            \\  --lib        Remove from [dependencies.libs]
-            \\  --bin        Remove from [dependencies.bins]
+            \\  --lib        Remove runtime library dependency
+            \\  --bin        Remove tool dependency
             \\  --runtime    Remove project runtime (sets to default)
             \\  --dev        Remove from dev-dependencies
             \\  --no-sync Do not run moon sync
@@ -47,19 +47,22 @@ pub const remove_command = struct {
         if (std.Io.Dir.cwd().readFileAlloc(ctx.io, toml_path, ctx.allocator, std.Io.Limit.limited(1024 * 1024))) |content| {
             defer ctx.allocator.free(content);
             if (moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content)) |mt| {
-                defer { var m = mt; m.deinit(ctx.allocator); }
-                inline for (&.{ &mt.dependencies.libs, &mt.dependencies.bins, &mt.dependencies.dev_libs, &mt.dependencies.dev_bins }) |map| {
-                    var it = map.iterator();
-                    while (it.next()) |entry| {
-                        try list.append(ctx.allocator, try ctx.allocator.dupe(u8, entry.key_ptr.*));
-                    }
+                defer {
+                    var m = mt;
+                    m.deinit(ctx.allocator);
+                }
+                for (mt.dependencies.items) |dep| {
+                    try list.append(ctx.allocator, try ctx.allocator.dupe(u8, dep.name));
                 }
             } else |_| {}
         } else |_| {}
 
         // 2. Suggest from global links if --global might be intended
         const paths = try moonstone.platform.fs.resolve_moonstone(ctx.allocator, ctx.env, ctx.io);
-        defer { var p = paths; p.deinit(ctx.allocator); }
+        defer {
+            var p = paths;
+            p.deinit(ctx.allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(ctx.io, paths.index);
         const index_db_path = try std.fs.path.join(ctx.allocator, &.{ paths.index, "index.sqlite" });
@@ -68,7 +71,10 @@ pub const remove_command = struct {
         defer ctx.allocator.free(index_db_path_z);
 
         if (moonstone.store.driver.StoreDriver.init(ctx.allocator, index_db_path_z)) |idx| {
-            defer { var i = idx; i.deinit(); }
+            defer {
+                var i = idx;
+                i.deinit();
+            }
             const lr = moonstone.store.links.LinkStore.init(@constCast(&idx));
             if (lr.list()) |entries| {
                 defer {
@@ -129,30 +135,31 @@ pub const remove_command = struct {
             const parsed = try moonstone.domain.package_spec.parsePackageSpec(allocator, pkg_spec);
             defer parsed.deinit(allocator);
             const pkg_name = parsed.name;
-            
-            if (self.bin) {
-                if (mt.dependencies.bins.fetchSwapRemove(pkg_name)) |entry| {
-                    try removed_list.append(allocator, try allocator.dupe(u8, pkg_name));
-                    allocator.free(entry.key);
-                    allocator.free(entry.value);
-                    removed_count += 1;
-                }
-            } else if (self.lib or (!self.bin and !self.runtime)) {
-                if (mt.dependencies.libs.fetchSwapRemove(pkg_name)) |entry| {
-                    try removed_list.append(allocator, try allocator.dupe(u8, pkg_name));
-                    allocator.free(entry.key);
-                    allocator.free(entry.value);
-                    removed_count += 1;
-                }
-                // Try dev_libs too if not specified
-                if (!self.lib) {
-                    if (mt.dependencies.dev_libs.fetchSwapRemove(pkg_name)) |entry| {
+
+            var i: usize = 0;
+            while (i < mt.dependencies.items.len) {
+                var dep = mt.dependencies.items[i];
+                if (std.mem.eql(u8, dep.name, pkg_name)) {
+                    var remove = false;
+                    if (self.bin and dep.role == .tool) {
+                        remove = true;
+                    } else if (self.lib and dep.role == .runtime) {
+                        remove = true;
+                    } else if (self.dev and dep.role == .dev) {
+                        remove = true;
+                    } else if (!self.bin and !self.lib and !self.dev) {
+                        remove = true;
+                    }
+
+                    if (remove) {
                         try removed_list.append(allocator, try allocator.dupe(u8, pkg_name));
-                        allocator.free(entry.key);
-                        allocator.free(entry.value);
+                        dep.deinit(allocator);
+                        _ = mt.dependencies.orderedRemove(i);
                         removed_count += 1;
+                        continue;
                     }
                 }
+                i += 1;
             }
         }
 
@@ -203,7 +210,10 @@ pub const remove_command = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
