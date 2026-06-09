@@ -193,6 +193,25 @@ pub const ExecCommand = struct {
             }
         }
 
+        // Workaround: std.process.spawn uses parent PATH for expand_arg0 resolution,
+        // ignoring environ_map PATH. Manually search PATH from run_env.env_map.
+        if (!std.fs.path.isAbsolute(self.positionals[0])) {
+            if (run_env.env_map.get("PATH")) |path_val| {
+                var path_it = std.mem.splitScalar(u8, path_val, ':');
+                while (path_it.next()) |dir| {
+                    if (dir.len == 0) continue;
+                    const candidate = try std.fs.path.join(allocator, &.{ dir, self.positionals[0] });
+                    defer allocator.free(candidate);
+                    if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| {
+                        argv[0] = try allocator.dupe(u8, candidate);
+                        break;
+                    } else |_| {}
+                }
+            }
+        }
+
+        try stdout.flush();
+
         if (emitter) |e| {
             try e.emit(io, .STATUS, "exec", "starting", .{ .resolved_argv = argv });
             try e.terminate(io, name, "executing", .{});

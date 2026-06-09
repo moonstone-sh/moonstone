@@ -50,6 +50,13 @@ fn projectedArtifactFromPkg(
     };
 }
 
+fn roleForResolvedPackage(mt: *const moonstone.domain.manifest.MoonstoneToml, pkg_name: []const u8) moonstone.domain.manifest.DependencyRole {
+    for (mt.dependencies.items) |dep| {
+        if (std.ascii.eqlIgnoreCase(dep.name, pkg_name)) return dep.role;
+    }
+    return .runtime;
+}
+
 const SyncReport = struct {
     requested_targets: usize = 0,
     resolved_packages: usize = 0,
@@ -497,7 +504,11 @@ pub const SyncCommand = struct {
                 if (err == error.LinkedRuntimeAbiMismatch) {
                     if (provider_impl.linked_runtime_diagnostic) |diag| {
                         if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                        ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path }) } };
+                        if (diag.suggested_role) |sr| {
+                            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}\nIf this is a development CLI tool, add it with --{s} instead.", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path, sr }) } };
+                        } else {
+                            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path }) } };
+                        }
                     }
                 }
                 return err;
@@ -595,6 +606,67 @@ pub const SyncCommand = struct {
                     old.value.deinit(allocator);
                 }
                 try solution.put(allocator, try allocator.dupe(u8, dep_name), resolved_direct);
+
+                if (resolved_direct.local_path) |linked_path| {
+                    if (std.mem.eql(u8, resolved_direct.artifact_hash, "link") or std.mem.eql(u8, resolved_direct.artifact_hash, "path")) {
+                        const manifest_path = try std.fs.path.join(allocator, &.{ linked_path, "moonstone.toml" });
+                        defer allocator.free(manifest_path);
+                        const linked_content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+                            if (err == error.FileNotFound) continue;
+                            return err;
+                        };
+                        defer allocator.free(linked_content);
+                        var linked_mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, linked_content);
+                        defer linked_mt.deinit(allocator);
+
+                        for (linked_mt.dependencies.items) |child_dep| {
+                            const child_raw_spec = try child_dep.toSpecString(allocator);
+                            defer allocator.free(child_raw_spec);
+                            const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
+                            defer child_spec.deinit(allocator);
+                            const child_name = if (child_spec.resolver == .rocks) child_spec.name else child_dep.name;
+                            if (solutionContainsPackage(&solution, child_name)) continue;
+
+                            var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
+                            var child_kinds_len: usize = 0;
+                            if (child_spec.resolver) |resolver_kind| {
+                                child_kinds_buf[child_kinds_len] = resolver_kind;
+                                child_kinds_len += 1;
+                            } else {
+                                const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
+                                for (default_order) |r_name| {
+                                    if (moonstone.resolution.coordinator.CoordinatorKind.fromString(r_name)) |kind| {
+                                        child_kinds_buf[child_kinds_len] = kind;
+                                        child_kinds_len += 1;
+                                    } else |_| continue;
+                                }
+                            }
+
+                            const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
+                                .path, .link, .artifact => child_spec.name,
+                                else => child_name,
+                            } else child_name;
+                            var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
+                            for (child_kinds_buf[0..child_kinds_len]) |kind| {
+                                resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
+                                    .offline = self.offline,
+                                    .runtime = active_lua_abi,
+                                    .runtime_artifact_hash = rt_res.artifact_hash,
+                                    .runtime_path = rt_mat_res.path,
+                                    .on_event = @import("command.zig").onResolveEvent,
+                                    .on_event_context = &resolve_cb_ctx,
+                                }, kind, env) catch |err| {
+                                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                                    return err;
+                                };
+                                if (resolved_child_opt != null) break;
+                            }
+                            var resolved_child = resolved_child_opt orelse return error.PackageNotFound;
+                            errdefer resolved_child.deinit(allocator);
+                            try solution.put(allocator, try allocator.dupe(u8, child_name), resolved_child);
+                        }
+                    }
+                }
             }
 
             report.requested_targets = targets.items.len;
@@ -839,6 +911,7 @@ pub const SyncCommand = struct {
                 .pkg_name = try allocator.dupe(u8, rt_res.name),
                 .pkg_version = try allocator.dupe(u8, rt_res.version),
                 .pkg_kind = .runtime,
+                .role = .runtime,
             });
         } else {
             try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &rt_res, rt_mat_res.path, rt_mat_res.artifact_hash, .runtime));
@@ -865,6 +938,7 @@ pub const SyncCommand = struct {
                         .pkg_name = try allocator.dupe(u8, pkg.name),
                         .pkg_version = try allocator.dupe(u8, pkg.version),
                         .pkg_kind = pkg.kind,
+                        .role = roleForResolvedPackage(&mt, pkg_name_sol),
                     });
                     report.path_link_projections += 1;
                     continue;

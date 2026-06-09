@@ -52,7 +52,7 @@ pub const DependencyRole = enum {
                 .export_default = false,
             },
             .tool => .{
-                .link_lua_modules_to_root = false,
+                .link_lua_modules_to_root = true,
                 .link_cmodules_to_root = false,
                 .expose_public_bins = false,
                 .expose_tool_scope = true,

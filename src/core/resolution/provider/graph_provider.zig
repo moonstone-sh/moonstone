@@ -11,6 +11,7 @@ const rocks_resolver = @import("../sources/luarocks.zig");
 const path_resolver = @import("../sources/path.zig");
 const links_mod = @import("../../store/links.zig");
 const package_spec = @import("../../domain/package_spec.zig");
+const DependencyRole = @import("../../domain/dependency_role.zig").DependencyRole;
 
 pub const StoreDependencyOrigin = struct {
     child_name: []const u8,
@@ -44,6 +45,7 @@ pub const LinkedRuntimeDiagnostic = struct {
     required_abi: []const u8,
     active_abi: []const u8,
     manifest_path: []const u8,
+    suggested_role: ?[]const u8 = null,
 };
 
 pub const RegistryProvider = struct {
@@ -118,6 +120,7 @@ pub const RegistryProvider = struct {
             self.allocator.free(diag.required_abi);
             self.allocator.free(diag.active_abi);
             self.allocator.free(diag.manifest_path);
+            if (diag.suggested_role) |sr| self.allocator.free(sr);
         }
         // All metadata is in the arena, just deinit it once.
         self.arena.deinit();
@@ -659,6 +662,19 @@ pub const RegistryProvider = struct {
         return true;
     }
 
+    fn targetRole(self: *RegistryProvider, name: []const u8) DependencyRole {
+        for (self.targets) |target| {
+            if (std.ascii.eqlIgnoreCase(target.name, name)) return target.role;
+        }
+        return .runtime;
+    }
+
+    fn linkedPackageUsesIsolatedRuntime(role: DependencyRole, kind: manifest.Kind) bool {
+        const policy = role.getProjectionPolicy();
+        _ = kind;
+        return policy.expose_tool_scope or policy.expose_helper_scope;
+    }
+
     fn getDependencies(ctx: *anyopaque, name: []const u8, version: semver.Version) anyerror![]const term_mod.Term {
         const self: *RegistryProvider = @ptrCast(@alignCast(ctx));
         const arena = self.arena.allocator();
@@ -740,13 +756,19 @@ pub const RegistryProvider = struct {
                     defer mt.deinit(self.allocator);
 
                     if (self.options.runtime) |active_abi| {
-                        if (!root.options.runtimeAbiMatches(active_abi, mt.runtime.abi)) {
+                        const role = self.targetRole(art.name);
+                        if (!linkedPackageUsesIsolatedRuntime(role, mt.package.kind) and !root.options.runtimeAbiMatches(active_abi, mt.runtime.abi)) {
+                            const suggested_role: ?[]const u8 = if (mt.package.kind == .script or mt.package.kind == .bin)
+                                try self.allocator.dupe(u8, "tool")
+                            else
+                                null;
                             self.linked_runtime_diagnostic = .{
                                 .package_name = try self.allocator.dupe(u8, art.name),
                                 .package_version = try self.allocator.dupe(u8, art.version),
                                 .required_abi = try self.allocator.dupe(u8, mt.runtime.abi),
                                 .active_abi = try self.allocator.dupe(u8, active_abi),
                                 .manifest_path = try self.allocator.dupe(u8, manifest_path),
+                                .suggested_role = suggested_role,
                             };
                             return error.LinkedRuntimeAbiMismatch;
                         }

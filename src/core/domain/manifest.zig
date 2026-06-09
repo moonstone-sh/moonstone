@@ -20,6 +20,14 @@ pub const Kind = enum {
     }
 };
 
+fn packageKindFromString(s: []const u8) !Kind {
+    if (std.mem.eql(u8, s, "script")) return .script;
+    if (std.mem.eql(u8, s, "lib")) return .lib;
+    if (std.mem.eql(u8, s, "bin")) return .bin;
+    if (std.mem.eql(u8, s, "runtime")) return .runtime;
+    return error.InvalidPackageKind;
+}
+
 pub const dependency_role = @import("dependency_role.zig");
 pub const DependencyRole = dependency_role.DependencyRole;
 
@@ -648,7 +656,7 @@ pub const RemotePackageDescriptor = struct {
         self.package = .{
             .name = try allocator.dupe(u8, p_val.get("name").?.string),
             .version = try allocator.dupe(u8, p_val.get("version").?.string),
-            .kind = Kind.from_string(p_val.get("kind").?.string) catch .lib,
+            .kind = try packageKindFromString(p_val.get("kind").?.string),
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
             .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
@@ -1047,7 +1055,7 @@ pub const MoonstoneToml = struct {
         self.package = .{
             .name = try allocator.dupe(u8, package_name.string),
             .version = try allocator.dupe(u8, package_version.string),
-            .kind = Kind.from_string(package_kind.string) catch .lib,
+            .kind = try packageKindFromString(package_kind.string),
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
         };
         const runtime_name = if (r_val) |runtime| blk: {
@@ -1252,7 +1260,23 @@ pub const MoonstoneToml = struct {
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
 
+        inline for (.{ DependencyRole.runtime, DependencyRole.dev, DependencyRole.tool, DependencyRole.helper, DependencyRole.peer, DependencyRole.optional }) |role| {
+            var wrote_header = false;
+            for (self.dependencies.items) |dep| {
+                if (dep.role != role or dep.resolver != null or dep.optional) continue;
+                if (!wrote_header) {
+                    try writer.print("\n[dependencies.{s}]\n", .{@tagName(role)});
+                    wrote_header = true;
+                }
+                try writeTomlString(writer, dep.name);
+                try writer.print(" = ", .{});
+                try writeTomlString(writer, dep.constraint);
+                try writer.print("\n", .{});
+            }
+        }
+
         for (self.dependencies.items) |dep| {
+            if (dep.resolver == null and !dep.optional) continue;
             try writer.print("\n[[dependencies]]\n", .{});
             try writer.print("name = ", .{});
             try writeTomlString(writer, dep.name);
@@ -1530,6 +1554,42 @@ test "MoonstoneToml parse rejects missing package section" {
     ;
 
     try std.testing.expectError(error.MissingPackageSection, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml parse rejects package kind tool" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "tool-kind"
+        \\version = "0.1.0"
+        \\kind = "tool"
+    ;
+
+    try std.testing.expectError(error.InvalidPackageKind, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml serializes simple dependencies as role tables" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "roles"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[dependencies.tool]
+        \\"moonstone/ballad" = "^0.2"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+
+    try std.testing.expect(std.mem.indexOf(u8, out.writer.buffer[0..out.writer.end], "[dependencies.tool]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.writer.buffer[0..out.writer.end], "\"moonstone/ballad\" = \"^0.2\"") != null);
 }
 
 test "MoonstoneToml parse migrates legacy commands to scripts" {

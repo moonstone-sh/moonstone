@@ -25,6 +25,7 @@ pub const add_command = struct {
     role: ?[]const u8 = null,
     dev: bool = false,
     tool: bool = false,
+    optional: bool = false,
     bin: bool = false,
     lib: bool = false,
     offline: bool = false,
@@ -222,6 +223,18 @@ pub const add_command = struct {
             targets.deinit(allocator);
         }
 
+        const target_role: moonstone.domain.manifest.DependencyRole = blk: {
+            if (self.role) |r| {
+                break :blk moonstone.domain.manifest.DependencyRole.fromString(r) orelse {
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Unknown role '{s}'. Valid roles: dev, tool, runtime, helper, peer, optional.", .{r}) } };
+                    return error.InvalidArgument;
+                };
+            }
+            if (self.dev) break :blk .dev;
+            if (self.tool) break :blk .tool;
+            break :blk .runtime;
+        };
+
         var missing_explicit = false;
         for (self.positionals) |pkg_spec| {
             const parsed = try moonstone.domain.package_spec.parsePackageSpec(allocator, pkg_spec);
@@ -241,6 +254,7 @@ pub const add_command = struct {
                 .range = range,
                 .registry = if (parsed.registry) |r| try allocator.dupe(u8, r) else if (parsed.resolver == .path) try allocator.dupe(u8, parsed.name) else null,
                 .resolver = parsed.resolver,
+                .role = target_role,
             });
         }
 
@@ -252,6 +266,7 @@ pub const add_command = struct {
                 .range = try t.range.clone(allocator),
                 .registry = if (t.registry) |r| try allocator.dupe(u8, r) else null,
                 .resolver = t.resolver,
+                .role = t.role,
             });
         }
         const provider_targets_slice = try provider_targets.toOwnedSlice(allocator);
@@ -276,7 +291,11 @@ pub const add_command = struct {
             if (err == error.NoSolution) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
             if (err == error.LinkedRuntimeAbiMismatch) {
                 if (provider_impl.linked_runtime_diagnostic) |diag| {
-                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path }) } };
+                    if (diag.suggested_role) |sr| {
+                        ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}\nIf this is a development CLI tool, add it with --{s} instead.", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path, sr }) } };
+                    } else {
+                        ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}", .{ diag.package_name, diag.package_version, diag.required_abi, diag.active_abi, diag.manifest_path }) } };
+                    }
                 }
             }
             return err;
@@ -521,18 +540,8 @@ pub const add_command = struct {
                     if (self.lib) break :blk moonstone.domain.manifest.Kind.lib;
                     break :blk resolved.kind;
                 };
-                const target_role: moonstone.domain.manifest.DependencyRole = blk: {
-                    if (self.role) |r| {
-                        break :blk moonstone.domain.manifest.DependencyRole.fromString(r) orelse {
-                            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Unknown role '{s}'. Valid roles: dev, tool, runtime, helper, peer, optional.", .{r}) } };
-                            return error.InvalidArgument;
-                        };
-                    }
-                    if (self.dev) break :blk .dev;
-                    if (self.tool) break :blk .tool;
-                    break :blk .runtime;
-                };
-                try mt.add_dependency(allocator, pkg_name, final_ver, target_role, false);
+                // target_role already computed above
+                try mt.add_dependency(allocator, pkg_name, final_ver, target_role, self.optional);
                 _ = effective_kind;
                 try added_list.append(allocator, try allocator.dupe(u8, pkg_name));
             }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const UNIQUE_BUILD_MARKER = "UNIQUE_BUILD_MARKER_20250608_1847";
 const manifest = @import("../domain/manifest.zig");
 const driver_mod = @import("../store/driver.zig");
 
@@ -14,6 +15,7 @@ pub const LiveLink = struct {
     pkg_name: []const u8,
     pkg_version: []const u8,
     pkg_kind: manifest.Kind,
+    role: @import("../domain/dependency_role.zig").DependencyRole = .runtime,
 };
 
 pub const ProjectedArtifact = struct {
@@ -59,6 +61,114 @@ fn runtimeInfoFromLiveLinks(
     }
 
     return null;
+}
+
+fn writeLiveLinkScope(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_dir: std.Io.Dir,
+    scope_root: []const u8,
+    bin_name: []const u8,
+    source_path: []const u8,
+    lua_ver_dot: []const u8,
+) !void {
+    const scope_dir_rel = try std.fs.path.join(allocator, &.{ scope_root, bin_name });
+    defer allocator.free(scope_dir_rel);
+    try env_dir.createDirPath(io, scope_dir_rel);
+
+    var scope_dir = try env_dir.openDir(io, scope_dir_rel, .{});
+    defer scope_dir.close(io);
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    try aw.writer.print("[env]\n", .{});
+
+    const bin_dir_path = try std.fs.path.join(allocator, &.{ source_path, "bin" });
+    defer allocator.free(bin_dir_path);
+    try aw.writer.print("path_prepend = [\"{s}\"]\n", .{bin_dir_path});
+
+    const src_lua_path = try std.fs.path.join(allocator, &.{ source_path, "src", "?.lua" });
+    defer allocator.free(src_lua_path);
+    const src_init_path = try std.fs.path.join(allocator, &.{ source_path, "src", "?", "init.lua" });
+    defer allocator.free(src_init_path);
+    const env_lua_path = try std.fmt.allocPrint(allocator, ".moonstone/env/share/lua/{s}/?.lua", .{lua_ver_dot});
+    defer allocator.free(env_lua_path);
+    const env_init_path = try std.fmt.allocPrint(allocator, ".moonstone/env/share/lua/{s}/?/init.lua", .{lua_ver_dot});
+    defer allocator.free(env_init_path);
+
+    try aw.writer.print("lua_path = [\"{s}\", \"{s}\", \"{s}\", \"{s}\"]\n", .{ src_lua_path, src_init_path, env_lua_path, env_init_path });
+    try aw.writer.flush();
+
+    const file = try scope_dir.createFile(io, "env.toml", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+}
+
+fn writeLiveLinkScriptShim(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    bin_dir: std.Io.Dir,
+    bin_name: []const u8,
+    source_path: []const u8,
+    script_command: []const u8,
+) !void {
+    const entry = if (std.mem.startsWith(u8, script_command, "lua ")) script_command[4..] else script_command;
+    const shim = try std.fmt.allocPrint(allocator,
+        \\#!/usr/bin/env sh
+        \\set -eu
+        \\TOOL_ROOT="{s}"
+        \\LUA_BIN="$TOOL_ROOT/.moonstone/env/bin/lua"
+        \\if [ ! -x "$LUA_BIN" ]; then LUA_BIN="lua"; fi
+        \\export LUA_PATH="$TOOL_ROOT/src/?.lua;$TOOL_ROOT/src/?/init.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.1/?.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.1/?/init.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.4/?.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.4/?/init.lua;${{LUA_PATH:-}};;"
+        \\export LUA_CPATH="$TOOL_ROOT/.moonstone/env/lib/lua/5.1/?.so;$TOOL_ROOT/.moonstone/env/lib/lua/5.1/?.dylib;$TOOL_ROOT/.moonstone/env/lib/lua/5.4/?.so;$TOOL_ROOT/.moonstone/env/lib/lua/5.4/?.dylib;${{LUA_CPATH:-}};;"
+        \\exec "$LUA_BIN" "$TOOL_ROOT/{s}" "$@"
+        \\
+    , .{ source_path, entry });
+    defer allocator.free(shim);
+
+    bin_dir.deleteFile(io, bin_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+    const file = try bin_dir.createFile(io, bin_name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, shim);
+    try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+}
+
+fn packageLocalName(pkg_name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, pkg_name, '/')) |pos| return pkg_name[pos + 1 ..];
+    return pkg_name;
+}
+
+fn writeTomlString(writer: anytype, value: []const u8) !void {
+    try writer.writeByte('"');
+    for (value) |ch| {
+        switch (ch) {
+            '\\' => try writer.writeAll("\\\\"),
+            '"' => try writer.writeAll("\\\""),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(ch),
+        }
+    }
+    try writer.writeByte('"');
+}
+
+fn liveLinkScriptCommand(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+) !?[]const u8 {
+    const main_path = try std.fs.path.join(allocator, &.{ source_path, "src", "main.lua" });
+    defer allocator.free(main_path);
+
+    std.Io.Dir.cwd().access(io, main_path, .{}) catch |err| {
+        if (err == error.FileNotFound) return null;
+        return err;
+    };
+
+    return try allocator.dupe(u8, "lua src/main.lua");
 }
 
 pub fn link_project_env(
@@ -169,6 +279,10 @@ pub fn link_project_env_at(
                 var mut_p = p;
                 mut_p.deinit(allocator);
             }
+            for (provs.bin_luas) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
             for (provs.headers) |p| {
                 var mut_p = p;
                 mut_p.deinit(allocator);
@@ -186,6 +300,7 @@ pub fn link_project_env_at(
                 mut_p.deinit(allocator);
             }
             allocator.free(provs.bins);
+            allocator.free(provs.bin_luas);
             allocator.free(provs.headers);
             allocator.free(provs.libs);
             allocator.free(provs.lua_modules);
@@ -193,6 +308,41 @@ pub fn link_project_env_at(
         }
 
         for (provs.bins) |b| {
+            const abs_bin_path = try std.fs.path.join(allocator, &.{ art_path, "files", b.path });
+            if (policy.expose_public_bins) {
+                if (public_bin_map.get(b.name)) |existing| {
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                } else {
+                    try public_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
+                        .path = abs_bin_path,
+                        .artifact_hash = try allocator.dupe(u8, hash),
+                        .role = pa.role,
+                    });
+                }
+            } else if (policy.expose_tool_scope) {
+                if (tool_bin_map.get(b.name)) |existing| {
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                } else {
+                    try tool_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
+                        .path = abs_bin_path,
+                        .artifact_hash = try allocator.dupe(u8, hash),
+                        .role = pa.role,
+                    });
+                }
+            } else if (policy.expose_helper_scope) {
+                if (helper_bin_map.get(b.name)) |existing| {
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                } else {
+                    try helper_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
+                        .path = abs_bin_path,
+                        .artifact_hash = try allocator.dupe(u8, hash),
+                        .role = pa.role,
+                    });
+                }
+            }
+        }
+
+        for (provs.bin_luas) |b| {
             const abs_bin_path = try std.fs.path.join(allocator, &.{ art_path, "files", b.path });
             if (policy.expose_public_bins) {
                 if (public_bin_map.get(b.name)) |existing| {
@@ -367,6 +517,10 @@ pub fn link_project_env_at(
                 var mut_p = p;
                 mut_p.deinit(allocator);
             }
+            for (provs.bin_luas) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
             for (provs.headers) |p| {
                 var mut_p = p;
                 mut_p.deinit(allocator);
@@ -384,6 +538,7 @@ pub fn link_project_env_at(
                 mut_p.deinit(allocator);
             }
             allocator.free(provs.bins);
+            allocator.free(provs.bin_luas);
             allocator.free(provs.headers);
             allocator.free(provs.libs);
             allocator.free(provs.lua_modules);
@@ -397,8 +552,12 @@ pub fn link_project_env_at(
                 const mod_dir = std.fs.path.dirname(m.path) orelse continue;
                 const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
                 defer allocator.free(abs_mod_dir);
+                const lua_file_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.lua" });
+                defer allocator.free(lua_file_pattern);
+                const lua_init_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?", "init.lua" });
+                defer allocator.free(lua_init_pattern);
                 if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\"", .{abs_mod_dir});
+                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ lua_file_pattern, lua_init_pattern });
                 first = false;
             }
             try scope_aw.writer.print("]\n", .{});
@@ -410,8 +569,12 @@ pub fn link_project_env_at(
                 const mod_dir = std.fs.path.dirname(m.path) orelse continue;
                 const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
                 defer allocator.free(abs_mod_dir);
+                const cmod_so_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.so" });
+                defer allocator.free(cmod_so_pattern);
+                const cmod_dylib_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.dylib" });
+                defer allocator.free(cmod_dylib_pattern);
                 if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\"", .{abs_mod_dir});
+                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ cmod_so_pattern, cmod_dylib_pattern });
                 first = false;
             }
             try scope_aw.writer.print("]\n", .{});
@@ -556,6 +719,7 @@ pub fn link_project_env_at(
 
     // 5. Link live dependencies
     for (live_links) |ll| {
+        const policy = ll.role.getProjectionPolicy();
         if (ll.pkg_kind == .bin) {
             // For binary packages, link binaries from source project's bin/ or specified path
             const src_bin_path = try std.fs.path.join(allocator, &.{ ll.source_path, "bin" });
@@ -580,10 +744,28 @@ pub fn link_project_env_at(
                         return err;
                     }
                 };
+                if (policy.expose_tool_scope) {
+                    try writeLiveLinkScope(allocator, io, env_dir, "bin-runtime", sub_entry.name, ll.source_path, lua_ver_dot);
+                } else if (policy.expose_helper_scope) {
+                    try writeLiveLinkScope(allocator, io, env_dir, "bin-helper", sub_entry.name, ll.source_path, lua_ver_dot);
+                }
             }
         } else if (ll.pkg_kind == .lib or ll.pkg_kind == .script) {
+            if (ll.pkg_kind == .script and (ll.role == .dev or ll.role == .tool or ll.role == .helper)) {
+                const bin_name = packageLocalName(ll.pkg_name);
+                if (try liveLinkScriptCommand(allocator, io, ll.source_path)) |script_command| {
+                    defer allocator.free(script_command);
+                    try writeLiveLinkScriptShim(allocator, io, bin_dir, bin_name, ll.source_path, script_command);
+                    if (policy.expose_tool_scope) {
+                        try writeLiveLinkScope(allocator, io, env_dir, "bin-runtime", bin_name, ll.source_path, lua_ver_dot);
+                    } else if (policy.expose_helper_scope) {
+                        try writeLiveLinkScope(allocator, io, env_dir, "bin-helper", bin_name, ll.source_path, lua_ver_dot);
+                    }
+                }
+            }
+
             // For library packages, link lua modules from source project's src/
-            var module_name = try allocator.dupe(u8, ll.pkg_name);
+            var module_name = try allocator.dupe(u8, packageLocalName(ll.pkg_name));
             defer allocator.free(module_name);
             var i: usize = 0;
             while (i < module_name.len) : (i += 1) {
@@ -614,7 +796,11 @@ pub fn link_project_env_at(
                 try symlinkTree(allocator, io, ddir, module_subdir_path);
             } else |err| {
                 if (err != error.FileNotFound) return err;
-                // 2. Single-file layout: <source>/src/<module>.lua  (e.g. "moon init --template lib" output)
+            }
+
+            // 2. Single-file layout: <source>/src/<module>.lua  (e.g. "moon init --template lib" output)
+            // Link the entry point even when a subdirectory also exists (e.g. ballad.lua + ballad/)
+            if (std.Io.Dir.cwd().access(io, module_single_path, .{})) |_| {
                 const share_lua_dir = std.fs.path.dirname(module_lua_name) orelse "share/lua";
                 env_dir.createDirPath(io, share_lua_dir) catch |create_err| {
                     return create_err;
@@ -622,6 +808,8 @@ pub fn link_project_env_at(
                 env_dir.symLink(io, module_single_path, module_lua_name, .{}) catch |link_err| {
                     return link_err;
                 };
+            } else |err| {
+                if (err != error.FileNotFound) return err;
             }
         }
     }
@@ -640,63 +828,133 @@ pub fn link_project_env_at(
         const lua_files_path = try std.fs.path.join(allocator, &.{ art_path, "files", "lua" });
         defer allocator.free(lua_files_path);
 
-        var lua_dir = std.Io.Dir.openDirAbsolute(io, lua_files_path, .{ .iterate = true }) catch |err| {
-            if (err == error.FileNotFound) {
-                // Try files/src/
-                const src_files_path = try std.fs.path.join(allocator, &.{ art_path, "files", "src" });
-                defer allocator.free(src_files_path);
-                var src_dir = std.Io.Dir.openDirAbsolute(io, src_files_path, .{ .iterate = true }) catch |err2| {
-                    if (err2 == error.FileNotFound) continue;
-                    return err2;
-                };
-                defer src_dir.close(io);
-                var it = src_dir.iterate();
-                while (try it.next(io)) |sub_entry| {
-                    if (sub_entry.kind != .directory) continue;
-                    const mod_src = try std.fs.path.join(allocator, &.{ src_files_path, sub_entry.name });
+        var lua_dir: ?std.Io.Dir = null;
+        if (std.Io.Dir.openDirAbsolute(io, lua_files_path, .{ .iterate = true })) |dir| {
+            lua_dir = dir;
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
+
+        if (lua_dir) |d| {
+            defer d.close(io);
+            var it = d.iterate();
+            while (try it.next(io)) |sub_entry| {
+                const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
+                defer allocator.free(mod_dest);
+                const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
+                defer allocator.free(full_dest);
+
+                if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
+                    continue; // Already linked
+                } else |_| {
+                    const mod_src = try std.fs.path.join(allocator, &.{ lua_files_path, sub_entry.name });
                     defer allocator.free(mod_src);
-                    const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
-                    defer allocator.free(mod_dest);
-
-                    const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
-                    defer allocator.free(full_dest);
-
-                    if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
-                        continue; // Already linked
-                    } else |_| {
+                    if (sub_entry.kind == .directory) {
                         try env_dir.createDirPath(io, mod_dest);
                         var ddir = try env_dir.openDir(io, mod_dest, .{});
                         defer ddir.close(io);
                         try symlinkTree(allocator, io, ddir, mod_src);
+                    } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
+                        try env_dir.symLink(io, mod_src, mod_dest, .{});
                     }
                 }
-                continue;
             }
-            return err;
-        };
-        defer lua_dir.close(io);
+            continue;
+        }
 
-        var it = lua_dir.iterate();
-        while (try it.next(io)) |sub_entry| {
-            const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
-            defer allocator.free(mod_dest);
-            const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
-            defer allocator.free(full_dest);
-
-            if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
-                continue; // Already linked
-            } else |_| {
-                const mod_src = try std.fs.path.join(allocator, &.{ lua_files_path, sub_entry.name });
+        // Fallback 1: files/src/
+        const src_files_path = try std.fs.path.join(allocator, &.{ art_path, "files", "src" });
+        defer allocator.free(src_files_path);
+        if (std.Io.Dir.openDirAbsolute(io, src_files_path, .{ .iterate = true })) |src_dir| {
+            defer src_dir.close(io);
+            var it = src_dir.iterate();
+            while (try it.next(io)) |sub_entry| {
+                if (sub_entry.kind != .directory) continue;
+                const mod_src = try std.fs.path.join(allocator, &.{ src_files_path, sub_entry.name });
                 defer allocator.free(mod_src);
-                if (sub_entry.kind == .directory) {
+                const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
+                defer allocator.free(mod_dest);
+
+                const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
+                defer allocator.free(full_dest);
+
+                if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
+                    continue; // Already linked
+                } else |_| {
                     try env_dir.createDirPath(io, mod_dest);
                     var ddir = try env_dir.openDir(io, mod_dest, .{});
                     defer ddir.close(io);
                     try symlinkTree(allocator, io, ddir, mod_src);
-                } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
-                    try env_dir.symLink(io, mod_src, mod_dest, .{});
                 }
             }
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
+
+        // Fallback 2: files/libexec/<local_name>/src/
+        const local_name = packageLocalName(pa.name);
+        const libexec_src_path = try std.fs.path.join(allocator, &.{ art_path, "files", "libexec", local_name, "src" });
+        defer allocator.free(libexec_src_path);
+        if (std.Io.Dir.openDirAbsolute(io, libexec_src_path, .{ .iterate = true })) |libexec_src_dir| {
+            defer libexec_src_dir.close(io);
+            var libexec_it = libexec_src_dir.iterate();
+            while (try libexec_it.next(io)) |sub_entry| {
+                const mod_src = try std.fs.path.join(allocator, &.{ libexec_src_path, sub_entry.name });
+                defer allocator.free(mod_src);
+                const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
+                defer allocator.free(mod_dest);
+
+                const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
+                defer allocator.free(full_dest);
+
+                if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
+                    continue;
+                } else |_| {
+                    if (sub_entry.kind == .directory) {
+                        try env_dir.createDirPath(io, mod_dest);
+                        var ddir = try env_dir.openDir(io, mod_dest, .{});
+                        defer ddir.close(io);
+                        try symlinkTree(allocator, io, ddir, mod_src);
+                    } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
+                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                    }
+                }
+            }
+            continue;
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
+
+        // Fallback 3: files/libexec/<local_name>/lua/
+        const libexec_lua_path = try std.fs.path.join(allocator, &.{ art_path, "files", "libexec", local_name, "lua" });
+        defer allocator.free(libexec_lua_path);
+        if (std.Io.Dir.openDirAbsolute(io, libexec_lua_path, .{ .iterate = true })) |libexec_lua_dir| {
+            defer libexec_lua_dir.close(io);
+            var libexec_it = libexec_lua_dir.iterate();
+            while (try libexec_it.next(io)) |sub_entry| {
+                const mod_src = try std.fs.path.join(allocator, &.{ libexec_lua_path, sub_entry.name });
+                defer allocator.free(mod_src);
+                const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
+                defer allocator.free(mod_dest);
+
+                const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
+                defer allocator.free(full_dest);
+
+                if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
+                    continue;
+                } else |_| {
+                    if (sub_entry.kind == .directory) {
+                        try env_dir.createDirPath(io, mod_dest);
+                        var ddir = try env_dir.openDir(io, mod_dest, .{});
+                        defer ddir.close(io);
+                        try symlinkTree(allocator, io, ddir, mod_src);
+                    } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
+                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                    }
+                }
+            }
+        } else |err| {
+            if (err != error.FileNotFound) return err;
         }
     }
 
@@ -729,17 +987,54 @@ pub fn link_project_env_at(
     defer deps_aw.deinit();
     for (projected_artifacts) |pa| {
         try deps_aw.writer.print("[[dependencies]]\n", .{});
-        try deps_aw.writer.print("name = {s}\n", .{pa.name});
-        try deps_aw.writer.print("version = {s}\n", .{pa.version});
-        try deps_aw.writer.print("role = {s}\n", .{@tagName(pa.role)});
-        if (pa.constraint.len > 0) try deps_aw.writer.print("constraint = {s}\n", .{pa.constraint});
-        if (pa.resolver) |r| try deps_aw.writer.print("resolver = {s}\n", .{r});
-        try deps_aw.writer.print("artifact_hash = {s}\n", .{pa.artifact_hash});
-        // TODO: fix the local shadowing in a more stylish way
-        if (pa.lua_abi) |l_abi| try deps_aw.writer.print("lua_abi = {s}\n", .{l_abi});
-        if (pa.lua_api) |api| try deps_aw.writer.print("lua_api = {s}\n", .{api});
-        if (pa.target) |t| try deps_aw.writer.print("target = {s}\n", .{t});
-        if (pa.path) |p| try deps_aw.writer.print("path = {s}\n", .{p});
+        try deps_aw.writer.print("name = ", .{});
+        try writeTomlString(&deps_aw.writer, pa.name);
+        try deps_aw.writer.print("\nversion = ", .{});
+        try writeTomlString(&deps_aw.writer, pa.version);
+        try deps_aw.writer.print("\nrole = ", .{});
+        try writeTomlString(&deps_aw.writer, @tagName(pa.role));
+        if (pa.constraint.len > 0) {
+            try deps_aw.writer.print("\nconstraint = ", .{});
+            try writeTomlString(&deps_aw.writer, pa.constraint);
+        }
+        if (pa.resolver) |r| {
+            try deps_aw.writer.print("\nresolver = ", .{});
+            try writeTomlString(&deps_aw.writer, r);
+        }
+        try deps_aw.writer.print("\nartifact_hash = ", .{});
+        try writeTomlString(&deps_aw.writer, pa.artifact_hash);
+        if (pa.lua_abi) |l_abi| {
+            try deps_aw.writer.print("\nlua_abi = ", .{});
+            try writeTomlString(&deps_aw.writer, l_abi);
+        }
+        if (pa.lua_api) |api| {
+            try deps_aw.writer.print("\nlua_api = ", .{});
+            try writeTomlString(&deps_aw.writer, api);
+        }
+        if (pa.target) |t| {
+            try deps_aw.writer.print("\ntarget = ", .{});
+            try writeTomlString(&deps_aw.writer, t);
+        }
+        if (pa.path) |p| {
+            try deps_aw.writer.print("\npath = ", .{});
+            try writeTomlString(&deps_aw.writer, p);
+        }
+        try deps_aw.writer.print("\n", .{});
+    }
+    for (live_links) |ll| {
+        try deps_aw.writer.print("[[dependencies]]\n", .{});
+        try deps_aw.writer.print("name = ", .{});
+        try writeTomlString(&deps_aw.writer, ll.pkg_name);
+        try deps_aw.writer.print("\nversion = ", .{});
+        try writeTomlString(&deps_aw.writer, ll.pkg_version);
+        try deps_aw.writer.print("\nrole = ", .{});
+        try writeTomlString(&deps_aw.writer, @tagName(ll.role));
+        try deps_aw.writer.print("\nresolver = ", .{});
+        try writeTomlString(&deps_aw.writer, ll.mode);
+        try deps_aw.writer.print("\nartifact_hash = ", .{});
+        try writeTomlString(&deps_aw.writer, ll.mode);
+        try deps_aw.writer.print("\npath = ", .{});
+        try writeTomlString(&deps_aw.writer, ll.source_path);
         try deps_aw.writer.print("\n", .{});
     }
     try deps_aw.writer.flush();
