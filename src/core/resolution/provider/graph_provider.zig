@@ -486,7 +486,9 @@ pub const RegistryProvider = struct {
             }
 
             if (!already_present) {
-                const cand_opt: ?candidate_mod.Candidate = rocks_resolver.resolve(self.allocator, self.io, name, "*", self.options, self.env.?) catch |err| blk: {
+                var opts = self.options;
+                opts.lua_exe = self.lua_exe;
+                const cand_opt: ?candidate_mod.Candidate = rocks_resolver.resolve(self.allocator, self.io, name, "*", opts, self.env.?) catch |err| blk: {
                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
                         break :blk null;
                     }

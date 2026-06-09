@@ -51,6 +51,7 @@ pub const materialization = struct {
 pub const project = struct {
     pub const linker = @import("project/linker.zig");
     pub const run_env = @import("project/run_env.zig");
+    pub const tool_lua = @import("project/tool_lua.zig");
     pub const discovery = @import("project/discovery.zig");
 };
 
@@ -69,6 +70,8 @@ pub const assets = struct {
             pub const nvim_luarc = @embedFile("assets/templates/nvim/luarc.json");
             pub const love_main = @embedFile("assets/templates/love/main.lua");
             pub const love_conf = @embedFile("assets/templates/love/conf.lua");
+            pub const love_partiture = @embedFile("assets/templates/love/partiture.lua");
+            pub const love_luarc = @embedFile("assets/templates/love/luarc.json");
             pub const c_bin_main = @embedFile("assets/templates/c-bin/main.c");
             pub const c_bin_makefile = @embedFile("assets/templates/c-bin/Makefile");
             pub const zig_bin_main = @embedFile("assets/templates/zig-bin/main.zig");

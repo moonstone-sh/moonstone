@@ -14,6 +14,7 @@ pub const ExecCommand = struct {
     runtime: ?[]const u8 = null,
     target: ?[]const u8 = null,
     json: bool = false,
+    global: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -27,6 +28,7 @@ pub const ExecCommand = struct {
             \\  --runtime <r>    Override runtime
             \\  --target <t>     Override target
             \\  --json           Output results as JSON (bloated protocol)
+            \\  --global         Run command from the global tools environment
             \\
         , .{});
     }
@@ -53,12 +55,21 @@ pub const ExecCommand = struct {
             try e.emit(io, .START, name, "begin", .{ .argv = self.positionals });
         }
 
+        const global_project = if (self.global) try @import("global_tools.zig").enterProject(allocator, env, io) else null;
+        defer if (global_project) |gp| @import("global_tools.zig").leaveProject(allocator, io, gp);
+
         // Recursion protection
         const depth_str = env.get("MOONSTONE_EXEC_DEPTH") orelse "0";
         const depth = std.fmt.parseInt(u32, depth_str, 10) catch 0;
         if (depth > 10) return error.InfiniteRecursion;
 
-        var run_env = try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
+        var run_env = moonstone.project.run_env.get_run_env(allocator, io, ".", env) catch |err| {
+            if (self.global and err == error.NoActiveEnvironment) {
+                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "global tools environment is not synced; install a tool with `moon add --global --tool <pkg>` first") } };
+            }
+            return err;
+        };
         defer run_env.deinit();
 
         const depth_val = try std.fmt.allocPrint(allocator, "{d}", .{depth + 1});

@@ -179,7 +179,10 @@ pub const init_command = struct {
         const template = self.template orelse if (pkg_kind == .lib) "lib" else "script";
         const configured_runtime = if (self.runtime == null) try defaultRuntimeSpec(allocator, ctx.env, io) else null;
         defer if (configured_runtime) |spec| allocator.free(spec);
-        const runtime_spec = self.runtime orelse configured_runtime orelse "5.4";
+        const runtime_spec = if (std.mem.eql(u8, template, "love") and self.runtime == null and configured_runtime == null)
+            "love@11.5"
+        else
+            self.runtime orelse configured_runtime orelse "5.4";
         const runtime_name = moonstone.domain.manifest.runtimeNameFromSpec(runtime_spec);
         const runtime_version = moonstone.domain.manifest.runtimeVersionFromSpec(runtime_spec);
         const runtime_abi = try moonstone.domain.manifest.inferRuntimeAbi(allocator, runtime_name, runtime_version);
@@ -278,10 +281,15 @@ pub const init_command = struct {
             if (project_dir.access(io, ".luarc.json", .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, ".luarc.json", .{});
                 defer f.close(io);
-                const content = try renderTemplate(allocator, T.generic_luarc, final_name, lua_ver);
-                defer allocator.free(content);
-                try f.writeStreamingAll(io, content);
+                try f.writeStreamingAll(io, T.love_luarc);
             }
+            if (project_dir.access(io, "partiture.lua", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "partiture.lua", .{});
+                defer f.close(io);
+                try f.writeStreamingAll(io, T.love_partiture);
+            }
+            try project_dir.createDirPath(io, "src");
+            try project_dir.createDirPath(io, "assets");
         }
  else if (std.mem.eql(u8, template, "c-bin")) {
             try project_dir.createDirPath(io, "src");
@@ -352,6 +360,10 @@ pub const init_command = struct {
 
         if (std.mem.eql(u8, template, "script")) {
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
+        } else if (std.mem.eql(u8, template, "love")) {
+            try pkg.add_dependency(allocator, "moonstone/love", "11.5", .runtime, false);
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "love ."));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
         }
 
         const toml_path = "moonstone.toml";

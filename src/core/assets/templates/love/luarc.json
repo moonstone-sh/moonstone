@@ -1,0 +1,26 @@
+{
+  "workspace": {
+    "library": [
+      ".moonstone/env/share/lua/5.1"
+    ],
+    "checkThirdParty": false,
+    "useGitIgnore": false,
+    "ignoreDir": [
+      ".moonstone/env/bin",
+      ".moonstone/env/lib",
+      ".moonstone/env/include",
+      ".ballad",
+      "dist",
+      "zig-cache",
+      "zig-out",
+      ".git"
+    ]
+  },
+  "runtime": {
+    "version": "Lua 5.1"
+  },
+  "diagnostics": {
+    "globals": ["love"],
+    "disable": ["duplicate-set-field"]
+  }
+}

@@ -606,7 +606,7 @@ fn compute_dir_hash(allocator: std.mem.Allocator, io: std.Io, dir_path: []const 
     return try std.fmt.allocPrint(allocator, "b3:{s}", .{raw});
 }
 
-pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8) ![]const u8 {
+pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8, env_map: ?*std.process.Environ.Map) ![]const u8 {
     const binaries = [_][]const u8{ "lua", "luajit" };
     for (binaries) |binary| {
         const executable = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin", binary });
@@ -616,6 +616,25 @@ pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, run
             return err;
         };
         return executable;
+    }
+    // Fallback: search PATH for a system lua/luajit (needed when project runtime
+    // is LÖVE or another engine that does not ship a CLI lua binary).
+    if (env_map) |em| {
+        if (em.get("PATH")) |paths| {
+            var path_it = std.mem.splitScalar(u8, paths, std.fs.path.delimiter);
+            while (path_it.next()) |dir| {
+                if (dir.len == 0) continue;
+                for (binaries) |binary| {
+                    const candidate = try std.fs.path.join(allocator, &.{ dir, binary });
+                    std.Io.Dir.cwd().access(io, candidate, .{}) catch |err| {
+                        allocator.free(candidate);
+                        if (err == error.FileNotFound) continue;
+                        return err;
+                    };
+                    return candidate;
+                }
+            }
+        }
     }
     return error.RuntimeRequiredForParsing;
 }
@@ -1027,8 +1046,13 @@ pub fn resolve(
     defer allocator.free(rockspec_content);
 
     // Phase 4: Classify
-    const rt_path = options.runtime_path orelse return error.RuntimeRequiredForParsing;
-    const lua_exe = try find_runtime_lua_executable(allocator, io, rt_path);
+    const lua_exe = blk: {
+        if (options.lua_exe) |exe| {
+            break :blk try allocator.dupe(u8, exe);
+        }
+        const rt_path = options.runtime_path orelse return error.RuntimeRequiredForParsing;
+        break :blk try find_runtime_lua_executable(allocator, io, rt_path, env_map);
+    };
     defer allocator.free(lua_exe);
 
     var rock_parsed = try luarocks.parse_rockspec(allocator, io, rockspec_content, lua_exe);

@@ -12,6 +12,8 @@ pub const remove_command = struct {
     bin: bool = false,
     runtime: bool = false,
     dev: bool = false,
+    tool: bool = false,
+    link: bool = false,
     global: bool = false,
     no_sync: bool = false,
     file: ?[]const u8 = null,
@@ -27,9 +29,11 @@ pub const remove_command = struct {
             \\  <package>    Name of the package(s) to remove
             \\
             \\Flags:
-            \\  --global     Unregister from the global link registry instead of current project
+            \\  --global     Operate on global state
+            \\  --tool       Remove a global or project tool dependency
+            \\  --link       Unregister from the global link registry
             \\  --lib        Remove runtime library dependency
-            \\  --bin        Remove tool dependency
+            \\  --bin        Deprecated alias for --tool
             \\  --runtime    Remove project runtime (sets to default)
             \\  --dev        Remove from dev-dependencies
             \\  --no-sync Do not run moon sync
@@ -104,8 +108,24 @@ pub const remove_command = struct {
         const emitter = if (emitter_obj) |*e| e else null;
 
         if (self.global) {
-            try self.runGlobal(ctx);
-            return;
+            if (self.tool or self.bin) {
+                var global_self = self;
+                global_self.global = false;
+                global_self.tool = true;
+                global_self.bin = false;
+
+                const global_project = try @import("global_tools.zig").enterProject(allocator, ctx.env, io);
+                defer @import("global_tools.zig").leaveProject(allocator, io, global_project);
+
+                if (!self.json) try stdout.print("Using global tools environment: {s}\n", .{global_project.path});
+                return try global_self.run(ctx);
+            }
+            if (self.link) {
+                try self.runGlobal(ctx);
+                return;
+            }
+            ctx.error_detail = .{ .message = .{ .msg = "--global requires --tool to remove global tools or --link to unregister links." } };
+            return error.MissingArgument;
         }
 
         if (self.positionals.len == 0 and !self.runtime) {
@@ -141,13 +161,13 @@ pub const remove_command = struct {
                 var dep = mt.dependencies.items[i];
                 if (std.mem.eql(u8, dep.name, pkg_name)) {
                     var remove = false;
-                    if (self.bin and dep.role == .tool) {
+                    if ((self.bin or self.tool) and dep.role == .tool) {
                         remove = true;
                     } else if (self.lib and dep.role == .runtime) {
                         remove = true;
                     } else if (self.dev and dep.role == .dev) {
                         remove = true;
-                    } else if (!self.bin and !self.lib and !self.dev) {
+                    } else if (!self.bin and !self.tool and !self.lib and !self.dev) {
                         remove = true;
                     }
 

@@ -31,6 +31,7 @@ pub const add_command = struct {
     offline: bool = false,
     prefer_local: bool = false,
     no_sync: bool = false,
+    global: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -53,6 +54,7 @@ pub const add_command = struct {
             \\  --offline        Do not access network
             \\  --prefer-local   Prefer local candidates over remote
             \\  --no-sync     Do not run sync after adding
+            \\  --global         Add tool dependency to the global tools environment
             \\  --json           Output results as JSON
             \\
         , .{});
@@ -110,6 +112,19 @@ pub const add_command = struct {
         const io = ctx.io;
         const stdout = ctx.stdout;
         const env = ctx.env;
+
+        if (self.global) {
+            var global_self = self;
+            global_self.global = false;
+            global_self.tool = true;
+            global_self.role = "tool";
+
+            const global_project = try @import("global_tools.zig").enterProject(allocator, env, io);
+            defer @import("global_tools.zig").leaveProject(allocator, io, global_project);
+
+            if (!self.json) try stdout.print("Using global tools environment: {s}\n", .{global_project.path});
+            return try global_self.run(ctx);
+        }
 
         const project_root = try moonstone.project.discovery.enterRoot(allocator, io, ".");
         defer project_root.deinit(allocator);
@@ -211,8 +226,11 @@ pub const add_command = struct {
             mat.runtime_path = rt_res_mat.path;
         }
 
-        const lua_exe = try moonstone.resolution.sources.luarocks.find_runtime_lua_executable(allocator, io, mat.runtime_path.?);
-        defer allocator.free(lua_exe);
+        // Find a proper Lua interpreter for rockspec parsing.
+        // LÖVE and other engine runtimes do not provide bin/lua.
+        var tool_lua_prov = try moonstone.project.tool_lua.findToolLua(allocator, io, idx, runtime_abi, "rockspec-parse", ctx.env);
+        defer tool_lua_prov.deinit(allocator);
+        const lua_exe = try allocator.dupe(u8, tool_lua_prov.executable);
 
         var targets = std.ArrayList(moonstone.resolution.solver.term.Term).empty;
         defer {

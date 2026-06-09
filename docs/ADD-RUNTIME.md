@@ -2,6 +2,26 @@
 
 A runtime package provides a Lua environment (e.g., PUC Lua, LuaJIT). Runtimes are unique because they are the foundation for all other packages.
 
+## Importing Local Runtime Installations
+
+Some runtimes are distributed as host-specific applications rather than source trees or simple archives. Moonstone should not hardcode those formats in core. Instead, use an ecosystem importer tool that normalizes the input and then registers a Moonstone runtime artifact.
+
+For LÖVE, use `moonstone/love-importer`:
+
+```bash
+moon add --global --tool moonstone:moonstone/love-importer
+moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
+```
+
+The importer produces `moonstone/love@11.5`, with `files/bin/love` and runtime metadata suitable for:
+
+```toml
+[dependencies.runtime]
+"moonstone:moonstone/love" = "11.5"
+```
+
+See [LÖVE + Moonstone](LOVE.md) for the full game workflow.
+
 ## 1. Build Process
 
 To ensure portability, always use `zig cc` for compilation.

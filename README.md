@@ -66,6 +66,12 @@ moon runtime remove lua@5.4.7     # Remove one unreferenced runtime artifact
 `moon runtime remove` requires `--target <triple>` when multiple target builds match
 and requires `--force` when the runtime is still selected globally or referenced by projects.
 
+## 📚 Guides
+
+- [LÖVE + Moonstone](docs/LOVE.md) — import a LÖVE runtime, create a game project, run `love .`, and export with Ballad.
+- [Global Tools](docs/GLOBAL_TOOLS.md) — install and run ecosystem tools from any directory.
+- [Adding a Runtime](docs/ADD-RUNTIME.md) — build or import runtime artifacts.
+
 ## 🗂️ Directory Layout
 
 Moonstone v0 uses a content-addressed storage (CAS) model:

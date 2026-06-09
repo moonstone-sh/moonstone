@@ -10,6 +10,7 @@ pub const ResolveOptions = struct {
     target: ?[]const u8 = null,
     on_event: ?ResolveCallback = null,
     runtime_artifact_hash: ?[]const u8 = null,
+    lua_exe: ?[]const u8 = null,
     on_event_context: ?*anyopaque = null,
 };
 
