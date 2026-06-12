@@ -37,7 +37,60 @@ pub const StoreGcCommand = struct {
             reachable.deinit();
         }
 
-        // 1. Scan registered projects
+        // 1. Scan store for links and clean up stale ones
+        try std.Io.Dir.cwd().createDirPath(io, paths.index);
+        const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
+        defer allocator.free(index_db_path);
+        const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
+        defer allocator.free(index_db_path_z);
+
+        var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
+        defer idx.deinit();
+
+        {
+            var lr = moonstone.store.links.LinkStore.init(&idx);
+            const links = try lr.list();
+            defer moonstone.store.links.deinitEntries(links, allocator);
+
+            for (links) |link| {
+                const toml_path = try std.fs.path.join(allocator, &.{ link.path, "moonstone.toml" });
+                defer allocator.free(toml_path);
+
+                var is_valid = true;
+                if (std.Io.Dir.cwd().access(io, toml_path, .{})) |_| {
+                    const content = std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| blk: {
+                        if (err == error.FileNotFound) { is_valid = false; break :blk null; }
+                        return err;
+                    };
+                    if (content) |c| {
+                        defer allocator.free(c);
+                        if (moonstone.domain.manifest.MoonstoneToml.parse(allocator, c)) |mt| {
+                            var mut_mt = mt;
+                            mut_mt.deinit(allocator);
+                        } else |_| {
+                            is_valid = false;
+                        }
+                    }
+                } else |_| {
+                    is_valid = false;
+                }
+
+                if (!is_valid) {
+                    if (self.dry_run) {
+                        try stdout.print("Would unregister stale link: {s} -> {s}\n", .{ link.name, link.path });
+                    } else {
+                        try lr.unregister(link.name);
+                        try stdout.print("Unregistered stale link: {s}\n", .{ link.name });
+                    }
+                } else {
+                    // Valid links keep their artifacts (if any) reachable
+                    // Note: link entries in the 'artifacts' table use 'link' as artifact_hash, 
+                    // which is already filtered out in the scan candidates step by checking b3/ directory.
+                }
+            }
+        }
+
+        // 2. Scan registered projects
         var projects_dir = std.Io.Dir.cwd().openDir(io, paths.projects, .{ .iterate = true }) catch |err| blk: {
             if (err == error.FileNotFound) break :blk null;
             return err;
@@ -77,16 +130,7 @@ pub const StoreGcCommand = struct {
             }
         }
 
-        // 2. Scan store for candidates
-        try std.Io.Dir.cwd().createDirPath(io, paths.index);
-        const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
-        defer allocator.free(index_db_path);
-        const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
-        defer allocator.free(index_db_path_z);
-
-        var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
-        defer idx.deinit();
-
+        // 3. Scan store for candidates
         var candidates = std.ArrayList([]const u8).empty;
         defer {
             for (candidates.items) |h| allocator.free(h);

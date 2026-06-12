@@ -765,51 +765,58 @@ pub fn link_project_env_at(
             }
 
             // For library packages, link lua modules from source project's src/
-            var module_name = try allocator.dupe(u8, packageLocalName(ll.pkg_name));
-            defer allocator.free(module_name);
-            var i: usize = 0;
-            while (i < module_name.len) : (i += 1) {
-                if (module_name[i] == '-') module_name[i] = '_';
+            const local_name = packageLocalName(ll.pkg_name);
+            const module_name_hyphen = try allocator.dupe(u8, local_name);
+            defer allocator.free(module_name_hyphen);
+            const module_name_underscore = try allocator.dupe(u8, local_name);
+            defer allocator.free(module_name_underscore);
+            for (module_name_underscore) |*c| {
+                if (c.* == '-') c.* = '_';
             }
 
-            const module_dir_name = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, module_name });
-            defer allocator.free(module_dir_name);
+            const names = [_][]const u8{ module_name_hyphen, module_name_underscore };
+            const names_slice = if (std.mem.eql(u8, module_name_hyphen, module_name_underscore)) names[0..1] else names[0..2];
 
-            const module_lua_name = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, module_name });
-            defer allocator.free(module_lua_name);
+            for (names_slice) |name| {
+                const module_dir_name = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, name });
+                defer allocator.free(module_dir_name);
 
-            const module_subdir_path = try std.fs.path.join(allocator, &.{ ll.source_path, "src", module_name });
-            defer allocator.free(module_subdir_path);
+                const module_lua_name = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, name });
+                defer allocator.free(module_lua_name);
 
-            const module_single_path = try std.fmt.allocPrint(allocator, "{s}/src/{s}.lua", .{ ll.source_path, module_name });
-            defer allocator.free(module_single_path);
+                const module_subdir_path = try std.fs.path.join(allocator, &.{ ll.source_path, "src", name });
+                defer allocator.free(module_subdir_path);
 
-            // 1. Preferred layout: <source>/src/<module>/...  (directory of files)
-            if (std.Io.Dir.cwd().access(io, module_subdir_path, .{})) |_| {
-                env_dir.createDirPath(io, module_dir_name) catch |err| {
-                    return err;
-                };
-                var ddir = env_dir.openDir(io, module_dir_name, .{}) catch |err| {
-                    return err;
-                };
-                defer ddir.close(io);
-                try symlinkTree(allocator, io, ddir, module_subdir_path);
-            } else |err| {
-                if (err != error.FileNotFound) return err;
-            }
+                const module_single_path = try std.fmt.allocPrint(allocator, "{s}/src/{s}.lua", .{ ll.source_path, name });
+                defer allocator.free(module_single_path);
 
-            // 2. Single-file layout: <source>/src/<module>.lua  (e.g. "moon init --template lib" output)
-            // Link the entry point even when a subdirectory also exists (e.g. ballad.lua + ballad/)
-            if (std.Io.Dir.cwd().access(io, module_single_path, .{})) |_| {
-                const share_lua_dir = std.fs.path.dirname(module_lua_name) orelse "share/lua";
-                env_dir.createDirPath(io, share_lua_dir) catch |create_err| {
-                    return create_err;
-                };
-                env_dir.symLink(io, module_single_path, module_lua_name, .{}) catch |link_err| {
-                    return link_err;
-                };
-            } else |err| {
-                if (err != error.FileNotFound) return err;
+                // 1. Preferred layout: <source>/src/<module>/...  (directory of files)
+                if (std.Io.Dir.cwd().access(io, module_subdir_path, .{})) |_| {
+                    env_dir.createDirPath(io, module_dir_name) catch |err| {
+                        return err;
+                    };
+                    var ddir = env_dir.openDir(io, module_dir_name, .{}) catch |err| {
+                        return err;
+                    };
+                    defer ddir.close(io);
+                    try symlinkTree(allocator, io, ddir, module_subdir_path);
+                } else |err| {
+                    if (err != error.FileNotFound) return err;
+                }
+
+                // 2. Single-file layout: <source>/src/<module>.lua  (e.g. "moon init --template lib" output)
+                // Link the entry point even when a subdirectory also exists (e.g. ballad.lua + ballad/)
+                if (std.Io.Dir.cwd().access(io, module_single_path, .{})) |_| {
+                    const share_lua_dir = std.fs.path.dirname(module_lua_name) orelse "share/lua";
+                    env_dir.createDirPath(io, share_lua_dir) catch |create_err| {
+                        return create_err;
+                    };
+                    env_dir.symLink(io, module_single_path, module_lua_name, .{}) catch |link_err| {
+                        if (link_err != error.PathAlreadyExists) return link_err;
+                    };
+                } else |err| {
+                    if (err != error.FileNotFound) return err;
+                }
             }
         }
     }
