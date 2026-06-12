@@ -11,6 +11,10 @@ pub const identity = struct {
     pub const hash = @import("identity/hash.zig");
 };
 
+pub const diagnostics = struct {
+    pub const profiler = @import("diagnostics/profiler.zig");
+};
+
 pub const platform = struct {
     pub const fs = @import("platform/fs.zig");
     pub const env = @import("platform/env.zig");

@@ -2,6 +2,7 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
+const profiler = moonstone.diagnostics.profiler;
 
 pub const sync_command = SyncCommand;
 
@@ -135,6 +136,7 @@ pub const SyncCommand = struct {
 
     positionals: []const []const u8 = &.{},
     locked: bool = false,
+    update: bool = false,
     check: bool = false,
     offline: bool = false,
     json: bool = false,
@@ -147,6 +149,7 @@ pub const SyncCommand = struct {
             \\
             \\Flags:
             \\  --locked     Error if moonstone.lock is out of sync
+            \\  --update     Re-resolve dependencies and update moonstone.lock within constraints
             \\  --check      Validate lockfile/env without modifying files
             \\  --offline    Do not connect to remote registries
             \\
@@ -162,6 +165,7 @@ pub const SyncCommand = struct {
 
         var stderr_silencer = try JsonStderrSilencer.init(io, self.json);
         defer stderr_silencer.deinit();
+        profiler.mark("sync.begin");
 
         var report = SyncReport{};
         var emitter_obj = if (self.json) ndjson.Emitter.init(allocator, stdout, name) else null;
@@ -170,6 +174,7 @@ pub const SyncCommand = struct {
         if (emitter) |e| if (!self.check) {
             try e.emit(io, .START, name, "sync.begin", .{
                 .locked = self.locked,
+                .update = self.update,
                 .offline = self.offline,
             });
         };
@@ -223,7 +228,10 @@ pub const SyncCommand = struct {
             return try self.runCheck(ctx, &mt, &idx);
         }
 
+        if (!self.json) try @import("command.zig").progress(stdout, "Reading registry configuration...\n", .{});
+        var profile_span = profiler.now();
         const registries = try moonstone.registry.resolver.resolve(allocator, io, env);
+        profiler.span("sync.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(registries, allocator);
 
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
@@ -237,12 +245,16 @@ pub const SyncCommand = struct {
         const pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName());
         const pkg_ver = mt.runtimeConstraint();
 
+        if (!self.json) try @import("command.zig").progress(stdout, "Resolving runtime {s}@{s}...\n", .{ pkg_name, pkg_ver });
+
         var coordinator = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
+        profile_span = profiler.now();
         var rt_res = try coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
             .offline = self.offline,
         }, env);
+        profiler.span("sync.runtime.resolve", profile_span);
         defer rt_res.deinit(allocator);
         const active_lua_abi = mt.runtimeAbi();
 
@@ -263,6 +275,7 @@ pub const SyncCommand = struct {
             .on_event_context = &resolve_cb_ctx,
         };
 
+        profile_span = profiler.now();
         const rt_mat_res = switch (rt_res.location) {
             .local_store, .local_path => moonstone.materialization.materializer.MaterializeResult{
                 .path = try allocator.dupe(u8, rt_res.local_path.?),
@@ -279,6 +292,7 @@ pub const SyncCommand = struct {
                 else => return error.UnsupportedOriginForRuntime,
             },
         };
+        profiler.span("sync.runtime.materialize", profile_span);
         defer rt_mat_res.deinit(allocator);
         switch (rt_res.location) {
             .local_path => report.path_link_projections += 1,
@@ -305,10 +319,13 @@ pub const SyncCommand = struct {
             .target = "native",
         };
 
+        profile_span = profiler.now();
         const rt_recipe_hash = try moonstone.store.facade.computeRecipeHash(allocator, rt_recipe_options);
+        profiler.span("sync.runtime.recipe_hash", profile_span);
         defer allocator.free(rt_recipe_hash);
 
         // 2. Solve dependencies
+        profile_span = profiler.now();
         var targets = std.ArrayList(moonstone.resolution.solver.term.Term).empty;
         defer {
             for (targets.items) |t| {
@@ -340,16 +357,20 @@ pub const SyncCommand = struct {
                 .role = dep.role,
             });
         }
+        profiler.spanCount("sync.targets.build", profile_span, "targets", targets.items.len);
 
+        profile_span = profiler.now();
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
         provider_impl.init(allocator, io, idx, registries, .{
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
             .offline = self.offline,
+            .prefer_local = !self.update,
             .runtime = active_lua_abi,
             .runtime_artifact_hash = rt_res.artifact_hash,
             .runtime_path = rt_mat_res.path,
         }, env, null, targets.items);
+        profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
             provider_impl.deinit();
             allocator.destroy(provider_impl);
@@ -390,14 +411,26 @@ pub const SyncCommand = struct {
             solution.deinit(allocator);
         }
 
-        if (self.locked) {
-            // Lockfile replay mode: bypass PubGrub and retrieve exact artifacts by hash
+        const lock_runtime_matches = lockedRuntimeMatches(&existing_lock, rt_res.name, rt_res.version, active_lua_abi);
+        const lock_deps_match = lockedDependenciesMatch(mt.dependencies.items, &existing_lock);
+        if (!self.update and existing_lock.packages.items.len > 0 and (!lock_runtime_matches or !lock_deps_match)) {
+            if (!lock_runtime_matches) profiler.mark("sync.lock.replay.skip.runtime_mismatch");
+            if (!lock_deps_match) profiler.mark("sync.lock.replay.skip.dependencies_changed");
+        }
+        const can_replay_lock = !self.update and existing_lock.packages.items.len > 0 and lock_runtime_matches and lock_deps_match;
+        const replay_lock = self.locked or can_replay_lock;
+
+        if (replay_lock) {
+            // Lockfile replay mode: bypass PubGrub and retrieve exact artifacts by hash.
+            // This is the default fast path; use --update to ask PubGrub for the newest
+            // versions allowed by moonstone.toml constraints.
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.locked_replay", .{ .packages = existing_lock.packages.items.len });
             } else {
-                try stdout.print("Replaying lockfile...\n", .{});
+                try @import("command.zig").progress(stdout, "Replaying lockfile ({d} package{s})...\n", .{ existing_lock.packages.items.len, if (existing_lock.packages.items.len == 1) "" else "s" });
             }
 
+            profile_span = profiler.now();
             for (existing_lock.packages.items) |entry| {
                 const is_link = std.mem.eql(u8, entry.artifact_hash, "link");
                 const is_path = std.mem.eql(u8, entry.artifact_hash, "path");
@@ -458,6 +491,7 @@ pub const SyncCommand = struct {
             report.requested_targets = existing_lock.packages.items.len;
             report.resolved_packages = solution.count();
             report.resolve_ms = elapsedMs(io, resolve_started_ns);
+            profiler.spanCount("sync.lock.replay", profile_span, "packages", solution.count());
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.complete", .{
                     .requested_targets = report.requested_targets,
@@ -466,14 +500,25 @@ pub const SyncCommand = struct {
                 });
             }
         } else {
-            var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{});
+            if (existing_lock.packages.items.len > 0 and !lock_deps_match and !self.json) {
+                try @import("command.zig").progress(stdout, "moonstone.toml changed; resolving a new lockfile...\n", .{});
+            } else if (self.update and !self.json) {
+                try @import("command.zig").progress(stdout, "Updating lockfile within declared constraints...\n", .{});
+            }
+            profile_span = profiler.now();
+            var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
+                .on_event = @import("command.zig").onSolverEvent,
+                .on_event_context = &resolve_cb_ctx,
+            });
             defer solver.deinit();
+            profiler.span("sync.pubgrub.init", profile_span);
 
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.begin", .{ .targets = targets.items.len });
             } else {
-                try stdout.print("Solving dependencies...\n", .{});
+                try @import("command.zig").progress(stdout, "Solving dependencies...\n", .{});
             }
+            profile_span = profiler.now();
             solution = solver.solve(targets.items) catch |err| blk: {
                 if (err == error.ArtifactNotFound) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
                 if (err == error.NoSolution) {
@@ -513,6 +558,8 @@ pub const SyncCommand = struct {
                 }
                 return err;
             };
+            profiler.spanCount("sync.pubgrub.solve", profile_span, "packages", solution.count());
+            profile_span = profiler.now();
             for (mt.dependencies.items) |dep| {
                 const raw_spec = try dep.toSpecString(allocator);
                 defer allocator.free(raw_spec);
@@ -547,6 +594,7 @@ pub const SyncCommand = struct {
                 for (direct_kinds_buf[0..direct_kinds_len]) |kind| {
                     resolved_direct_opt = coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
                         .offline = self.offline,
+                        .prefer_local = !self.update,
                         .runtime = active_lua_abi,
                         .runtime_artifact_hash = rt_res.artifact_hash,
                         .runtime_path = rt_mat_res.path,
@@ -564,6 +612,7 @@ pub const SyncCommand = struct {
                             if (!std.mem.eql(u8, reg.name, registry_name)) continue;
                             const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
                                 .offline = self.offline,
+                                .prefer_local = !self.update,
                                 .runtime = active_lua_abi,
                                 .runtime_artifact_hash = rt_res.artifact_hash,
                                 .runtime_path = rt_mat_res.path,
@@ -668,6 +717,7 @@ pub const SyncCommand = struct {
                     }
                 }
             }
+            profiler.spanCount("sync.direct.resolve", profile_span, "packages", solution.count());
 
             report.requested_targets = targets.items.len;
             report.resolved_packages = solution.count();
@@ -871,6 +921,7 @@ pub const SyncCommand = struct {
 
         // 3. Materialize all chosen artifacts
         const materialize_started_ns = nowNs(io);
+        profile_span = profiler.now();
         if (emitter) |e| {
             try e.emit(io, .STATUS, name, "materialization.begin", .{ .packages = report.resolved_packages });
         }
@@ -921,9 +972,16 @@ pub const SyncCommand = struct {
         defer next_lock.deinit();
 
         var sit = solution.iterator();
+        var materialize_index: usize = 0;
+        const materialize_total = solution.count();
         while (sit.next()) |entry| {
+            materialize_index += 1;
             const pkg_name_sol = entry.key_ptr.*;
             const pkg = entry.value_ptr.*;
+
+            if (!self.json) {
+                try @import("command.zig").progress(stdout, "Materializing [{d}/{d}] {s}@{s}...\n", .{ materialize_index, materialize_total, pkg.name, pkg.version });
+            }
 
             if (pkg.local_path) |lp| {
                 // If it's a link or path, handle it separately
@@ -951,6 +1009,7 @@ pub const SyncCommand = struct {
                         const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
                         if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
                         if (!std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) return error.LockfileOutOfSync;
+                        if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
                     } else {
                         const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
                         var entry_roles = std.ArrayList([]const u8).empty;
@@ -963,12 +1022,22 @@ pub const SyncCommand = struct {
                                 try entry_roles.append(allocator, try allocator.dupe(u8, g));
                             }
                         }
+                        var store_prov_opt = @import("lock_provenance.zig").read(allocator, io, lp) catch null;
+                        defer if (store_prov_opt) |*store_prov| store_prov.deinit(allocator);
+                        const store_source_hash = if (store_prov_opt) |store_prov| store_prov.source_hash else "";
+                        const store_recipe_hash = if (store_prov_opt) |store_prov| store_prov.recipe_hash else "";
+                        const store_source = if (store_prov_opt) |store_prov| store_prov.source else "";
+                        const store_source_kind = if (store_prov_opt) |store_prov| store_prov.source_kind else "";
+                        const store_source_payload = if (store_prov_opt) |store_prov| store_prov.source_payload else "";
+                        const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
+                        const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
+                        const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
                         try next_lock.packages.append(allocator, .{
                             .name = try allocator.dupe(u8, pkg.name),
                             .version = try allocator.dupe(u8, pkg.version),
                             .kind = pkg.kind,
-                            .source_hash = &.{},
-                            .recipe_hash = try allocator.dupe(u8, recipe_hash),
+                            .source_hash = if (store_source_hash.len > 0) try allocator.dupe(u8, store_source_hash) else if (pkg.source_hash.len > 0) try allocator.dupe(u8, pkg.source_hash) else &.{},
+                            .recipe_hash = if (store_recipe_hash.len > 0) try allocator.dupe(u8, store_recipe_hash) else if (pkg.recipe_hash.len > 0) try allocator.dupe(u8, pkg.recipe_hash) else try allocator.dupe(u8, recipe_hash),
                             .artifact_hash = try allocator.dupe(u8, pkg.artifact_hash),
                             .runtime = try allocator.dupe(u8, active_lua_abi),
                             .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
@@ -981,7 +1050,12 @@ pub const SyncCommand = struct {
                                 .path => "path",
                                 else => "store",
                             }),
-                            .source = if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                            .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                            .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                            .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
+                            .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
+                            .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
+                            .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
                             .roles = try entry_roles.toOwnedSlice(allocator),
                         });
                     }
@@ -1032,6 +1106,7 @@ pub const SyncCommand = struct {
                 const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
                 if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
                 if (!std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) return error.LockfileOutOfSync;
+                if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
             } else if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
                 const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
                 var entry_roles = std.ArrayList([]const u8).empty;
@@ -1044,12 +1119,22 @@ pub const SyncCommand = struct {
                         try entry_roles.append(allocator, try allocator.dupe(u8, g));
                     }
                 }
+                var store_prov_opt = @import("lock_provenance.zig").read(allocator, io, m_res.path) catch null;
+                defer if (store_prov_opt) |*store_prov| store_prov.deinit(allocator);
+                const store_source_hash = if (store_prov_opt) |store_prov| store_prov.source_hash else "";
+                const store_recipe_hash = if (store_prov_opt) |store_prov| store_prov.recipe_hash else "";
+                const store_source = if (store_prov_opt) |store_prov| store_prov.source else "";
+                const store_source_kind = if (store_prov_opt) |store_prov| store_prov.source_kind else "";
+                const store_source_payload = if (store_prov_opt) |store_prov| store_prov.source_payload else "";
+                const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
+                const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
+                const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
                 try next_lock.packages.append(allocator, .{
                     .name = try allocator.dupe(u8, pkg.name),
                     .version = try allocator.dupe(u8, pkg.version),
                     .kind = pkg.kind,
-                    .source_hash = &.{},
-                    .recipe_hash = try allocator.dupe(u8, recipe_hash),
+                    .source_hash = if (store_source_hash.len > 0) try allocator.dupe(u8, store_source_hash) else if (pkg.source_hash.len > 0) try allocator.dupe(u8, pkg.source_hash) else &.{},
+                    .recipe_hash = if (store_recipe_hash.len > 0) try allocator.dupe(u8, store_recipe_hash) else if (pkg.recipe_hash.len > 0) try allocator.dupe(u8, pkg.recipe_hash) else try allocator.dupe(u8, recipe_hash),
                     .artifact_hash = try allocator.dupe(u8, m_res.artifact_hash),
                     .runtime = try allocator.dupe(u8, active_lua_abi),
                     .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
@@ -1062,7 +1147,12 @@ pub const SyncCommand = struct {
                         .path => "path",
                         else => "store",
                     }),
-                    .source = if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                    .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                    .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                    .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
+                    .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
+                    .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
+                    .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
                     .roles = try entry_roles.toOwnedSlice(allocator),
                 });
             }
@@ -1078,6 +1168,7 @@ pub const SyncCommand = struct {
             }
         }
         report.materialize_ms = elapsedMs(io, materialize_started_ns);
+        profiler.spanCount("sync.materialize", profile_span, "packages", solution.count());
         if (emitter) |e| {
             try e.emit(io, .STATUS, name, "materialization.complete", .{
                 .store_hits = report.store_hits,
@@ -1088,7 +1179,7 @@ pub const SyncCommand = struct {
             });
         }
 
-        if (!self.locked) {
+        if (!replay_lock) {
             var aw = std.Io.Writer.Allocating.init(allocator);
             defer aw.deinit();
             try next_lock.serialize(allocator, &aw.writer);
@@ -1100,15 +1191,17 @@ pub const SyncCommand = struct {
 
         // 5. Link environment
         const link_started_ns = nowNs(io);
+        profile_span = profiler.now();
         if (emitter) |e| {
             try e.emit(io, .STATUS, name, "env.link.begin", .{ .artifacts = projected_artifacts.items.len, .links = live_links.items.len });
         } else {
-            try stdout.print("Linking project environment...\n", .{});
+            try @import("command.zig").progress(stdout, "Linking project environment...\n", .{});
         }
         try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env);
         report.linked = projected_artifacts.items.len + live_links.items.len;
         report.env_refreshed = true;
         report.link_ms = elapsedMs(io, link_started_ns);
+        profiler.spanCount("sync.env.link", profile_span, "artifacts", projected_artifacts.items.len + live_links.items.len);
         report.total_ms = elapsedMs(io, started_ns);
 
         if (emitter) |e| {
@@ -1289,10 +1382,39 @@ fn lockedDependenciesMatch(
         }
 
         const lock_entry = lf.find(dep_name) orelse return false;
-        const constraint = if (dep.constraint.len > 0) dep.constraint else "*";
+        const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }
     return true;
+}
+
+fn lockedRuntimeMatches(
+    lf: *const moonstone.domain.lockfile.LockFile,
+    runtime_name: []const u8,
+    runtime_version: []const u8,
+    active_lua_abi: []const u8,
+) bool {
+    if (lf.find(runtime_name)) |entry| {
+        return std.mem.eql(u8, entry.version, runtime_version);
+    }
+
+    for (lf.packages.items) |entry| {
+        if (std.mem.eql(u8, entry.artifact_hash, "link") or std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (entry.runtime.len == 0) continue;
+        if (!moonstone.resolution.options.runtimeAbiMatches(active_lua_abi, entry.runtime)) return false;
+    }
+
+    return true;
+}
+
+fn normalizedLockConstraint(raw: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, raw, ':') != null) {
+        if (std.mem.lastIndexOfScalar(u8, raw, '@')) |at| {
+            return raw[at + 1 ..];
+        }
+        return "*";
+    }
+    return raw;
 }
 
 fn reportCheck(emitter: ?*ndjson.Emitter, io: std.Io, stdout: *std.Io.Writer, about: []const u8, ok: bool, message: []const u8) !void {

@@ -24,6 +24,7 @@ pub const store = struct {
     pub const verify = @import("store_verify.zig").StoreVerifyCommand;
     pub const path = @import("store_path.zig").StorePathCommand;
     pub const list = @import("store_list.zig").StoreListCommand;
+    pub const query = @import("store_query.zig").StoreQueryCommand;
 };
 
 // StoreDriver group
@@ -307,6 +308,11 @@ pub const ResolveCallbackContext = struct {
     emitter: ?*@import("ndjson.zig").Emitter = null,
 };
 
+pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
+    try stdout.print(fmt, args);
+    try stdout.flush();
+}
+
 pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.options.ResolveEvent) void {
     const context: *ResolveCallbackContext = @ptrCast(@alignCast(ctx orelse return));
     switch (event) {
@@ -319,7 +325,7 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
                     .delay_seconds = r.delay_seconds,
                 }) catch {};
             } else {
-                context.stdout.print("Retrying {s} due to {s} (attempt {d}/{d}, waiting {d}s)...\n", .{
+                progress(context.stdout, "Retrying {s} due to {s} (attempt {d}/{d}, waiting {d}s)...\n", .{
                     r.url, r.err_name, r.attempt, r.max_retries, r.delay_seconds,
                 }) catch {};
             }
@@ -328,9 +334,25 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
             if (context.emitter) |e| {
                 e.emit(context.io, .INFO, s.pkg_name, s.msg, .{}) catch {};
             } else {
-                context.stdout.print("{s}: {s}\n", .{ s.pkg_name, s.msg }) catch {};
+                progress(context.stdout, "{s}: {s}\n", .{ s.pkg_name, s.msg }) catch {};
             }
         },
+    }
+}
+
+pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.solver.report.SolverEvent, data: std.json.Value) void {
+    _ = data;
+    const context: *ResolveCallbackContext = @ptrCast(@alignCast(ctx orelse return));
+    const msg = switch (event) {
+        .resolving => "solver: choosing package version...",
+        .propagating => "solver: applying constraints...",
+        .conflict => "solver: conflict found; deriving explanation...",
+        .backtracking => "solver: backtracking...",
+    };
+    if (context.emitter) |e| {
+        e.emit(context.io, .INFO, "solver", msg, .{}) catch {};
+    } else {
+        progress(context.stdout, "{s}\n", .{msg}) catch {};
     }
 }
 

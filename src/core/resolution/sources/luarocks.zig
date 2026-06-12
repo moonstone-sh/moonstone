@@ -8,6 +8,10 @@ const luarocks = @import("../../luarocks/rockspec.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
 
+const profiler = @import("../../diagnostics/profiler.zig");
+
+var manifest_cache: std.StringHashMapUnmanaged([]u8) = .empty;
+
 fn get_luarocks_base(env_map: *std.process.Environ.Map) []const u8 {
     return env_map.get("MOONSTONE_LUAROCKS_URL") orelse "https://luarocks.org";
 }
@@ -72,6 +76,40 @@ fn http_get(
     }
 }
 
+fn blake3_prefixed(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
+    const raw = try hash.blake3_hex(allocator, data);
+    defer allocator.free(raw);
+    return try std.fmt.allocPrint(allocator, "b3:{s}", .{raw});
+}
+
+const FetchedRockspec = struct {
+    content: []const u8,
+    url: []const u8,
+    hash: []const u8,
+
+    fn deinit(self: FetchedRockspec, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+        allocator.free(self.url);
+        allocator.free(self.hash);
+    }
+};
+
+const FetchedSource = struct {
+    path: []const u8,
+    url: []const u8,
+    hash: []const u8,
+    kind: []const u8,
+    payload_path: []const u8,
+
+    fn deinit(self: FetchedSource, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.url);
+        allocator.free(self.hash);
+        allocator.free(self.kind);
+        allocator.free(self.payload_path);
+    }
+};
+
 fn runtime_to_manifest_url(allocator: std.mem.Allocator, base: []const u8, runtime: ?[]const u8) ![]const u8 {
     const version = blk: {
         if (runtime) |rt| {
@@ -110,12 +148,22 @@ fn fetch_manifest(
 ) !std.json.Parsed(std.json.Value) {
     const url = try runtime_to_manifest_url(allocator, base, runtime);
     defer allocator.free(url);
-    const body = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| {
-        // TODO: handle err
-        std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
-        return error.RocksVersionDiscoveryFailed;
+    const body = blk: {
+        if (manifest_cache.get(url)) |cached| {
+            profiler.mark("luarocks.manifest.cache_hit");
+            break :blk cached;
+        }
+        const span = profiler.now();
+        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| {
+            // TODO: handle err
+            std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
+            return error.RocksVersionDiscoveryFailed;
+        };
+        profiler.span("luarocks.manifest.fetch", span);
+        errdefer allocator.free(fetched);
+        try manifest_cache.put(allocator, try allocator.dupe(u8, url), fetched);
+        break :blk fetched;
     };
-    defer allocator.free(body);
     return std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
         // TODO: handle err
         std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
@@ -386,7 +434,7 @@ fn has_binary_rock(manifest_json: std.json.Value, pkg_name: []const u8, version:
 // Phase 2 — Prefer binary rock if safe
 // ---------------------------------------------------------------------------
 
-const RockResult = struct { path: []const u8, hash: []const u8 };
+const RockResult = struct { path: []const u8, hash: []const u8, recipe_hash: []const u8, source_hash: []const u8 = "", source_url: []const u8 = "" };
 
 /// Download a binary .rock from LuaRocks, unpack it, and commit to store.
 /// Returns the store path and artifact hash.
@@ -396,6 +444,8 @@ fn resolve_binary_rock(
     pkg_name: []const u8,
     version: []const u8,
     runtime_spec: []const u8,
+    runtime_artifact_hash: []const u8,
+    target: []const u8,
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
@@ -409,6 +459,8 @@ fn resolve_binary_rock(
 
     const rock_data = try http_get(allocator, io, url, env_map, on_event, on_event_context);
     defer allocator.free(rock_data);
+    const source_hash = try blake3_prefixed(allocator, rock_data);
+    defer allocator.free(source_hash);
 
     const paths = try fs.resolve_moonstone(allocator, env_map, io);
     defer {
@@ -445,13 +497,28 @@ fn resolve_binary_rock(
         version,
         .lib,
         runtime_spec,
+        runtime_artifact_hash,
+        target,
+        source_hash,
+        url,
+        "luarocks_binary_rock",
+        archive_path,
+        "",
+        "",
+        null,
         "rocks-binary",
         &.{},
         &.{},
         &.{},
         &.{},
     );
-    return RockResult{ .path = commit_res.path, .hash = commit_res.hash };
+    return .{
+        .path = commit_res.path,
+        .hash = commit_res.hash,
+        .recipe_hash = commit_res.recipe_hash,
+        .source_hash = try allocator.dupe(u8, source_hash),
+        .source_url = try allocator.dupe(u8, url),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +534,7 @@ fn fetch_rockspec(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
-) ![]const u8 {
+) !FetchedRockspec {
     // If version already includes a LuaRocks revision (e.g. "3.1.3-1"), try exact rockspec first.
     if (has_luarocks_revision(version)) {
         const url = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.rockspec", .{
@@ -480,7 +547,11 @@ fn fetch_rockspec(
         };
         if (content) |c| {
             if (std.mem.indexOf(u8, c, "package =") != null) {
-                return c;
+                return .{
+                    .content = c,
+                    .url = try allocator.dupe(u8, url),
+                    .hash = try blake3_prefixed(allocator, c),
+                };
             }
             allocator.free(c);
         }
@@ -498,7 +569,11 @@ fn fetch_rockspec(
             return err;
         };
         if (std.mem.indexOf(u8, content, "package =") != null) {
-            return content;
+            return .{
+                .content = content,
+                .url = try allocator.dupe(u8, url),
+                .hash = try blake3_prefixed(allocator, content),
+            };
         }
         allocator.free(content);
     }
@@ -668,7 +743,7 @@ fn fetch_and_unpack_source(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
-) ![]const u8 {
+) !FetchedSource {
     // 5a. Prefer the LuaRocks source rock when available. Many modern
     // rockspecs point source.url at git+https repositories, while LuaRocks
     // also publishes a .src.rock archive that Moonstone can fetch over HTTPS.
@@ -690,12 +765,20 @@ fn fetch_and_unpack_source(
         return err;
     };
     defer allocator.free(source_data);
+    const source_hash = try blake3_prefixed(allocator, source_data);
+    errdefer allocator.free(source_hash);
+    const source_url = try allocator.dupe(u8, url);
+    errdefer allocator.free(source_url);
+    const source_kind = try allocator.dupe(u8, if (std.mem.endsWith(u8, url, ".src.rock")) "luarocks_src_rock" else "upstream_archive");
+    errdefer allocator.free(source_kind);
     const source_dir = try std.fs.path.join(allocator, &.{ tmp_dir, "source" });
     defer allocator.free(source_dir);
 
     // If it ends in .src.rock, it's a zip archive.
     if (std.mem.endsWith(u8, url, ".src.rock")) {
-        const archive_path = try std.fs.path.join(allocator, &.{ tmp_dir, "source.src.rock" });
+        const archive_name = try std.fmt.allocPrint(allocator, "{s}-{s}.src.rock", .{ pkg_name, version });
+        defer allocator.free(archive_name);
+        const archive_path = try std.fs.path.join(allocator, &.{ tmp_dir, archive_name });
         defer allocator.free(archive_path);
         const f = try std.Io.Dir.cwd().createFile(io, archive_path, .{});
         try f.writeStreamingAll(io, source_data);
@@ -721,14 +804,29 @@ fn fetch_and_unpack_source(
                 }
             }
         }
-        const tarball = source_tarball_path orelse return try find_source_root(allocator, io, unpack_dir);
+        const payload_path = try allocator.dupe(u8, archive_path);
+        errdefer allocator.free(payload_path);
+        const tarball = source_tarball_path orelse return .{
+            .path = try find_source_root(allocator, io, unpack_dir),
+            .url = source_url,
+            .hash = source_hash,
+            .kind = source_kind,
+            .payload_path = payload_path,
+        };
 
         try std.Io.Dir.cwd().createDirPath(io, source_dir);
         try unpack_archive(allocator, io, tarball, source_dir);
+        return .{
+            .path = try find_source_root(allocator, io, source_dir),
+            .url = source_url,
+            .hash = source_hash,
+            .kind = source_kind,
+            .payload_path = payload_path,
+        };
     } else {
         // Direct archive download
         const ext = std.fs.path.extension(url);
-        const archive_path = try std.fmt.allocPrint(allocator, "{s}/source{s}", .{ tmp_dir, ext });
+        const archive_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}{s}", .{ tmp_dir, pkg_name, version, ext });
         defer allocator.free(archive_path);
         const f = try std.Io.Dir.cwd().createFile(io, archive_path, .{});
         try f.writeStreamingAll(io, source_data);
@@ -736,9 +834,14 @@ fn fetch_and_unpack_source(
 
         try std.Io.Dir.cwd().createDirPath(io, source_dir);
         try unpack_archive(allocator, io, archive_path, source_dir);
+        return .{
+            .path = try find_source_root(allocator, io, source_dir),
+            .url = source_url,
+            .hash = source_hash,
+            .kind = source_kind,
+            .payload_path = try allocator.dupe(u8, archive_path),
+        };
     }
-
-    return try find_source_root(allocator, io, source_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -889,6 +992,15 @@ fn commit_synthetic_artifact(
     pkg_version: []const u8,
     pkg_kind: manifest.Kind,
     runtime_spec: []const u8,
+    runtime_artifact_hash: []const u8,
+    target: []const u8,
+    source_hash: []const u8,
+    source_url: []const u8,
+    source_kind: []const u8,
+    source_payload_path: ?[]const u8,
+    rockspec_url: []const u8,
+    rockspec_hash: []const u8,
+    rockspec_payload_path: ?[]const u8,
     materializer: []const u8,
     lua_modules: []manifest.FeatureProvision,
     lua_cmodules: []manifest.FeatureProvision,
@@ -899,11 +1011,12 @@ fn commit_synthetic_artifact(
         .kind = if (pkg_kind == .bin) "bin" else "lib",
         .name = pkg_name,
         .version = pkg_version,
-        .source_hash = "",
+        .source_hash = source_hash,
         .materializer = materializer,
         .strategy = "rocks",
+        .runtime_hash = runtime_artifact_hash,
         .lua_abi = runtime_spec,
-        .target = "native",
+        .target = target,
         .collect = .{
             .lua_modules = lua_modules,
             .lua_cmodules = lua_cmodules,
@@ -953,10 +1066,12 @@ fn commit_synthetic_artifact(
         },
         .artifact = &[_]manifest.RemoteArtifact{
             .{
-                .target = "native",
+                .target = target,
                 .lua_abi = runtime_spec,
+                .runtime_artifact_hash = runtime_artifact_hash,
                 .url = "",
                 .hash = art_hash_dup,
+                .source_hash = source_hash,
                 .format = "directory",
                 .recipe_hash = recipe_hash_dup,
                 .provides = .{
@@ -982,12 +1097,18 @@ fn commit_synthetic_artifact(
         allocator.free(deps_copy);
     }
 
-    const source_str = try std.fmt.allocPrint(allocator, "rocks:{s}", .{pkg_name});
+    const source_str = try allocator.dupe(u8, source_url);
     defer allocator.free(source_str);
 
-    const store_path = try store.commit_to_store(allocator, io, env_map, build_out_dir, synthetic_desc, synthetic_desc.artifact[0], "rocks", source_str, deps_copy);
+    const store_path = try store.commit_to_store_with_sources(allocator, io, env_map, build_out_dir, synthetic_desc, synthetic_desc.artifact[0], "rocks", source_str, deps_copy, .{
+        .source_kind = source_kind,
+        .source_payload_path = source_payload_path,
+        .rockspec = rockspec_url,
+        .rockspec_hash = rockspec_hash,
+        .rockspec_payload_path = rockspec_payload_path,
+    });
 
-    return RockResult{ .path = store_path, .hash = try allocator.dupe(u8, art_hash) };
+    return RockResult{ .path = store_path, .hash = try allocator.dupe(u8, art_hash), .recipe_hash = try allocator.dupe(u8, recipe_hash) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,18 +1142,25 @@ pub fn resolve(
         defer allocator.free(arch_str);
         if (has_binary_rock(manifest_json, pkg_name, version, arch_str)) {
             const bin_res = blk: {
-                break :blk resolve_binary_rock(allocator, io, pkg_name, version, runtime_spec, env_map, options.on_event, options.on_event_context) catch |err| {
+                break :blk resolve_binary_rock(allocator, io, pkg_name, version, runtime_spec, options.runtime_artifact_hash orelse "", options.target orelse "native", env_map, options.on_event, options.on_event_context) catch |err| {
                     if (err != error.BinaryRockNotImplemented) return err;
                     break :blk null;
                 };
             };
             if (bin_res) |res| {
                 defer allocator.free(res.path);
+                defer allocator.free(res.recipe_hash);
+                defer allocator.free(res.source_hash);
+                defer allocator.free(res.source_url);
                 return candidate_mod.Candidate{
                     .name = try allocator.dupe(u8, pkg_name),
                     .version = try allocator.dupe(u8, version),
                     .kind = .lib,
                     .artifact_hash = res.hash,
+                    .source = try allocator.dupe(u8, res.source_url),
+                    .source_hash = try allocator.dupe(u8, res.source_hash),
+                    .recipe_hash = try allocator.dupe(u8, res.recipe_hash),
+                    .runtime_artifact_hash = if (options.runtime_artifact_hash) |rah| try allocator.dupe(u8, rah) else try allocator.dupe(u8, ""),
                     .registry_name = try allocator.dupe(u8, "rocks"),
                     .local_path = try allocator.dupe(u8, res.path),
                     .origin = .{ .luarocks = .{ .url = try allocator.dupe(u8, base), .rockspec_path = try allocator.dupe(u8, "") } },
@@ -1042,8 +1170,8 @@ pub fn resolve(
     }
 
     // Phase 3: Fetch rockspec
-    const rockspec_content = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context);
-    defer allocator.free(rockspec_content);
+    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context);
+    defer fetched_rockspec.deinit(allocator);
 
     // Phase 4: Classify
     const lua_exe = blk: {
@@ -1055,7 +1183,7 @@ pub fn resolve(
     };
     defer allocator.free(lua_exe);
 
-    var rock_parsed = try luarocks.parse_rockspec(allocator, io, rockspec_content, lua_exe);
+    var rock_parsed = try luarocks.parse_rockspec(allocator, io, fetched_rockspec.content, lua_exe);
     defer rock_parsed.deinit();
     const rock = rock_parsed.value;
 
@@ -1088,10 +1216,19 @@ pub fn resolve(
     };
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const work_dir = fetch_and_unpack_source(allocator, io, base, pkg_name, version, &rock, tmp_dir, env_map, options.on_event, options.on_event_context) catch |err| {
+    const rockspec_payload_name = try std.fmt.allocPrint(allocator, "{s}-{s}.rockspec", .{ pkg_name, version });
+    defer allocator.free(rockspec_payload_name);
+    const rockspec_payload_path = try std.fs.path.join(allocator, &.{ tmp_dir, rockspec_payload_name });
+    defer allocator.free(rockspec_payload_path);
+    const rockspec_file = try std.Io.Dir.cwd().createFile(io, rockspec_payload_path, .{});
+    try rockspec_file.writeStreamingAll(io, fetched_rockspec.content);
+    rockspec_file.close(io);
+
+    const fetched_source = fetch_and_unpack_source(allocator, io, base, pkg_name, version, &rock, tmp_dir, env_map, options.on_event, options.on_event_context) catch |err| {
         return err;
     };
-    defer allocator.free(work_dir);
+    defer fetched_source.deinit(allocator);
+    const work_dir = fetched_source.path;
 
     // Phase 6: Translate to Moonstone recipe
     const build_out_dir = try std.fs.path.join(allocator, &.{ tmp_dir, "out" });
@@ -1229,6 +1366,15 @@ pub fn resolve(
         rock.version,
         pkg_kind,
         runtime_spec,
+        options.runtime_artifact_hash orelse "",
+        options.target orelse "native",
+        fetched_source.hash,
+        fetched_source.url,
+        fetched_source.kind,
+        fetched_source.payload_path,
+        fetched_rockspec.url,
+        fetched_rockspec.hash,
+        rockspec_payload_path,
         "rocks-builtin",
         lua_modules,
         lua_cmodules,
@@ -1237,12 +1383,19 @@ pub fn resolve(
     );
     defer allocator.free(commit_res.path);
     defer allocator.free(commit_res.hash);
+    defer allocator.free(commit_res.recipe_hash);
 
     return candidate_mod.Candidate{
         .name = try allocator.dupe(u8, rock.package),
         .version = try allocator.dupe(u8, rock.version),
         .kind = pkg_kind,
         .artifact_hash = try allocator.dupe(u8, commit_res.hash),
+        .source = try allocator.dupe(u8, fetched_source.url),
+        .source_hash = try allocator.dupe(u8, fetched_source.hash),
+        .rockspec = try allocator.dupe(u8, fetched_rockspec.url),
+        .rockspec_hash = try allocator.dupe(u8, fetched_rockspec.hash),
+        .recipe_hash = try allocator.dupe(u8, commit_res.recipe_hash),
+        .runtime_artifact_hash = if (options.runtime_artifact_hash) |rah| try allocator.dupe(u8, rah) else try allocator.dupe(u8, ""),
         .registry_name = try allocator.dupe(u8, "rocks"),
         .local_path = try allocator.dupe(u8, commit_res.path),
         .origin = .{ .luarocks = .{ .url = try allocator.dupe(u8, base), .rockspec_path = try allocator.dupe(u8, "") } },

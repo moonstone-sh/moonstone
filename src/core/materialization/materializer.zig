@@ -44,6 +44,54 @@ pub const Materializer = struct {
     on_event: ?resolver.ResolveCallback = null,
     on_event_context: ?*anyopaque = null,
 
+    fn sourcePayloadOptions(
+        self: *Materializer,
+        client: *registry.RegistryClient,
+        descriptor_path: []const u8,
+        desc: manifest.RemotePackageDescriptor,
+        art: manifest.RemoteArtifact,
+        blob_path: []const u8,
+        tmp_path: []const u8,
+    ) !store.SourcePayloadOptions {
+        if (desc.source) |src| {
+            if (src.url) |source_url| {
+                const source_blob = try client.fetch_blob(descriptor_path, source_url);
+                defer self.allocator.free(source_blob);
+
+                const actual_hash = blk: {
+                    var hash_buf: [32]u8 = undefined;
+                    std.crypto.hash.Blake3.hash(source_blob, &hash_buf, .{});
+                    const actual_hex = std.fmt.bytesToHex(hash_buf, .lower);
+                    break :blk try std.fmt.allocPrint(self.allocator, "b3:{s}", .{&actual_hex});
+                };
+                defer self.allocator.free(actual_hash);
+
+                if (src.hash.len > 0 and !std.mem.eql(u8, actual_hash, src.hash)) return error.HashMismatch;
+
+                const payload_name = try std.fmt.allocPrint(self.allocator, "source.{s}", .{src.format});
+                defer self.allocator.free(payload_name);
+                const payload_path = try std.fs.path.join(self.allocator, &.{ tmp_path, payload_name });
+                const payload_file = try std.Io.Dir.cwd().createFile(self.io, payload_path, .{});
+                try payload_file.writeStreamingAll(self.io, source_blob);
+                payload_file.close(self.io);
+
+                return .{
+                    .source_kind = src.kind,
+                    .source_payload_path = payload_path,
+                };
+            }
+        }
+
+        if (std.mem.eql(u8, art.kind, "source") or art.materialize != null) {
+            return .{
+                .source_kind = art.kind,
+                .source_payload_path = blob_path,
+            };
+        }
+
+        return .{};
+    }
+
     pub fn materialize_remote(
         self: *Materializer,
         registry_url: []const u8,
@@ -111,6 +159,13 @@ pub const Materializer = struct {
         try blob_file.writeStreamingAll(self.io, blob);
         blob_file.close(self.io);
 
+        const source_payloads = try self.sourcePayloadOptions(&client, descriptor_path, desc, art, blob_path, tmp_path);
+        defer if (source_payloads.source_payload_path) |payload_path| {
+            if (!std.mem.eql(u8, payload_path, blob_path)) self.allocator.free(payload_path);
+        };
+        const source_origin = if (desc.source) |src| (src.url orelse art.url) else art.url;
+        const source_hash = if (desc.source) |src| src.hash else if (art.source_hash.len > 0) art.source_hash else if (source_payloads.source_payload_path != null) art.hash else "";
+
         // Unpack using system archive tools
         var tar_argv = std.ArrayList([]const u8).empty;
         defer tar_argv.deinit(self.allocator);
@@ -139,6 +194,7 @@ pub const Materializer = struct {
         if (tar_res.term != .exited or tar_res.term.exited != 0) return error.UnpackError;
 
         var final_art = art;
+        final_art.source_hash = source_hash;
 
         // 4. Handle Materialization
         if (is_source and art.materialize != null) {
@@ -206,7 +262,7 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", "moonstone", &.{});
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "cmake")) {
@@ -273,7 +329,7 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", "moonstone", &.{});
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "command")) {
@@ -343,7 +399,7 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", "moonstone", &.{});
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             }
@@ -355,7 +411,7 @@ pub const Materializer = struct {
             for (dependencies) |*dependency| dependency.deinit(self.allocator);
             self.allocator.free(dependencies);
         }
-        const final_path = try store.commit_to_store(self.allocator, self.io, self.environ_map, tmp_path, desc, art, "moonstone", "moonstone", dependencies);
+        const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, tmp_path, desc, final_art, "moonstone", source_origin, dependencies, source_payloads);
         return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art.hash) };
     }
 

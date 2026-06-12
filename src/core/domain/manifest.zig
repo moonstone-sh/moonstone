@@ -507,6 +507,7 @@ pub const RemoteArtifact = struct {
     native_compat_required: bool = false,
     url: []const u8,
     hash: []const u8,
+    source_hash: []const u8 = "",
     format: []const u8,
     bytes: ?u64 = null,
     recipe_hash: []const u8 = "",
@@ -528,6 +529,7 @@ pub const RemoteArtifact = struct {
         res.native_compat_required = self.native_compat_required;
         res.url = try allocator.dupe(u8, self.url);
         res.hash = try allocator.dupe(u8, self.hash);
+        res.source_hash = try allocator.dupe(u8, self.source_hash);
         res.format = try allocator.dupe(u8, self.format);
         res.bytes = self.bytes;
         res.recipe_hash = try allocator.dupe(u8, self.recipe_hash);
@@ -548,6 +550,7 @@ pub const RemoteArtifact = struct {
         allocator.free(self.runtime_artifact_hash);
         allocator.free(self.url);
         allocator.free(self.hash);
+        allocator.free(self.source_hash);
         allocator.free(self.format);
         allocator.free(self.recipe_hash);
         if (self.materialize) |*m| m.deinit(allocator);
@@ -722,6 +725,7 @@ pub const RemotePackageDescriptor = struct {
 
                         art.url = try allocator.dupe(u8, a_table.get("url").?.string);
                         art.hash = try allocator.dupe(u8, a_table.get("hash").?.string);
+                        art.source_hash = if (a_table.get("source_hash")) |sh| try allocator.dupe(u8, sh.string) else try allocator.dupe(u8, "");
                         art.format = try allocator.dupe(u8, a_table.get("format").?.string);
                         if (a_table.get("bytes")) |b| art.bytes = @intCast(b.integer) else art.bytes = null;
                         if (a_table.get("recipe_hash")) |rh| art.recipe_hash = try allocator.dupe(u8, rh.string) else art.recipe_hash = "";
@@ -897,6 +901,11 @@ pub const StoreManifest = struct {
     origin: struct {
         resolver: []const u8 = "",
         source: []const u8 = "",
+        source_kind: []const u8 = "",
+        source_payload: []const u8 = "",
+        rockspec: []const u8 = "",
+        rockspec_hash: []const u8 = "",
+        rockspec_payload: []const u8 = "",
     } = .{},
     compat: struct {
         runtime_version: []const u8 = "", // e.g. lua@5.4.7
@@ -924,6 +933,11 @@ pub const StoreManifest = struct {
         allocator.free(self.artifact.target);
         allocator.free(self.origin.resolver);
         allocator.free(self.origin.source);
+        allocator.free(self.origin.source_kind);
+        allocator.free(self.origin.source_payload);
+        allocator.free(self.origin.rockspec);
+        allocator.free(self.origin.rockspec_hash);
+        allocator.free(self.origin.rockspec_payload);
         allocator.free(self.compat.runtime_version);
         allocator.free(self.compat.lua_abi);
         allocator.free(self.compat.lua_api);
@@ -955,6 +969,11 @@ pub const StoreManifest = struct {
         try writer.print("\n[origin]\n", .{});
         try writer.print("resolver = \"{s}\"\n", .{self.origin.resolver});
         try writer.print("source = \"{s}\"\n", .{self.origin.source});
+        if (self.origin.source_kind.len > 0) try writer.print("source_kind = \"{s}\"\n", .{self.origin.source_kind});
+        if (self.origin.source_payload.len > 0) try writer.print("source_payload = \"{s}\"\n", .{self.origin.source_payload});
+        if (self.origin.rockspec.len > 0) try writer.print("rockspec = \"{s}\"\n", .{self.origin.rockspec});
+        if (self.origin.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{self.origin.rockspec_hash});
+        if (self.origin.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{self.origin.rockspec_payload});
 
         try writer.print("\n[compat]\n", .{});
         try writer.print("runtime_version = \"{s}\"\n", .{self.compat.runtime_version});
@@ -1622,6 +1641,15 @@ test "StoreManifest round-trip with dependencies" {
         \\artifact_hash = "b3:ghi"
         \\target = "native"
         \\
+        \\[origin]
+        \\resolver = "rocks"
+        \\source = "https://luarocks.org/parent-1.0.0-1.src.rock"
+        \\source_kind = "luarocks_src_rock"
+        \\source_payload = "sources/parent-1.0.0-1.src.rock"
+        \\rockspec = "https://luarocks.org/parent-1.0.0-1.rockspec"
+        \\rockspec_hash = "b3:rockspec"
+        \\rockspec_payload = "sources/parent-1.0.0-1.rockspec"
+        \\
         \\[compat]
         \\runtime_version = "lua@5.4.7"
         \\lua_abi = "lua-5.4"
@@ -1638,6 +1666,9 @@ test "StoreManifest round-trip with dependencies" {
 
     try std.testing.expectEqualStrings("parent", sm.artifact.name);
     try std.testing.expectEqualStrings("1.0.0", sm.artifact.version);
+    try std.testing.expectEqualStrings("luarocks_src_rock", sm.origin.source_kind);
+    try std.testing.expectEqualStrings("sources/parent-1.0.0-1.src.rock", sm.origin.source_payload);
+    try std.testing.expectEqualStrings("sources/parent-1.0.0-1.rockspec", sm.origin.rockspec_payload);
     try std.testing.expectEqualStrings("lua@5.4.7", sm.compat.runtime_version);
     try std.testing.expectEqualStrings("lua-5.4", sm.compat.lua_abi);
     try std.testing.expectEqual(@as(usize, 1), sm.dependencies.len);

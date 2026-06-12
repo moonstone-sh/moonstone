@@ -1,6 +1,7 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const profiler = moonstone.diagnostics.profiler;
 
 fn packageNamesMatch(left: []const u8, right: []const u8) bool {
     return std.mem.eql(u8, left, right) or std.ascii.eqlIgnoreCase(left, right);
@@ -31,6 +32,7 @@ pub const add_command = struct {
     offline: bool = false,
     prefer_local: bool = false,
     no_sync: bool = false,
+    update: bool = false,
     global: bool = false,
     positionals: []const []const u8 = &.{},
 
@@ -54,6 +56,7 @@ pub const add_command = struct {
             \\  --offline        Do not access network
             \\  --prefer-local   Prefer local candidates over remote
             \\  --no-sync     Do not run sync after adding
+            \\  --update         Re-resolve during the follow-up sync
             \\  --global         Add tool dependency to the global tools environment
             \\  --json           Output results as JSON
             \\
@@ -112,6 +115,7 @@ pub const add_command = struct {
         const io = ctx.io;
         const stdout = ctx.stdout;
         const env = ctx.env;
+        profiler.mark("add.begin");
 
         if (self.global) {
             var global_self = self;
@@ -186,16 +190,22 @@ pub const add_command = struct {
         const idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer { var i = idx; i.deinit(); }
 
+        if (!self.json) try @import("command.zig").progress(stdout, "Reading registry configuration...\n", .{});
+        var profile_span = profiler.now();
         const resolved_registries = try moonstone.registry.resolver.resolve(allocator, io, env);
+        profiler.span("add.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(resolved_registries, allocator);
 
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
             .stdout = stdout,
+            .emitter = emitter,
         };
 
         var resolver = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
 
+        if (!self.json) try @import("command.zig").progress(stdout, "Resolving active runtime...\n", .{});
+        profile_span = profiler.now();
         const rt_res = resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName()), mt.runtimeConstraint(), idx, resolved_registries, .{
             .offline = self.offline,
             .prefer_local = true,
@@ -208,11 +218,13 @@ pub const add_command = struct {
             }
             return err;
         };
+        profiler.span("add.runtime.resolve", profile_span);
         var mut_rt_res = rt_res;
         defer mut_rt_res.deinit(allocator);
 
         const runtime_abi = mt.runtimeAbi();
 
+        profile_span = profiler.now();
         if (mut_rt_res.local_path) |lp| {
             mat.runtime_path = lp;
         } else {
@@ -225,13 +237,17 @@ pub const add_command = struct {
             );
             mat.runtime_path = rt_res_mat.path;
         }
+        profiler.span("add.runtime.materialize", profile_span);
 
         // Find a proper Lua interpreter for rockspec parsing.
         // LÖVE and other engine runtimes do not provide bin/lua.
+        profile_span = profiler.now();
         var tool_lua_prov = try moonstone.project.tool_lua.findToolLua(allocator, io, idx, runtime_abi, "rockspec-parse", ctx.env);
         defer tool_lua_prov.deinit(allocator);
         const lua_exe = try allocator.dupe(u8, tool_lua_prov.executable);
+        profiler.span("add.tool_lua.find", profile_span);
 
+        profile_span = profiler.now();
         var targets = std.ArrayList(moonstone.resolution.solver.term.Term).empty;
         defer {
             for (targets.items) |t| {
@@ -275,6 +291,7 @@ pub const add_command = struct {
                 .role = target_role,
             });
         }
+        profiler.spanCount("add.targets.build", profile_span, "targets", targets.items.len);
 
         // Pass targets to provider for explicit registry filtering during resolution
         var provider_targets = std.ArrayList(moonstone.resolution.solver.term.Term).empty;
@@ -290,20 +307,27 @@ pub const add_command = struct {
         const provider_targets_slice = try provider_targets.toOwnedSlice(allocator);
 
         // 1. Solve dependencies
+        profile_span = profiler.now();
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
         provider_impl.init(
             allocator, io, idx, resolved_registries, .{
                 .offline = self.offline,
-                .prefer_local = self.prefer_local,
+                .prefer_local = self.prefer_local or !self.update,
                 .runtime = runtime_abi,
                 .runtime_path = mat.runtime_path,
             }, env, lua_exe, provider_targets_slice,
         );
+        profiler.spanCount("add.provider.plan", profile_span, "targets", targets.items.len);
         // Deinit moved to end of function
 
-        var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{});
+        if (!self.json) try @import("command.zig").progress(stdout, "Solving requested dependencies...\n", .{});
+        var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
+            .on_event = @import("command.zig").onSolverEvent,
+            .on_event_context = &resolve_cb_ctx,
+        });
 
         var solution = std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
+        profile_span = profiler.now();
         solution = solver.solve(targets.items) catch |err| blk: {
             if (err == error.ArtifactNotFound) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
             if (err == error.NoSolution) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
@@ -318,6 +342,7 @@ pub const add_command = struct {
             }
             return err;
         };
+        profiler.spanCount("add.pubgrub.solve", profile_span, "packages", solution.count());
         defer {
             var sit = solution.iterator();
             while (sit.next()) |entry| {
@@ -422,11 +447,17 @@ pub const add_command = struct {
         }
 
         // 2. Resolve and materialize all packages in the solution
+        profile_span = profiler.now();
         var sit = solution.iterator();
+        var materialize_index: usize = 0;
+        const materialize_total = solution.count();
         while (sit.next()) |entry| {
+            materialize_index += 1;
             const pkg_name = entry.key_ptr.*;
             const resolved_art = entry.value_ptr.*;
             const v_str = resolved_art.version;
+
+            if (!self.json) try @import("command.zig").progress(stdout, "Materializing [{d}/{d}] {s}@{s}...\n", .{ materialize_index, materialize_total, pkg_name, v_str });
 
             // Find if this was an explicit positional
             var is_explicit = false;
@@ -575,12 +606,23 @@ pub const add_command = struct {
                 }
             }
 
+            var store_prov_opt = @import("lock_provenance.zig").read(allocator, io, mat_res.path) catch null;
+            defer if (store_prov_opt) |*store_prov| store_prov.deinit(allocator);
+            const store_source_hash = if (store_prov_opt) |store_prov| store_prov.source_hash else "";
+            const store_recipe_hash = if (store_prov_opt) |store_prov| store_prov.recipe_hash else "";
+            const store_source = if (store_prov_opt) |store_prov| store_prov.source else "";
+            const store_source_kind = if (store_prov_opt) |store_prov| store_prov.source_kind else "";
+            const store_source_payload = if (store_prov_opt) |store_prov| store_prov.source_payload else "";
+            const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
+            const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
+            const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
+
             try lf.packages.append(allocator, .{
                 .name = try allocator.dupe(u8, resolved.name),
                 .version = try allocator.dupe(u8, resolved.version),
                 .kind = resolved.kind,
-                .source_hash = &.{},
-                .recipe_hash = if (resolved.remote_desc) |rd| (
+                .source_hash = if (store_source_hash.len > 0) try allocator.dupe(u8, store_source_hash) else if (resolved.source_hash.len > 0) try allocator.dupe(u8, resolved.source_hash) else &.{},
+                .recipe_hash = if (store_recipe_hash.len > 0) try allocator.dupe(u8, store_recipe_hash) else if (resolved.recipe_hash.len > 0) try allocator.dupe(u8, resolved.recipe_hash) else if (resolved.remote_desc) |rd| (
                     if (rd.artifact[resolved.artifact_idx.?].recipe_hash.len > 0) 
                         try allocator.dupe(u8, rd.artifact[resolved.artifact_idx.?].recipe_hash)
                     else 
@@ -606,9 +648,15 @@ pub const add_command = struct {
                 .target = try allocator.dupe(u8, "native"),
                 .constellation = try allocator.dupe(u8, "default"),
                 .resolver = try allocator.dupe(u8, if (resolved.registry_url != null) "moonstone" else "rocks"),
-                .source = if (resolved.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else if (resolved.source.len > 0) try allocator.dupe(u8, resolved.source) else if (resolved.registry_url) |url| try allocator.dupe(u8, url) else &.{},
+                .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
+                .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (resolved.rockspec.len > 0) try allocator.dupe(u8, resolved.rockspec) else &.{},
+                .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (resolved.rockspec_hash.len > 0) try allocator.dupe(u8, resolved.rockspec_hash) else &.{},
+                .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
             });
         }
+        profiler.spanCount("add.materialize", profile_span, "packages", solution.count());
 
         // Write moonstone.toml
         if (!self.dry_run) {
@@ -647,8 +695,8 @@ pub const add_command = struct {
         }
 
         if (!self.no_sync and !self.dry_run) {
-            if (!self.json) try stdout.print("Running sync...\n", .{});
-            const sync = @import("sync.zig").sync_command{ .json = self.json };
+            if (!self.json) try @import("command.zig").progress(stdout, "Running sync...\n", .{});
+            const sync = @import("sync.zig").sync_command{ .json = self.json, .update = self.update };
             try sync.run(ctx);
         }
     }

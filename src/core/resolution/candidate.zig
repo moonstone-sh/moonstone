@@ -87,6 +87,11 @@ pub const Candidate = struct {
 
     // Legacy support fields (will be removed as pipeline matures)
     artifact_hash: []const u8 = "",
+    source: []const u8 = "",
+    source_hash: []const u8 = "",
+    rockspec: []const u8 = "",
+    rockspec_hash: []const u8 = "",
+    recipe_hash: []const u8 = "",
     runtime: ?[]const u8 = null,
     lua_version: ?[]const u8 = null,    // e.g. lua@5.4.7
     lua_api: ?[]const u8 = null,        // e.g. 5.1, 5.4
@@ -104,6 +109,11 @@ pub const Candidate = struct {
         allocator.free(self.name);
         allocator.free(self.version);
         allocator.free(self.artifact_hash);
+        if (self.source.len > 0) allocator.free(self.source);
+        if (self.source_hash.len > 0) allocator.free(self.source_hash);
+        if (self.rockspec.len > 0) allocator.free(self.rockspec);
+        if (self.rockspec_hash.len > 0) allocator.free(self.rockspec_hash);
+        if (self.recipe_hash.len > 0) allocator.free(self.recipe_hash);
         if (self.runtime) |r| allocator.free(r);
         if (self.lua_version) |v| allocator.free(v);
         if (self.lua_api) |a| allocator.free(a);
@@ -130,6 +140,11 @@ pub const Candidate = struct {
             .origin = try self.origin.clone(allocator),
             .location = try self.location.clone(allocator),
             .artifact_hash = try allocator.dupe(u8, self.artifact_hash),
+            .source = if (self.source.len > 0) try allocator.dupe(u8, self.source) else "",
+            .source_hash = if (self.source_hash.len > 0) try allocator.dupe(u8, self.source_hash) else "",
+            .rockspec = if (self.rockspec.len > 0) try allocator.dupe(u8, self.rockspec) else "",
+            .rockspec_hash = if (self.rockspec_hash.len > 0) try allocator.dupe(u8, self.rockspec_hash) else "",
+            .recipe_hash = if (self.recipe_hash.len > 0) try allocator.dupe(u8, self.recipe_hash) else "",
             .runtime = if (self.runtime) |r| try allocator.dupe(u8, r) else null,
             .lua_version = if (self.lua_version) |v| try allocator.dupe(u8, v) else null,
             .lua_api = if (self.lua_api) |a| try allocator.dupe(u8, a) else null,

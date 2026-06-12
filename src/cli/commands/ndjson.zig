@@ -83,6 +83,7 @@ pub const Emitter = struct {
         
         try self.stdout.writeAll(aw.writer.buffer[0..aw.writer.end]);
         try self.stdout.writeAll("\n");
+        try self.stdout.flush();
         self.seq += 1;
     }
 
@@ -124,6 +125,7 @@ pub const Emitter = struct {
         
         try self.stdout.writeAll(aw.writer.buffer[0..aw.writer.end]);
         try self.stdout.writeAll("\n");
+        try self.stdout.flush();
         self.seq += 1;
     }
 };

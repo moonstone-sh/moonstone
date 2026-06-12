@@ -131,7 +131,7 @@ pub const use_command = struct {
 
         if (effective_sync) {
             if (emitter == null) {
-                try stdout.print("Running sync...\n", .{});
+                try @import("command.zig").progress(stdout, "Running sync...\n", .{});
             }
             const sync_command = @import("sync.zig").sync_command{ .json = self.json };
             try sync_command.run(ctx);

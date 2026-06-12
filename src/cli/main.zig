@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 
 const router = @import("router.zig");
 const command_mod = @import("commands/command.zig");
+const profiler = moonstone.diagnostics.profiler;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -14,6 +15,8 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     const all_args = try init.minimal.args.toSlice(arena);
+
+    profiler.init(init.environ_map);
 
     var ctx = router.Context{
         .allocator = arena,
@@ -46,6 +49,7 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.store.verify),
             router.CommandNode.from(command_mod.store.path),
             router.CommandNode.from(command_mod.store.list),
+            router.CommandNode.from(command_mod.store.query),
         }),
         
         router.CommandNode.group("index", "Manage metadata index", &.{
@@ -75,13 +79,17 @@ pub fn main(init: std.process.Init) !void {
     router.dispatch(App, all_args[1..], &ctx) catch |err| {
         if (err == error.AlreadyReported) {
             stdout.flush() catch {};
+            profiler.finish("process.exit.error");
             std.process.exit(1);
         }
         // Fallback for unexpected errors that escaped router's trap
         command_mod.reportError(arena, init.io, stdout, false, err, "main", ctx.error_detail) catch {};
         stdout.flush() catch {};
+        profiler.finish("process.exit.error");
         std.process.exit(1);
     };
+
+    profiler.finish("process.exit.ok");
 
     // Final flush, ignore WriteFailed which is usually BrokenPipe at exit
     stdout.flush() catch |err| {

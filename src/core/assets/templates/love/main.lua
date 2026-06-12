@@ -1,3 +1,6 @@
 function love.draw()
-    love.graphics.print("Hello from LÖVE + Moonstone!", 400, 300)
+	local windowWidth = love.graphics.getWidth()
+	local windowHeight = love.graphics.getHeight()
+
+	love.graphics.printf("Hello from LÖVE + Moonstone!", 0, windowHeight / 2, windowWidth, "center")
 end

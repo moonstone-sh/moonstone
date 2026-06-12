@@ -15,6 +15,11 @@ pub const LockEntry = struct {
     target: []const u8 = &.{},
     constellation: []const u8 = &.{},
     source: []const u8 = &.{},
+    source_kind: []const u8 = &.{},
+    source_payload: []const u8 = &.{},
+    rockspec: []const u8 = &.{},
+    rockspec_hash: []const u8 = &.{},
+    rockspec_payload: []const u8 = &.{},
     resolver: []const u8 = &.{},
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
@@ -31,6 +36,11 @@ pub const LockEntry = struct {
         if (self.target.len > 0) allocator.free(self.target);
         if (self.constellation.len > 0) allocator.free(self.constellation);
         if (self.source.len > 0) allocator.free(self.source);
+        if (self.source_kind.len > 0) allocator.free(self.source_kind);
+        if (self.source_payload.len > 0) allocator.free(self.source_payload);
+        if (self.rockspec.len > 0) allocator.free(self.rockspec);
+        if (self.rockspec_hash.len > 0) allocator.free(self.rockspec_hash);
+        if (self.rockspec_payload.len > 0) allocator.free(self.rockspec_payload);
         if (self.resolver.len > 0) allocator.free(self.resolver);
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
         for (self.roles) |g| allocator.free(g);
@@ -101,6 +111,11 @@ pub const LockFile = struct {
                     .target = try allocator.dupe(u8, (t.get("target") orelse return error.MissingTarget).string),
                     .constellation = try allocator.dupe(u8, (t.get("constellation") orelse return error.MissingConstellation).string),
                     .source = if (t.get("source")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .source_kind = if (t.get("source_kind")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .source_payload = if (t.get("source_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .rockspec = if (t.get("rockspec")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .rockspec_hash = if (t.get("rockspec_hash")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .rockspec_payload = if (t.get("rockspec_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .resolver = if (t.get("resolver")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .link_mode = if (t.get("link_mode")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .reproducible = reproducible,
@@ -160,6 +175,11 @@ test "lockfile roundtrip" {
         \\target = "native"
         \\constellation = "default"
         \\source = "registry"
+        \\source_kind = "luarocks_src_rock"
+        \\source_payload = "sources/inspect-3.1.3-1.src.rock"
+        \\rockspec = "https://luarocks.org/inspect-3.1.3-1.rockspec"
+        \\rockspec_hash = "b3:rockspec123"
+        \\rockspec_payload = "sources/inspect-3.1.3-1.rockspec"
         \\link_mode = ""
         \\reproducible = true
         \\
@@ -185,7 +205,13 @@ test "lockfile roundtrip" {
 
     try std.testing.expectEqual(2, lf.packages.items.len);
     try std.testing.expectEqualStrings("inspect", lf.packages.items[0].name);
+    try std.testing.expectEqualStrings("luarocks_src_rock", lf.packages.items[0].source_kind);
+    try std.testing.expectEqualStrings("sources/inspect-3.1.3-1.src.rock", lf.packages.items[0].source_payload);
+    try std.testing.expectEqualStrings("https://luarocks.org/inspect-3.1.3-1.rockspec", lf.packages.items[0].rockspec);
+    try std.testing.expectEqualStrings("b3:rockspec123", lf.packages.items[0].rockspec_hash);
+    try std.testing.expectEqualStrings("sources/inspect-3.1.3-1.rockspec", lf.packages.items[0].rockspec_payload);
     try std.testing.expectEqualStrings("link:my-lib", lf.packages.items[1].source);
+    try std.testing.expectEqual(@as(usize, 0), lf.packages.items[1].source_payload.len);
     try std.testing.expectEqual(false, lf.packages.items[1].reproducible);
 
     var aw = std.Io.Writer.Allocating.init(allocator);
@@ -197,5 +223,8 @@ test "lockfile roundtrip" {
     defer lf2.deinit();
 
     try std.testing.expectEqualStrings(lf.packages.items[0].name, lf2.packages.items[0].name);
+    try std.testing.expectEqualStrings(lf.packages.items[0].source_payload, lf2.packages.items[0].source_payload);
+    try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_hash, lf2.packages.items[0].rockspec_hash);
+    try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_payload, lf2.packages.items[0].rockspec_payload);
     try std.testing.expectEqual(lf.packages.items[1].reproducible, lf2.packages.items[1].reproducible);
 }

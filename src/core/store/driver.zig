@@ -126,6 +126,7 @@ pub const StoreDriver = struct {
     fn migrate_schema(self: StoreDriver) !void {
         _ = self.exec("ALTER TABLE provides_bin ADD COLUMN entry_point TEXT;", .{}) catch {};
         _ = self.exec("ALTER TABLE artifacts ADD COLUMN description TEXT;", .{}) catch {};
+        try self.ensure_indexes();
     }
 
     pub fn deinit(self: *StoreDriver) void {
@@ -260,6 +261,21 @@ pub const StoreDriver = struct {
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN resolver TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN source TEXT;", null, null, null);
         _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN native_compat_required INTEGER DEFAULT 0;", null, null, null);
+        try self.ensure_indexes();
+    }
+
+    fn ensure_indexes(self: StoreDriver) !void {
+        const indexes =
+            \\CREATE INDEX IF NOT EXISTS idx_artifacts_lookup ON artifacts(name, target, resolver, kind, lua_abi, runtime, runtime_artifact_hash, native_compat_required);
+            \\CREATE INDEX IF NOT EXISTS idx_artifacts_name_version ON artifacts(name, version DESC);
+            \\CREATE INDEX IF NOT EXISTS idx_artifacts_kind_abi ON artifacts(kind, lua_abi, artifact_hash);
+            \\CREATE INDEX IF NOT EXISTS idx_provides_bin_name_hash ON provides_bin(name, artifact_hash);
+            \\CREATE INDEX IF NOT EXISTS idx_provides_runtime_name ON provides_runtime(name, version, artifact_hash);
+            \\CREATE INDEX IF NOT EXISTS idx_provides_lua_module_name ON provides_lua_module(name, artifact_hash);
+            \\CREATE INDEX IF NOT EXISTS idx_provides_lua_cmodule_name ON provides_lua_cmodule(name, artifact_hash);
+        ;
+        const rc = c.sqlite3_exec(self.db, indexes, null, null, null);
+        if (rc != c.SQLITE_OK) return sqliteError(rc);
     }
 
     fn sqliteError(rc: c_int) anyerror {

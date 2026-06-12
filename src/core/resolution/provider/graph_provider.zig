@@ -185,6 +185,14 @@ pub const RegistryProvider = struct {
                         defer client.deinit();
                         var desc = try client.fetch_descriptor(r.descriptor_path);
                         const arena = self.arena.allocator();
+                        const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse return null;
+                        const selected_artifact = desc.artifact[selected_artifact_idx];
+                        art.artifact_idx = selected_artifact_idx;
+                        art.artifact_hash = try arena.dupe(u8, selected_artifact.hash);
+                        art.lua_abi = try arena.dupe(u8, selected_artifact.lua_abi);
+                        art.lua_api = try arena.dupe(u8, selected_artifact.lua_api);
+                        art.runtime = try arena.dupe(u8, selected_artifact.runtime);
+                        art.runtime_artifact_hash = try arena.dupe(u8, selected_artifact.runtime_artifact_hash);
                         art.remote_desc = try desc.clone(arena);
                         desc.deinit(self.allocator);
                     }
@@ -412,9 +420,9 @@ pub const RegistryProvider = struct {
             for (local_candidates) |cand| {
                 if (resolver_filter) |rf| {
                     if (cand.resolver) |cr| {
-                        if (cr.len == 0 and std.mem.eql(u8, rf, "moonstone")) continue;
+                        if (cr.len == 0 and !std.mem.eql(u8, rf, "moonstone")) continue;
                         if (cr.len > 0 and !std.mem.eql(u8, cr, rf)) continue;
-                    } else if (std.mem.eql(u8, rf, "moonstone")) {
+                    } else if (!std.mem.eql(u8, rf, "moonstone")) {
                         continue;
                     }
                 }
@@ -475,6 +483,10 @@ pub const RegistryProvider = struct {
 
                 try versions.append(self.allocator, v);
             }
+        }
+
+        if (versions.items.len > 0 and self.options.prefer_local) {
+            return try versions.toOwnedSlice(self.allocator);
         }
 
         // 3. Resolve LuaRocks packages online
@@ -539,29 +551,22 @@ pub const RegistryProvider = struct {
                                 if (already_present) continue;
                             }
 
-                            var desc = client.fetch_descriptor(pkg.descriptor) catch continue;
-                            defer desc.deinit(self.allocator);
-                            const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
-                            const selected_artifact = desc.artifact[selected_artifact_idx];
-                            const desc_clone = try desc.clone(arena);
-
                             try self.artifacts.append(arena, .{
                                 .name = try arena.dupe(u8, pkg.name),
                                 .kind = pkg.kind,
-                                .artifact_hash = try arena.dupe(u8, selected_artifact.hash),
+                                .artifact_hash = try arena.dupe(u8, ""),
                                 .version = try arena.dupe(u8, pkg.version),
-                                .lua_abi = try arena.dupe(u8, selected_artifact.lua_abi),
                                 .registry_url = try arena.dupe(u8, reg.url),
                                 .registry_token = if (reg.token) |t| try arena.dupe(u8, t) else null,
                                 .descriptor_path = try arena.dupe(u8, pkg.descriptor),
-                                .artifact_idx = selected_artifact_idx,
-                                .remote_desc = desc_clone,
+                                .artifact_idx = null,
+                                .remote_desc = null,
                                 .origin = .{
                                     .moonstone_registry = .{
                                         .url = try arena.dupe(u8, reg.url),
                                         .token = if (reg.token) |t| try arena.dupe(u8, t) else null,
                                         .descriptor_path = try arena.dupe(u8, pkg.descriptor),
-                                        .artifact_idx = selected_artifact_idx,
+                                        .artifact_idx = 0,
                                     },
                                 },
                             });
@@ -692,6 +697,14 @@ pub const RegistryProvider = struct {
                     var client = registry.RegistryClient.init(self.allocator, self.io, r.url, r.token, self.env);
                     defer client.deinit();
                     var desc = try client.fetch_descriptor(r.descriptor_path);
+                    const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
+                    const selected_artifact = desc.artifact[selected_artifact_idx];
+                    art.artifact_idx = selected_artifact_idx;
+                    art.artifact_hash = try arena.dupe(u8, selected_artifact.hash);
+                    art.lua_abi = try arena.dupe(u8, selected_artifact.lua_abi);
+                    art.lua_api = try arena.dupe(u8, selected_artifact.lua_api);
+                    art.runtime = try arena.dupe(u8, selected_artifact.runtime);
+                    art.runtime_artifact_hash = try arena.dupe(u8, selected_artifact.runtime_artifact_hash);
                     art.remote_desc = try desc.clone(arena);
                     desc.deinit(self.allocator);
                 }

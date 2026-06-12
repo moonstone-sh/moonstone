@@ -125,11 +125,16 @@ pub const Coordinator = struct {
             else => return null, // path and link skip store
         };
 
-        const query = driver_mod.ArtifactQuery{
+        var query = driver_mod.ArtifactQuery{
             .name = pkg_name,
             .target = options.target,
         };
-        const candidates = try index.findCandidates(query);
+        var candidates = try index.findCandidates(query);
+        if (candidates.len == 0 and kind == .moonstone and std.mem.startsWith(u8, pkg_name, "moonstone/")) {
+            self.allocator.free(candidates);
+            query.name = pkg_name["moonstone/".len..];
+            candidates = try index.findCandidates(query);
+        }
         defer {
             for (candidates) |*c| c.deinit(self.allocator);
             self.allocator.free(candidates);
@@ -138,9 +143,9 @@ pub const Coordinator = struct {
         for (candidates) |cand| {
             if (resolver_str) |rs| {
                 if (cand.resolver) |cr| {
-                    if (cr.len == 0 and std.mem.eql(u8, rs, "moonstone")) continue;
+                    if (cr.len == 0 and !std.mem.eql(u8, rs, "moonstone")) continue;
                     if (cr.len > 0 and !std.mem.eql(u8, cr, rs)) continue;
-                } else if (std.mem.eql(u8, rs, "moonstone")) {
+                } else if (!std.mem.eql(u8, rs, "moonstone")) {
                     continue;
                 }
             }

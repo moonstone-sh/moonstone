@@ -23,6 +23,14 @@ pub const RecipeOptions = struct {
     collect: manifest.CollectConfig = .{},
 };
 
+pub const SourcePayloadOptions = struct {
+    source_kind: []const u8 = "",
+    source_payload_path: ?[]const u8 = null,
+    rockspec: []const u8 = "",
+    rockspec_hash: []const u8 = "",
+    rockspec_payload_path: ?[]const u8 = null,
+};
+
 /// Compute a deterministic recipe hash for artifacts.
 pub fn computeRecipeHash(
     allocator: std.mem.Allocator,
@@ -283,6 +291,21 @@ pub fn commit_to_store(
     source: []const u8,
     dependencies: []const manifest.StoreDependency,
 ) ![]const u8 {
+    return try commit_to_store_with_sources(allocator, io, environ_map, unpacked_path, remote_desc, remote_art, resolver, source, dependencies, .{});
+}
+
+pub fn commit_to_store_with_sources(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *std.process.Environ.Map,
+    unpacked_path: []const u8,
+    remote_desc: manifest.RemotePackageDescriptor,
+    remote_art: manifest.RemoteArtifact,
+    resolver: []const u8,
+    source: []const u8,
+    dependencies: []const manifest.StoreDependency,
+    source_payloads: SourcePayloadOptions,
+) ![]const u8 {
     const paths = try fs.resolve_moonstone(allocator, environ_map, io);
     defer { var p = paths; p.deinit(allocator); }
 
@@ -311,13 +334,46 @@ pub fn commit_to_store(
     };
     try std.Io.Dir.cwd().createDirPath(io, final_art_path);
     
+    var stored_source_payload: []const u8 = "";
+    var stored_rockspec_payload: []const u8 = "";
+
+    if (source_payloads.source_payload_path != null or source_payloads.rockspec_payload_path != null) {
+        const sources_dir = try std.fs.path.join(allocator, &.{ final_art_path, "sources" });
+        defer allocator.free(sources_dir);
+        try std.Io.Dir.cwd().createDirPath(io, sources_dir);
+
+        if (source_payloads.source_payload_path) |payload_path| {
+            const dest_name = std.fs.path.basename(payload_path);
+            const dest_path = try std.fs.path.join(allocator, &.{ sources_dir, dest_name });
+            defer allocator.free(dest_path);
+            const cp_res = try std.process.run(allocator, io, .{ .argv = &.{ "cp", payload_path, dest_path } });
+            defer allocator.free(cp_res.stdout);
+            defer allocator.free(cp_res.stderr);
+            if (cp_res.term != .exited or cp_res.term.exited != 0) return error.CopyFailed;
+            stored_source_payload = try std.fmt.allocPrint(allocator, "sources/{s}", .{dest_name});
+        }
+
+        if (source_payloads.rockspec_payload_path) |payload_path| {
+            const dest_name = std.fs.path.basename(payload_path);
+            const dest_path = try std.fs.path.join(allocator, &.{ sources_dir, dest_name });
+            defer allocator.free(dest_path);
+            const cp_res = try std.process.run(allocator, io, .{ .argv = &.{ "cp", payload_path, dest_path } });
+            defer allocator.free(cp_res.stdout);
+            defer allocator.free(cp_res.stderr);
+            if (cp_res.term != .exited or cp_res.term.exited != 0) return error.CopyFailed;
+            stored_rockspec_payload = try std.fmt.allocPrint(allocator, "sources/{s}", .{dest_name});
+        }
+    }
+    defer if (stored_source_payload.len > 0) allocator.free(stored_source_payload);
+    defer if (stored_rockspec_payload.len > 0) allocator.free(stored_rockspec_payload);
+
     // We need to move the unpacked contents into 'files'
     _ = try std.process.run(allocator, io, .{
         .argv = &.{ "mv", unpacked_path, files_path },
     });
 
     // 2. Generate store manifest.toml
-    const source_hash = remote_art.hash;
+    const source_hash = if (remote_art.source_hash.len > 0) remote_art.source_hash else remote_art.hash;
     const artifact_hash = remote_art.hash;
 
     const runtime_version = if (remote_art.runtime.len > 0)
@@ -348,6 +404,11 @@ pub fn commit_to_store(
         .origin = .{
             .resolver = resolver,
             .source = source,
+            .source_kind = source_payloads.source_kind,
+            .source_payload = stored_source_payload,
+            .rockspec = source_payloads.rockspec,
+            .rockspec_hash = source_payloads.rockspec_hash,
+            .rockspec_payload = stored_rockspec_payload,
         },
         .compat = .{
             .runtime_version = runtime_version,

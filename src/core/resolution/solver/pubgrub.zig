@@ -68,10 +68,12 @@ pub const Solver = struct {
         while (true) {
             const conflict = try self.propagate();
             if (conflict) |c| {
+                self.emit(.conflict, .{});
                 const backtrack_level = try self.resolveConflict(c);
                 if (backtrack_level < 0) {
                     return error.NoSolution;
                 }
+                self.emit(.backtracking, .{});
                 
                 while (self.solution.assignments.items.len > 0) {
                     const as = self.solution.assignments.getLast();
@@ -166,6 +168,7 @@ pub const Solver = struct {
                                 .level = self.solution.decision_level,
                                 .cause = inc,
                             });
+                            self.emit(.propagating, .{});
                             changed = true;
                             break;
                         }
@@ -194,6 +197,7 @@ pub const Solver = struct {
                 
                 const versions = try self.provider.getVersions(as.term.name);
                 defer arena.free(versions);
+                self.emit(.resolving, .{});
 
                 var best: ?semver.Version = null;
                 for (versions) |v| {

@@ -4,6 +4,9 @@ pub const resolver = @import("../resolution/root.zig");
 const fs = @import("../platform/fs.zig");
 const http = @import("../platform/http.zig");
 const driver_mod = @import("../store/driver.zig");
+const profiler = @import("../diagnostics/profiler.zig");
+
+var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 
 /// Resolved registry entry ready for use by the client.
 pub const ResolvedRegistry = struct {
@@ -290,14 +293,30 @@ pub const RegistryClient = struct {
     }
 
     fn read_file_from_registry(self: *RegistryClient, sub_path: []const u8) ![]u8 {
+        const cache_key = try std.fmt.allocPrint(self.allocator, "{s}\x00{s}", .{ self.registry_root, sub_path });
+        defer self.allocator.free(cache_key);
+        if (registry_payload_cache.get(cache_key)) |cached| {
+            profiler.mark("registry.payload.cache_hit");
+            return try self.allocator.dupe(u8, cached);
+        }
+
+        const span = profiler.now();
         if (self.is_remote) {
             // Check if sub_path is already an absolute URL
             if (std.mem.startsWith(u8, sub_path, "http")) {
-                return try self.get_url(sub_path);
+                const content = try self.get_url(sub_path);
+                errdefer self.allocator.free(content);
+                try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+                profiler.span("registry.payload.fetch", span);
+                return content;
             }
             const url = try std.fs.path.join(self.allocator, &.{ self.registry_root, sub_path });
             defer self.allocator.free(url);
-            return try self.get_url(url);
+            const content = try self.get_url(url);
+            errdefer self.allocator.free(content);
+            try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+            profiler.span("registry.payload.fetch", span);
+            return content;
         } else {
             const clean_root = if (std.mem.startsWith(u8, self.registry_root, "file:"))
                 self.registry_root[5..]
@@ -319,6 +338,9 @@ pub const RegistryClient = struct {
 
                 return err;
             };
+            errdefer self.allocator.free(content);
+            try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+            profiler.span("registry.payload.read", span);
             return content;
         }
     }
