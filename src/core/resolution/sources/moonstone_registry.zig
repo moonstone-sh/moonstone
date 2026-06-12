@@ -78,50 +78,39 @@ pub fn resolve_remote(
     client.on_event_context = options.on_event_context;
     defer client.deinit();
 
+    const host = options.target orelse try get_host_target(allocator);
+    defer if (options.target == null) allocator.free(host);
+
     // Try compact SQLite index first
     const cache_dir = if (env) |e| @import("../../platform/env.zig").get_cache_dir(allocator, e) catch null else null;
     defer if (cache_dir) |cd| allocator.free(cd);
 
-    const compact_res = if (cache_dir) |cd| client.find_package_descriptor(cd, pkg_name) catch null else null;
-    if (compact_res) |cr| {
-        defer allocator.free(cr.version);
-        if (matches(cr.version, version_range)) {
-            var desc = try client.fetch_descriptor(cr.descriptor);
-            errdefer desc.deinit(allocator);
-
-            const host = options.target orelse try get_host_target(allocator);
-            defer if (options.target == null) allocator.free(host);
-
-            // 1. Try prebuilt match
-            if (desc.artifact.len > 0) {
-                for (desc.artifact, 0..) |art, i| {
-                    if (artifactMatchesRuntimeAbi(art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
-                        const dp = try allocator.dupe(u8, cr.descriptor);
-                        allocator.free(cr.descriptor);
-                        return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
-                    }
-                }
-
-                // 2. Try source fallback
-                for (desc.artifact, 0..) |art, i| {
-                    if (artifactMatchesRuntimeAbi(art, options) and std.mem.eql(u8, art.target, "source")) {
-                        const dp = try allocator.dupe(u8, cr.descriptor);
-                        allocator.free(cr.descriptor);
-                        return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
-                    }
-                }
+    if (cache_dir) |cd| {
+        const compact_versions = client.find_package_versions(cd, pkg_name) catch |err| blk: {
+            if (err == error.CompactStoreIndexHashMismatch or err == error.ZstdDecompressionFailed or err == error.CompactStoreIndexContentHashMismatch) return err;
+            break :blk @as([]registry.RegistryClient.CompactPackageVersion, &.{});
+        };
+        defer {
+            for (compact_versions) |cv| {
+                allocator.free(cv.version);
+                allocator.free(cv.descriptor);
             }
-            desc.deinit(allocator);
+            allocator.free(compact_versions);
         }
-        allocator.free(cr.descriptor);
+
+        if (compact_versions.len > 0) {
+            var candidates = std.ArrayList(CandidateEntry).empty;
+            defer candidates.deinit(allocator);
+            for (compact_versions) |cv| {
+                try candidates.append(allocator, .{ .version = cv.version, .descriptor = cv.descriptor });
+            }
+            if (try resolveFromCandidates(allocator, &client, candidates.items, version_range, options, host)) |result| return result;
+        }
     }
 
     // Fall back to TOML index
     const idx = try client.fetch_index();
     defer idx.deinit(allocator);
-
-    const host = options.target orelse try get_host_target(allocator);
-    defer if (options.target == null) allocator.free(host);
 
     if (try resolveFromIndex(allocator, &client, idx, pkg_name, version_range, options, host)) |result| return result;
     if (try client.fetch_private_index()) |private_idx| {
@@ -132,35 +121,87 @@ pub fn resolve_remote(
     return error.PackageNotFound;
 }
 
-fn resolveFromIndex(allocator: std.mem.Allocator, client: *registry.RegistryClient, idx: manifest.RemotePackageStoreIndex, pkg_name: []const u8, version_range: []const u8, options: options_mod.ResolveOptions, host: []const u8) !?candidate_mod.RemoteResolveResult {
-    for (idx.package) |pkg| {
-        if (packageNamesMatch(pkg.name, pkg_name)) {
-            if (matches(pkg.version, version_range)) {
+const CandidateEntry = struct {
+    version: []const u8,
+    descriptor: []const u8,
+};
 
-                var desc = try client.fetch_descriptor(pkg.descriptor);
-                errdefer desc.deinit(allocator);
+fn resolveFromCandidates(
+    allocator: std.mem.Allocator,
+    client: *registry.RegistryClient,
+    entries: []const CandidateEntry,
+    version_range: []const u8,
+    options: options_mod.ResolveOptions,
+    host: []const u8,
+) !?candidate_mod.RemoteResolveResult {
+    const Candidate = struct {
+        version: semver.Version,
+        descriptor: []const u8,
+    };
 
-                // 1. Try prebuilt match
-                for (desc.artifact, 0..) |art, i| {
-                    if (artifactMatchesRuntimeAbi(art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
-                        const dp = try allocator.dupe(u8, pkg.descriptor);
-                        return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
-                    }
-                }
+    var candidates = std.ArrayList(Candidate).empty;
+    defer {
+        for (candidates.items) |c| c.version.deinit(allocator);
+        candidates.deinit(allocator);
+    }
 
-                // 2. Try source fallback
-                for (desc.artifact, 0..) |art, i| {
-                    if (artifactMatchesRuntimeAbi(art, options) and std.mem.eql(u8, art.target, "source")) {
-                        const dp = try allocator.dupe(u8, pkg.descriptor);
-                        return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
-                    }
-                }
-                desc.deinit(allocator);
-            }
+    for (entries) |entry| {
+        if (matches(entry.version, version_range)) {
+            try candidates.append(allocator, .{
+                .version = try semver.Version.parse(entry.version),
+                .descriptor = entry.descriptor,
+            });
         }
     }
 
+    if (candidates.items.len == 0) return null;
+
+    // Sort descending (highest version first)
+    std.mem.sort(Candidate, candidates.items, {}, struct {
+        fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+            return a.version.compare(b.version) > 0;
+        }
+    }.lessThan);
+
+    for (candidates.items) |c| {
+        var desc = try client.fetch_descriptor(c.descriptor);
+        errdefer desc.deinit(allocator);
+
+        // 1. Try prebuilt match
+        for (desc.artifact, 0..) |art, i| {
+            if (artifactMatchesRuntimeAbi(art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
+                const dp = try allocator.dupe(u8, c.descriptor);
+                return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
+            }
+        }
+
+        // 2. Try source fallback
+        for (desc.artifact, 0..) |art, i| {
+            if (artifactMatchesRuntimeAbi(art, options) and std.mem.eql(u8, art.target, "source")) {
+                const dp = try allocator.dupe(u8, c.descriptor);
+                return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
+            }
+        }
+        desc.deinit(allocator);
+    }
+
     return null;
+}
+
+fn resolveFromIndex(allocator: std.mem.Allocator, client: *registry.RegistryClient, idx: manifest.RemotePackageStoreIndex, pkg_name: []const u8, version_range: []const u8, options: options_mod.ResolveOptions, host: []const u8) !?candidate_mod.RemoteResolveResult {
+    var entries = std.ArrayList(CandidateEntry).empty;
+    defer entries.deinit(allocator);
+
+    for (idx.package) |pkg| {
+        if (packageNamesMatch(pkg.name, pkg_name)) {
+            try entries.append(allocator, .{
+                .version = pkg.version,
+                .descriptor = pkg.descriptor,
+            });
+        }
+    }
+
+    return try resolveFromCandidates(allocator, client, entries.items, version_range, options, host);
 }
 
 fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {

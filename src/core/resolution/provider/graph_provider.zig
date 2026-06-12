@@ -288,6 +288,55 @@ pub const RegistryProvider = struct {
             }
         }
 
+        // 4. Check remote registries as fallback for transitive dependencies
+        if (!self.options.offline and (resolver_str == null or std.mem.eql(u8, resolver_str.?, "moonstone"))) {
+            for (self.registries) |reg| {
+                var client = registry.RegistryClient.init(self.allocator, self.io, reg.url, reg.token, self.env);
+                defer client.deinit();
+                const idx = client.fetch_index() catch continue;
+                defer idx.deinit(self.allocator);
+                const private_idx = client.fetch_private_index() catch null;
+                defer if (private_idx) |private| private.deinit(self.allocator);
+
+                for (0..2) |index_number| {
+                    const packages = if (index_number == 0) idx.package else if (private_idx) |private| private.package else continue;
+                    for (packages) |pkg| {
+                        if (packageNamesMatch(pkg.name, request.name) and std.mem.eql(u8, pkg.version, request.version)) {
+                            var desc = try client.fetch_descriptor(pkg.descriptor);
+                            defer desc.deinit(self.allocator);
+
+                            const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
+                            const selected_artifact = desc.artifact[selected_artifact_idx];
+
+                            return candidate_mod.Candidate{
+                                .name = try self.allocator.dupe(u8, pkg.name),
+                                .version = try self.allocator.dupe(u8, pkg.version),
+                                .kind = pkg.kind,
+                                .artifact_hash = try self.allocator.dupe(u8, selected_artifact.hash),
+                                .lua_abi = try self.allocator.dupe(u8, selected_artifact.lua_abi),
+                                .lua_api = try self.allocator.dupe(u8, selected_artifact.lua_api),
+                                .runtime = try self.allocator.dupe(u8, selected_artifact.runtime),
+                                .runtime_artifact_hash = try self.allocator.dupe(u8, selected_artifact.runtime_artifact_hash),
+                                .remote_desc = try desc.clone(self.allocator),
+                                .registry_url = try self.allocator.dupe(u8, reg.url),
+                                .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
+                                .descriptor_path = try self.allocator.dupe(u8, pkg.descriptor),
+                                .artifact_idx = selected_artifact_idx,
+                                .origin = .{
+                                    .moonstone_registry = .{
+                                        .url = try self.allocator.dupe(u8, reg.url),
+                                        .token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
+                                        .descriptor_path = try self.allocator.dupe(u8, pkg.descriptor),
+                                        .artifact_idx = selected_artifact_idx,
+                                    },
+                                },
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
         return null;
     }
 

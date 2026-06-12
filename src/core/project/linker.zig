@@ -266,7 +266,7 @@ pub fn link_project_env_at(
 
         if (try index.get_provision_runtime(hash)) |r| {
             if (runtime_info) |existing| {
-                if (!std.mem.eql(u8, existing.abi, r.abi)) {
+                if (!@import("../resolution/options.zig").runtimeAbiMatches(existing.abi, r.abi)) {
                     return error.ABIMismatch;
                 }
             }

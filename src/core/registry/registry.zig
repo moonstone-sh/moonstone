@@ -112,14 +112,16 @@ pub const RegistryClient = struct {
     }
 
 
-    /// Query the compact SQLite index for a package descriptor.
-    /// Returns the descriptor path and version, or null if not found or compact index unavailable.
-    /// Caller must free the returned strings.
-    pub fn find_package_descriptor(self: *RegistryClient, cache_dir: []const u8, pkg_name: []const u8) !?struct { version: []const u8, descriptor: []const u8 } {
+    pub const CompactPackageVersion = struct { version: []const u8, descriptor: []const u8 };
+
+    /// Query the compact SQLite index for all versions of a package.
+    /// Returns a slice of version/descriptor pairs.
+    /// Caller must call deinit on each entry and allocator.free on the slice.
+    pub fn find_package_versions(self: *RegistryClient, cache_dir: []const u8, pkg_name: []const u8) ![]CompactPackageVersion {
         const sqlite_path = self.fetch_compact_index(cache_dir) catch |err| {
             if (err == error.CompactStoreIndexHashMismatch or err == error.ZstdDecompressionFailed or err == error.CompactStoreIndexContentHashMismatch) return err;
-            return null;
-        } orelse return null;
+            return @as([]CompactPackageVersion, &.{});
+        } orelse return @as([]CompactPackageVersion, &.{});
         defer self.allocator.free(sqlite_path);
 
         const sqlite_path_z = try self.allocator.dupeZ(u8, sqlite_path);
@@ -130,19 +132,28 @@ pub const RegistryClient = struct {
         }
         defer _ = c.sqlite3_close(db);
 
-        const sql = "SELECT version, descriptor FROM packages WHERE name = ? ORDER BY version DESC;";
+        const sql = "SELECT version, descriptor FROM packages WHERE name = ?;";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
         defer _ = c.sqlite3_finalize(stmt);
 
         _ = c.sqlite3_bind_text(stmt, 1, pkg_name.ptr, @intCast(pkg_name.len), driver_mod.moonstone_sqlite_transient_ptr);
 
-        if (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+        var list = std.ArrayList(CompactPackageVersion).empty;
+        errdefer {
+            for (list.items) |item| {
+                self.allocator.free(item.version);
+                self.allocator.free(item.descriptor);
+            }
+            list.deinit(self.allocator);
+        }
+
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
             const version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
             const descriptor = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
-            return .{ .version = version, .descriptor = descriptor };
+            try list.append(self.allocator, .{ .version = version, .descriptor = descriptor });
         }
-        return null;
+        return try list.toOwnedSlice(self.allocator);
     }
 
     /// Download and decompress the compact SQLite index if available.
