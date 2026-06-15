@@ -10,8 +10,11 @@ pub fn build(b: *std.Build) void {
         "aarch64-freebsd", // For your VM
         "x86_64-freebsd", // Standard Intel/AMD FreeBSD
         "aarch64-macos", // Native M3 Mac
+        "x86_64-macos", // Intel Mac
         "aarch64-linux-gnu", // ARM Linux (Standard glibc)
+        "x86_64-linux-gnu", // Intel Linux (Standard glibc)
         "x86_64-linux-musl", // Intel Linux (Static musl binary)
+        "aarch64-linux-musl", // ARM Linux (Static musl binary)
         "riscv64-linux-gnu", // RISC-V Linux
         // "riscv64-freestanding-none", // Bare metal RISC-V
     };

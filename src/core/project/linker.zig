@@ -1,6 +1,7 @@
 const std = @import("std");
 const UNIQUE_BUILD_MARKER = "UNIQUE_BUILD_MARKER_20250608_1847";
 const manifest = @import("../domain/manifest.zig");
+const package_spec = @import("../domain/package_spec.zig");
 const driver_mod = @import("../store/driver.zig");
 
 pub const ProjectEnv = struct {
@@ -102,6 +103,75 @@ fn writeLiveLinkScope(
     const file = try scope_dir.createFile(io, "env.toml", .{});
     defer file.close(io);
     try file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+}
+
+fn resolveScopedRuntimeBinPath(
+    allocator: std.mem.Allocator,
+    index: driver_mod.StoreDriver,
+    artifact_hash: []const u8,
+) !?[]const u8 {
+    var owner = try index.get_candidate_by_hash(artifact_hash) orelse return null;
+    defer owner.deinit(allocator);
+
+    if (owner.runtime_artifact_hash) |runtime_hash| {
+        if (runtime_hash.len > 0) {
+            if (try runtimeBinPathFromHash(allocator, index, runtime_hash)) |path| return path;
+        }
+    }
+
+    const runtime_spec = owner.runtime orelse return null;
+    if (runtime_spec.len == 0) return null;
+
+    var spec = try package_spec.parsePackageSpec(allocator, runtime_spec);
+    defer spec.deinit(allocator);
+
+    const runtime_name = package_spec.canonicalOfficialRuntime(spec.name);
+    const runtime_version = if (spec.constraint) |constraint| blk: {
+        if (constraint.len == 0) break :blk null;
+        break :blk constraint;
+    } else null;
+
+    const candidates = try index.findCandidates(.{
+        .name = runtime_name,
+        .version = runtime_version,
+        .kind = .runtime,
+    });
+    defer {
+        for (candidates) |candidate| {
+            var mut_candidate = candidate;
+            mut_candidate.deinit(allocator);
+        }
+        allocator.free(candidates);
+    }
+
+    for (candidates) |candidate| {
+        const bin_path = try std.fs.path.join(allocator, &.{ candidate.path, "files", "bin" });
+        return bin_path;
+    }
+
+    return null;
+}
+
+fn runtimeBinPathFromHash(
+    allocator: std.mem.Allocator,
+    index: driver_mod.StoreDriver,
+    runtime_hash: []const u8,
+) !?[]const u8 {
+    const runtime_path = try index.get_artifact_path(runtime_hash) orelse return null;
+    defer allocator.free(runtime_path);
+    return try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin" });
+}
+
+fn writeScopedPathPrepend(
+    writer: *std.Io.Writer,
+    tool_bin_dir: []const u8,
+    runtime_bin_dir: ?[]const u8,
+) !void {
+    try writer.print("path_prepend = [", .{});
+    if (runtime_bin_dir) |runtime_path| {
+        try writer.print("\"{s}\", ", .{runtime_path});
+    }
+    try writer.print("\"{s}\"]\n", .{tool_bin_dir});
 }
 
 fn writeLiveLinkScriptShim(
@@ -509,7 +579,9 @@ pub fn link_project_env_at(
         try scope_aw.writer.print("[env]\n", .{});
 
         const bin_dir_path = std.fs.path.dirname(bin_info.path) orelse art_path;
-        try scope_aw.writer.print("path_prepend = [\"{s}\"]\n", .{bin_dir_path});
+        const runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, index, hash);
+        defer if (runtime_bin_path) |path| allocator.free(path);
+        try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, runtime_bin_path);
 
         const provs = try index.get_provisions(hash);
         defer {
@@ -606,7 +678,9 @@ pub fn link_project_env_at(
         try scope_aw.writer.print("[env]\n", .{});
 
         const bin_dir_path = std.fs.path.dirname(bin_info.path) orelse art_path;
-        try scope_aw.writer.print("path_prepend = [\"{s}\"]\n", .{bin_dir_path});
+        const runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, index, hash);
+        defer if (runtime_bin_path) |path| allocator.free(path);
+        try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, runtime_bin_path);
         try scope_aw.writer.flush();
         const scope_toml_file = try scope_dir.createFile(io, "env.toml", .{});
         defer scope_toml_file.close(io);

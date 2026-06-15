@@ -93,12 +93,12 @@ fn findProjectRuntimeLua(allocator: std.mem.Allocator, io: std.Io, idx: driver_m
     // Query the active project runtime from env.toml
     // For now, simplified: look for any runtime artifact that provides bin/lua with matching ABI
     const sql =
-        \\SELECT a.path, a.name, a.version, a.artifact_hash
+        \\SELECT a.path, a.name, a.version, a.artifact_hash, pb.path
         \\FROM artifacts a
         \\JOIN provides_bin pb ON a.artifact_hash = pb.artifact_hash
         \\WHERE a.kind = 'runtime'
         \\  AND (pb.name = 'lua' OR pb.name = 'luajit')
-        \\  AND (a.lua_abi = ? OR a.lua_abi = ?)
+        \\  AND (a.lua_abi = ? OR a.lua_abi = ? OR a.lua_abi = ? OR a.lua_abi = ?)
         \\LIMIT 1;
     ;
 
@@ -112,14 +112,21 @@ fn findProjectRuntimeLua(allocator: std.mem.Allocator, io: std.Io, idx: driver_m
     var abi_buf: [8]u8 = undefined;
     const normalized = options_mod.normalizeRuntimeAbi(required_abi, &abi_buf);
     _ = driver_mod.c.sqlite3_bind_text(stmt, 2, normalized.ptr, @intCast(normalized.len), transient);
+    var compact_buf: [8]u8 = undefined;
+    const compact = compactRuntimeAbi(normalized, &compact_buf);
+    _ = driver_mod.c.sqlite3_bind_text(stmt, 3, compact.ptr, @intCast(compact.len), transient);
+    var dashed_buf: [8]u8 = undefined;
+    const dashed = dashedRuntimeAbi(normalized, &dashed_buf);
+    _ = driver_mod.c.sqlite3_bind_text(stmt, 4, dashed.ptr, @intCast(dashed.len), transient);
 
     if (driver_mod.c.sqlite3_step(stmt) == driver_mod.c.SQLITE_ROW) {
         const rt_path = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 0));
         const rt_name = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 1));
         const rt_ver = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 2));
         const art_hash = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 3));
+        const bin_path = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 4));
 
-        const exe_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "bin", rt_name });
+        const exe_path = try std.fs.path.join(allocator, &.{ rt_path, "files", bin_path });
         if (std.Io.Dir.cwd().access(io, exe_path, .{})) |_| {
             return LuaCandidate{
                 .executable = exe_path,
@@ -137,12 +144,12 @@ fn findGlobalToolLua(allocator: std.mem.Allocator, io: std.Io, idx: driver_mod.S
     // TODO: Implement global toolchain lookup once `moon toolchain use` exists.
     // For now, check if there's a globally installed lua/luajit runtime in the store.
     const sql =
-        \\SELECT a.path, a.name, a.version, a.artifact_hash
+        \\SELECT a.path, a.name, a.version, a.artifact_hash, pb.path
         \\FROM artifacts a
         \\JOIN provides_bin pb ON a.artifact_hash = pb.artifact_hash
         \\WHERE a.kind = 'runtime'
         \\  AND (pb.name = 'lua' OR pb.name = 'luajit')
-        \\  AND (a.lua_abi = ? OR a.lua_abi = ?)
+        \\  AND (a.lua_abi = ? OR a.lua_abi = ? OR a.lua_abi = ? OR a.lua_abi = ?)
         \\  AND a.artifact_hash LIKE 'b3:%'
         \\ORDER BY a.version DESC
         \\LIMIT 1;
@@ -157,14 +164,21 @@ fn findGlobalToolLua(allocator: std.mem.Allocator, io: std.Io, idx: driver_mod.S
     var abi_buf: [8]u8 = undefined;
     const normalized = options_mod.normalizeRuntimeAbi(required_abi, &abi_buf);
     _ = driver_mod.c.sqlite3_bind_text(stmt, 2, normalized.ptr, @intCast(normalized.len), transient);
+    var compact_buf: [8]u8 = undefined;
+    const compact = compactRuntimeAbi(normalized, &compact_buf);
+    _ = driver_mod.c.sqlite3_bind_text(stmt, 3, compact.ptr, @intCast(compact.len), transient);
+    var dashed_buf: [8]u8 = undefined;
+    const dashed = dashedRuntimeAbi(normalized, &dashed_buf);
+    _ = driver_mod.c.sqlite3_bind_text(stmt, 4, dashed.ptr, @intCast(dashed.len), transient);
 
     if (driver_mod.c.sqlite3_step(stmt) == driver_mod.c.SQLITE_ROW) {
         const rt_path = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 0));
         const rt_name = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 1));
         const rt_ver = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 2));
         const art_hash = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 3));
+        const bin_path = std.mem.span(driver_mod.c.sqlite3_column_text(stmt, 4));
 
-        const exe_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "bin", rt_name });
+        const exe_path = try std.fs.path.join(allocator, &.{ rt_path, "files", bin_path });
         if (std.Io.Dir.cwd().access(io, exe_path, .{})) |_| {
             return LuaCandidate{
                 .executable = exe_path,
@@ -176,6 +190,32 @@ fn findGlobalToolLua(allocator: std.mem.Allocator, io: std.Io, idx: driver_mod.S
         }
     }
     return null;
+}
+
+fn compactRuntimeAbi(normalized: []const u8, out: *[8]u8) []const u8 {
+    if (normalized.len == 3 and normalized[1] == '.') {
+        out[0] = 'l';
+        out[1] = 'u';
+        out[2] = 'a';
+        out[3] = normalized[0];
+        out[4] = normalized[2];
+        return out[0..5];
+    }
+    return normalized;
+}
+
+fn dashedRuntimeAbi(normalized: []const u8, out: *[8]u8) []const u8 {
+    if (normalized.len == 3 and normalized[1] == '.') {
+        out[0] = 'l';
+        out[1] = 'u';
+        out[2] = 'a';
+        out[3] = '-';
+        out[4] = normalized[0];
+        out[5] = '.';
+        out[6] = normalized[2];
+        return out[0..7];
+    }
+    return normalized;
 }
 
 fn findPathLua(allocator: std.mem.Allocator, io: std.Io, required_abi: []const u8, env_map: ?*std.process.Environ.Map) !?LuaCandidate {
