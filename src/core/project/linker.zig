@@ -238,40 +238,7 @@ fn resolveScopedRuntimeBinPath(
         return null;
     };
 
-    var spec = try package_spec.parsePackageSpec(allocator, runtime_spec);
-    defer spec.deinit(allocator);
-
-    const runtime_name = blk: {
-        const canonical = package_spec.canonicalOfficialRuntime(spec.name);
-        // Official runtimes are stored under bare names ("lua", "luajit"),
-        // but descriptors may use the namespaced form "moonstone/lua".
-        if (std.mem.startsWith(u8, canonical, "moonstone/")) {
-            break :blk canonical["moonstone/".len..];
-        }
-        break :blk canonical;
-    };
-    const runtime_constraint = spec.constraint orelse "*";
-
-    const candidates = try index.findCandidates(.{
-        .name = runtime_name,
-        .kind = .runtime,
-    });
-    defer {
-        for (candidates) |candidate| {
-            var mut_candidate = candidate;
-            mut_candidate.deinit(allocator);
-        }
-        allocator.free(candidates);
-    }
-
-    for (candidates) |candidate| {
-        if (semver.matches(candidate.version, runtime_constraint)) {
-            const bin_path = try std.fs.path.join(allocator, &.{ candidate.path, "files", "bin" });
-            return bin_path;
-        }
-    }
-
-    return null;
+    return try runtimeBinPathFromSpec(allocator, index, runtime_spec);
 }
 
 fn runtimeBinPathFromHash(
