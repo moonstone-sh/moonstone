@@ -162,6 +162,9 @@ pub const RegistryProvider = struct {
                             .kind = c.kind,
                             .artifact_hash = try self.allocator.dupe(u8, c.artifact_hash),
                             .lua_abi = if (c.lua_abi) |a| try self.allocator.dupe(u8, a) else null,
+                            .lua_api = if (c.lua_api) |a| try self.allocator.dupe(u8, a) else null,
+                            .runtime = if (c.runtime) |r| try self.allocator.dupe(u8, r) else null,
+                            .runtime_artifact_hash = if (c.runtime_artifact_hash) |h| try self.allocator.dupe(u8, h) else "",
                             .local_path = try self.allocator.dupe(u8, c.path),
                             .origin = origin,
                             .location = .local_store,
@@ -238,6 +241,7 @@ pub const RegistryProvider = struct {
         }
 
         for (candidates) |c| {
+            if (candidateHasMalformedRuntimeMetadata(c)) continue;
             if (resolver_str) |rs| {
                 if (c.resolver) |cr| {
                     if (cr.len == 0 and std.mem.eql(u8, rs, "moonstone")) continue;
@@ -281,6 +285,9 @@ pub const RegistryProvider = struct {
                     .kind = c.kind,
                     .artifact_hash = try self.allocator.dupe(u8, c.artifact_hash),
                     .lua_abi = if (c.lua_abi) |a| try self.allocator.dupe(u8, a) else null,
+                    .lua_api = if (c.lua_api) |a| try self.allocator.dupe(u8, a) else null,
+                    .runtime = if (c.runtime) |r| try self.allocator.dupe(u8, r) else null,
+                    .runtime_artifact_hash = if (c.runtime_artifact_hash) |h| try self.allocator.dupe(u8, h) else "",
                     .local_path = try self.allocator.dupe(u8, c.path),
                     .origin = origin,
                     .location = .local_store,
@@ -467,6 +474,7 @@ pub const RegistryProvider = struct {
             }
 
             for (local_candidates) |cand| {
+                if (candidateHasMalformedRuntimeMetadata(cand)) continue;
                 if (resolver_filter) |rf| {
                     if (cand.resolver) |cr| {
                         if (cr.len == 0 and !std.mem.eql(u8, rf, "moonstone")) continue;
@@ -526,6 +534,9 @@ pub const RegistryProvider = struct {
                     .version = try arena.dupe(u8, cand.version),
                     .local_path = try arena.dupe(u8, cand.path),
                     .lua_abi = if (cand.lua_abi) |a| try arena.dupe(u8, a) else null,
+                    .lua_api = if (cand.lua_api) |a| try arena.dupe(u8, a) else null,
+                    .runtime = if (cand.runtime) |r| try arena.dupe(u8, r) else null,
+                    .runtime_artifact_hash = if (cand.runtime_artifact_hash) |h| try arena.dupe(u8, h) else "",
                     .origin = origin,
                     .location = .local_store,
                 });
@@ -710,7 +721,7 @@ pub const RegistryProvider = struct {
         if (kind == .runtime) return true;
 
         // If the artifact declares its own isolated runtime, it doesn't need to match the project runtime
-        if (art.runtime.len > 0) return true;
+        if (isResolvableRuntimeSpec(art.runtime)) return true;
 
         if (options.runtime) |active_abi| {
             return root.options.runtimeAbiMatches(active_abi, art.lua_abi);
@@ -789,13 +800,14 @@ pub const RegistryProvider = struct {
                         .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
                         .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                         .resolver = spec.resolver,
+                        .role = dep.role,
                     });
                 }
 
                 // Add runtime dependency if specified in the artifact
                 if (art.artifact_idx) |idx| {
                     const selected_art = desc.artifact[idx];
-                    if (selected_art.runtime.len > 0) {
+                    if (isResolvableRuntimeSpec(selected_art.runtime)) {
                         const spec = try package_spec.parsePackageSpec(self.allocator, selected_art.runtime);
                         defer spec.deinit(self.allocator);
                         try terms.append(self.allocator, .{
@@ -898,7 +910,7 @@ pub const RegistryProvider = struct {
                     var sm = try manifest.StoreManifest.parse(self.allocator, content);
                     defer sm.deinit(self.allocator);
 
-                    if (sm.compat.runtime_version.len > 0) {
+                    if (isResolvableRuntimeSpec(sm.compat.runtime_version)) {
                         var rt_name = sm.compat.runtime_version;
                         var rt_ver: []const u8 = "*";
                         if (std.mem.indexOfScalar(u8, rt_name, '@')) |pos| {
@@ -964,4 +976,19 @@ fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
     const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love") else index_name;
 
     return std.mem.eql(u8, canonical_idx, canonical_req);
+}
+
+fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
+    if (runtime_spec.len == 0) return false;
+    if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
+    if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
+    return true;
+}
+
+fn candidateHasMalformedRuntimeMetadata(candidate: driver_mod.Candidate) bool {
+    if (candidate.kind == .runtime) return false;
+    if (candidate.runtime) |runtime| {
+        if (std.mem.startsWith(u8, runtime, "table:")) return true;
+    }
+    return false;
 }

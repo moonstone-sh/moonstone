@@ -376,15 +376,15 @@ pub fn commit_to_store_with_sources(
     const source_hash = if (remote_art.source_hash.len > 0) remote_art.source_hash else remote_art.hash;
     const artifact_hash = remote_art.hash;
 
-    const runtime_version = if (remote_art.runtime.len > 0)
+    const runtime_version = if (isResolvableRuntimeSpec(remote_art.runtime))
         remote_art.runtime
     else if (remote_desc.runtime_bundled) |rb|
         try std.fmt.allocPrint(allocator, "{s}@{s}", .{ rb.name, rb.version })
     else
-        "lua@unknown";
-    defer if (remote_art.runtime.len == 0 and remote_desc.runtime_bundled != null) allocator.free(runtime_version);
+        "";
+    defer if (!isResolvableRuntimeSpec(remote_art.runtime) and remote_desc.runtime_bundled != null) allocator.free(runtime_version);
 
-    const runtime_artifact_hash = if (remote_art.runtime_artifact_hash.len > 0)
+    const runtime_artifact_hash = if (isResolvableRuntimeSpec(remote_art.runtime) and remote_art.runtime_artifact_hash.len > 0)
         remote_art.runtime_artifact_hash
     else if (remote_desc.runtime_bundled) |rb|
         rb.artifact_hash
@@ -443,6 +443,14 @@ pub fn commit_to_store_with_sources(
     try idx.register_artifact(allocator, sm, final_art_path, manifest_path);
 
     return try allocator.dupe(u8, final_art_path);
+}
+
+fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
+    if (runtime_spec.len == 0) return false;
+    if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
+    if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
+    if (std.mem.indexOfScalar(u8, runtime_spec, '@')) |at| return at > 0 and at + 1 < runtime_spec.len;
+    return true;
 }
 
 test "computeRecipeHash is deterministic" {

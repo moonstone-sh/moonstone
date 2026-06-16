@@ -226,11 +226,19 @@ fn matches(version: []const u8, range: []const u8) bool {
 
 fn artifactMatchesRuntimeAbi(art: manifest.RemoteArtifact, options: options_mod.ResolveOptions) bool {
     // If the artifact declares its own isolated runtime, it doesn't need to match the project runtime
-    if (art.runtime.len > 0) return true;
+    if (isResolvableRuntimeSpec(art.runtime)) return true;
     
     if (options.runtime) |active_abi| {
         return options_mod.runtimeAbiMatches(active_abi, art.lua_abi);
     }
+    return true;
+}
+
+fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
+    if (runtime_spec.len == 0) return false;
+    if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
+    if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
+    if (std.mem.indexOfScalar(u8, runtime_spec, '@')) |at| return at > 0 and at + 1 < runtime_spec.len;
     return true;
 }
 

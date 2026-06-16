@@ -3,6 +3,7 @@ const UNIQUE_BUILD_MARKER = "UNIQUE_BUILD_MARKER_20250608_1847";
 const manifest = @import("../domain/manifest.zig");
 const package_spec = @import("../domain/package_spec.zig");
 const driver_mod = @import("../store/driver.zig");
+const semver = @import("../domain/semver.zig");
 
 pub const ProjectEnv = struct {
     bin_map: std.array_hash_map.String(struct { path: []const u8, artifact_hash: []const u8 }),
@@ -22,6 +23,7 @@ pub const LiveLink = struct {
 pub const ProjectedArtifact = struct {
     name: []const u8,
     version: []const u8,
+    kind: @import("../domain/manifest.zig").Kind = .lib,
     constraint: []const u8,
     resolver: ?[]const u8,
     role: @import("../domain/dependency_role.zig").DependencyRole,
@@ -64,14 +66,90 @@ fn runtimeInfoFromLiveLinks(
     return null;
 }
 
+fn runtimeBinPathFromSpec(
+    allocator: std.mem.Allocator,
+    index: driver_mod.StoreDriver,
+    runtime_spec: []const u8,
+) !?[]const u8 {
+    if (runtime_spec.len == 0) return null;
+    var spec = try package_spec.parsePackageSpec(allocator, runtime_spec);
+    defer spec.deinit(allocator);
+
+    var runtime_name = package_spec.canonicalOfficialRuntime(spec.name);
+    if (std.mem.startsWith(u8, runtime_name, "moonstone/")) {
+        runtime_name = runtime_name["moonstone/".len..];
+    }
+    const runtime_constraint = spec.constraint orelse "*";
+
+    const query_names = [_][]const u8{ runtime_name, try std.fmt.allocPrint(allocator, "moonstone/{s}", .{runtime_name}) };
+    defer allocator.free(query_names[1]);
+
+    for (query_names) |query_name| {
+        const candidates = try index.findCandidates(.{
+            .name = query_name,
+            .kind = .runtime,
+        });
+        defer {
+            for (candidates) |candidate| {
+                var mut_candidate = candidate;
+                mut_candidate.deinit(allocator);
+            }
+            allocator.free(candidates);
+        }
+
+        for (candidates) |candidate| {
+            const candidate_name = if (std.mem.startsWith(u8, candidate.name, "moonstone/")) candidate.name["moonstone/".len..] else candidate.name;
+            if (std.mem.eql(u8, candidate_name, runtime_name) and semver.matches(candidate.version, runtime_constraint)) {
+                return try std.fs.path.join(allocator, &.{ candidate.path, "files", "bin" });
+            }
+        }
+    }
+    return null;
+}
+
+fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
+    if (runtime_spec.len == 0) return false;
+    if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
+    if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
+    if (std.mem.indexOfScalar(u8, runtime_spec, '@')) |at| return at > 0 and at + 1 < runtime_spec.len;
+    return true;
+}
+
+fn runtimeSpecFromArtifactManifest(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    index: driver_mod.StoreDriver,
+    artifact_hash: []const u8,
+) !?[]const u8 {
+    const art_path = try index.get_artifact_path(artifact_hash) orelse return null;
+    defer allocator.free(art_path);
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ art_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
+
+    const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return null;
+        return err;
+    };
+    defer allocator.free(content);
+
+    var store_manifest = try manifest.StoreManifest.parse(allocator, content);
+    defer store_manifest.deinit(allocator);
+
+    if (!isResolvableRuntimeSpec(store_manifest.compat.runtime_version)) return null;
+    return try allocator.dupe(u8, store_manifest.compat.runtime_version);
+}
+
 fn writeLiveLinkScope(
     allocator: std.mem.Allocator,
     io: std.Io,
     env_dir: std.Io.Dir,
+    index: driver_mod.StoreDriver,
     scope_root: []const u8,
     bin_name: []const u8,
     source_path: []const u8,
     lua_ver_dot: []const u8,
+    project_runtime_bin_path: ?[]const u8,
 ) !void {
     const scope_dir_rel = try std.fs.path.join(allocator, &.{ scope_root, bin_name });
     defer allocator.free(scope_dir_rel);
@@ -86,7 +164,33 @@ fn writeLiveLinkScope(
 
     const bin_dir_path = try std.fs.path.join(allocator, &.{ source_path, "bin" });
     defer allocator.free(bin_dir_path);
-    try aw.writer.print("path_prepend = [\"{s}\"]\n", .{bin_dir_path});
+
+    // Prefer the linked package's declared runtime; fall back to the project runtime.
+    var scoped_runtime_bin_path: ?[]const u8 = null;
+    defer if (scoped_runtime_bin_path) |pth| allocator.free(pth);
+
+    const linked_manifest_path = try std.fs.path.join(allocator, &.{ source_path, "moonstone.toml" });
+    defer allocator.free(linked_manifest_path);
+    if (std.Io.Dir.cwd().access(io, linked_manifest_path, .{})) |_| {
+        const content = std.Io.Dir.cwd().readFileAlloc(io, linked_manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch null;
+        if (content) |c| {
+            defer allocator.free(c);
+            var linked_mt: ?manifest.MoonstoneToml = manifest.MoonstoneToml.parse(allocator, c) catch null;
+            defer if (linked_mt) |*lmt| lmt.deinit(allocator);
+            if (linked_mt) |*mt| {
+                const rt_spec = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ mt.runtime.name, mt.runtime.version });
+                defer allocator.free(rt_spec);
+                if (rt_spec.len > 0) {
+                    scoped_runtime_bin_path = try runtimeBinPathFromSpec(allocator, index, rt_spec);
+                }
+            }
+        }
+    } else |_| {}
+    if (scoped_runtime_bin_path == null and project_runtime_bin_path != null) {
+        scoped_runtime_bin_path = try allocator.dupe(u8, project_runtime_bin_path.?);
+    }
+
+    try writeScopedPathPrepend(&aw.writer, bin_dir_path, scoped_runtime_bin_path);
 
     const src_lua_path = try std.fs.path.join(allocator, &.{ source_path, "src", "?.lua" });
     defer allocator.free(src_lua_path);
@@ -107,6 +211,7 @@ fn writeLiveLinkScope(
 
 fn resolveScopedRuntimeBinPath(
     allocator: std.mem.Allocator,
+    io: std.Io,
     index: driver_mod.StoreDriver,
     artifact_hash: []const u8,
 ) !?[]const u8 {
@@ -119,21 +224,36 @@ fn resolveScopedRuntimeBinPath(
         }
     }
 
-    const runtime_spec = owner.runtime orelse return null;
-    if (runtime_spec.len == 0) return null;
+    var manifest_runtime_spec: ?[]const u8 = null;
+    defer if (manifest_runtime_spec) |runtime_spec| allocator.free(runtime_spec);
+
+    const runtime_spec = blk: {
+        if (owner.runtime) |runtime| {
+            if (isResolvableRuntimeSpec(runtime)) break :blk runtime;
+        }
+        if (try runtimeSpecFromArtifactManifest(allocator, io, index, artifact_hash)) |runtime| {
+            manifest_runtime_spec = runtime;
+            break :blk runtime;
+        }
+        return null;
+    };
 
     var spec = try package_spec.parsePackageSpec(allocator, runtime_spec);
     defer spec.deinit(allocator);
 
-    const runtime_name = package_spec.canonicalOfficialRuntime(spec.name);
-    const runtime_version = if (spec.constraint) |constraint| blk: {
-        if (constraint.len == 0) break :blk null;
-        break :blk constraint;
-    } else null;
+    const runtime_name = blk: {
+        const canonical = package_spec.canonicalOfficialRuntime(spec.name);
+        // Official runtimes are stored under bare names ("lua", "luajit"),
+        // but descriptors may use the namespaced form "moonstone/lua".
+        if (std.mem.startsWith(u8, canonical, "moonstone/")) {
+            break :blk canonical["moonstone/".len..];
+        }
+        break :blk canonical;
+    };
+    const runtime_constraint = spec.constraint orelse "*";
 
     const candidates = try index.findCandidates(.{
         .name = runtime_name,
-        .version = runtime_version,
         .kind = .runtime,
     });
     defer {
@@ -145,8 +265,10 @@ fn resolveScopedRuntimeBinPath(
     }
 
     for (candidates) |candidate| {
-        const bin_path = try std.fs.path.join(allocator, &.{ candidate.path, "files", "bin" });
-        return bin_path;
+        if (semver.matches(candidate.version, runtime_constraint)) {
+            const bin_path = try std.fs.path.join(allocator, &.{ candidate.path, "files", "bin" });
+            return bin_path;
+        }
     }
 
     return null;
@@ -174,6 +296,119 @@ fn writeScopedPathPrepend(
     try writer.print("\"{s}\"]\n", .{tool_bin_dir});
 }
 
+
+fn writeRuntimeScope(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_dir: std.Io.Dir,
+    index: driver_mod.StoreDriver,
+    scope_root: []const u8,
+    bin_name: []const u8,
+    bin_path: []const u8,
+    artifact_hash: []const u8,
+    include_module_paths: bool,
+    runtime_bin_path: ?[]const u8,
+) !void {
+    const scope_dir_rel = try std.fs.path.join(allocator, &.{ scope_root, bin_name });
+    defer allocator.free(scope_dir_rel);
+    try env_dir.createDirPath(io, scope_dir_rel);
+    var scope_dir = try env_dir.openDir(io, scope_dir_rel, .{});
+    defer scope_dir.close(io);
+
+    var scope_aw = std.Io.Writer.Allocating.init(allocator);
+    defer scope_aw.deinit();
+    try scope_aw.writer.print("[env]\n", .{});
+
+    const bin_dir_path = std.fs.path.dirname(bin_path) orelse bin_path;
+
+    var computed_runtime_bin_path: ?[]const u8 = null;
+    defer if (computed_runtime_bin_path) |p| allocator.free(p);
+    const effective_runtime_bin_path = if (runtime_bin_path) |p| p else blk: {
+        computed_runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, io, index, artifact_hash);
+        break :blk computed_runtime_bin_path;
+    };
+
+    try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, effective_runtime_bin_path);
+
+    if (include_module_paths) {
+        const art_path = try index.get_artifact_path(artifact_hash) orelse return;
+        defer allocator.free(art_path);
+
+        const provs = try index.get_provisions(artifact_hash);
+        defer {
+            for (provs.bins) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.bin_luas) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.headers) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.libs) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.lua_modules) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.lua_cmodules) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            allocator.free(provs.bins);
+            allocator.free(provs.bin_luas);
+            allocator.free(provs.headers);
+            allocator.free(provs.libs);
+            allocator.free(provs.lua_modules);
+            allocator.free(provs.lua_cmodules);
+        }
+
+        if (provs.lua_modules.len > 0) {
+            try scope_aw.writer.print("lua_path = [", .{});
+            var first = true;
+            for (provs.lua_modules) |m| {
+                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
+                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
+                defer allocator.free(abs_mod_dir);
+                const lua_file_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.lua" });
+                defer allocator.free(lua_file_pattern);
+                const lua_init_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?", "init.lua" });
+                defer allocator.free(lua_init_pattern);
+                if (!first) try scope_aw.writer.print(", ", .{});
+                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ lua_file_pattern, lua_init_pattern });
+                first = false;
+            }
+            try scope_aw.writer.print("]\n", .{});
+        }
+        if (provs.lua_cmodules.len > 0) {
+            try scope_aw.writer.print("lua_cpath = [", .{});
+            var first = true;
+            for (provs.lua_cmodules) |m| {
+                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
+                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
+                defer allocator.free(abs_mod_dir);
+                const cmod_so_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.so" });
+                defer allocator.free(cmod_so_pattern);
+                const cmod_dylib_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.dylib" });
+                defer allocator.free(cmod_dylib_pattern);
+                if (!first) try scope_aw.writer.print(", ", .{});
+                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ cmod_so_pattern, cmod_dylib_pattern });
+                first = false;
+            }
+            try scope_aw.writer.print("]\n", .{});
+        }
+    }
+
+    try scope_aw.writer.flush();
+    const scope_toml_file = try scope_dir.createFile(io, "env.toml", .{});
+    defer scope_toml_file.close(io);
+    try scope_toml_file.writeStreamingAll(io, scope_aw.writer.buffer[0..scope_aw.writer.end]);
+}
 fn writeLiveLinkScriptShim(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -248,8 +483,9 @@ pub fn link_project_env(
     index: driver_mod.StoreDriver,
     projected_artifacts: []const ProjectedArtifact,
     live_links: []const LiveLink,
+    project_runtime_name: []const u8,
 ) !void {
-    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", &std.process.environ_map);
+    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", &std.process.environ_map, project_runtime_name);
 }
 
 pub fn link_project_env_at(
@@ -261,6 +497,7 @@ pub fn link_project_env_at(
     live_links: []const LiveLink,
     env_path: []const u8,
     env_map: *std.process.Environ.Map,
+    project_runtime_name: []const u8,
 ) !void {
     _ = env_map;
     const MapType = struct { path: []const u8, artifact_hash: []const u8, role: @import("../domain/dependency_role.zig").DependencyRole };
@@ -324,6 +561,9 @@ pub fn link_project_env_at(
     var runtime_info: ?driver_mod.RuntimeProvision = null;
     defer if (runtime_info) |*r| r.deinit(allocator);
 
+    var project_runtime_bin_path: ?[]const u8 = null;
+    defer if (project_runtime_bin_path) |pth| allocator.free(pth);
+
     // 2. Query all provisions and check for conflicts
     for (projected_artifacts) |pa| {
         const hash = pa.artifact_hash;
@@ -334,13 +574,41 @@ pub fn link_project_env_at(
         const art_path = try index.get_artifact_path(hash) orelse return error.ArtifactMissingFromStoreIndex;
         defer allocator.free(art_path);
 
+        // Runtime artifacts that are not the project's selected runtime are
+        // isolated runtimes pulled in by tool/bin packages. They must not
+        // contribute public bins/modules to the root environment (that would
+        // conflict with the project runtime), but they remain available for
+        // scoped bin-runtime env resolution.
+        const is_project_runtime = pa.kind != .runtime or blk: {
+            const bare_project = if (std.mem.startsWith(u8, project_runtime_name, "moonstone/")) project_runtime_name["moonstone/".len..] else project_runtime_name;
+            const bare_artifact = if (std.mem.startsWith(u8, pa.name, "moonstone/")) pa.name["moonstone/".len..] else pa.name;
+            break :blk std.mem.eql(u8, bare_project, bare_artifact);
+        };
+        if (!is_project_runtime) continue;
+
         if (try index.get_provision_runtime(hash)) |r| {
-            if (runtime_info) |existing| {
-                if (!@import("../resolution/options.zig").runtimeAbiMatches(existing.abi, r.abi)) {
-                    return error.ABIMismatch;
+            var provision = r;
+            // Only treat the artifact as the project runtime if its name matches;
+            // other runtimes are isolated runtimes for tool/bin packages.
+            const bare_project_rt = if (std.mem.startsWith(u8, project_runtime_name, "moonstone/")) project_runtime_name["moonstone/".len..] else project_runtime_name;
+            const bare_provision_rt = if (std.mem.startsWith(u8, provision.name, "moonstone/")) provision.name["moonstone/".len..] else provision.name;
+            if (std.mem.eql(u8, bare_provision_rt, bare_project_rt)) {
+                if (runtime_info) |existing| {
+                    if (!@import("../resolution/options.zig").runtimeAbiMatches(existing.abi, provision.abi)) {
+                        provision.deinit(allocator);
+                        return error.ABIMismatch;
+                    }
                 }
+                if (runtime_info == null) {
+                    runtime_info = provision;
+                    if (project_runtime_bin_path) |old_bin| allocator.free(old_bin);
+                    project_runtime_bin_path = try std.fs.path.join(allocator, &.{ art_path, "files", "bin" });
+                } else {
+                    provision.deinit(allocator);
+                }
+            } else {
+                provision.deinit(allocator);
             }
-            runtime_info = r;
         }
 
         const provs = try index.get_provisions(hash);
@@ -557,6 +825,21 @@ pub fn link_project_env_at(
                 return err;
             }
         };
+
+        // If this public binary comes from a package with an isolated runtime
+        // that differs from the project runtime, create a bin-runtime scope so
+        // `moon exec` can prepend the correct runtime bin directory.
+        const scoped_runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, io, index, entry.value_ptr.artifact_hash);
+        defer if (scoped_runtime_bin_path) |p| allocator.free(p);
+        const needs_isolated_scope = if (scoped_runtime_bin_path) |srp| blk: {
+            if (project_runtime_bin_path) |prp| {
+                break :blk !std.mem.eql(u8, prp, srp);
+            }
+            break :blk true;
+        } else false;
+        if (needs_isolated_scope) {
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, false, scoped_runtime_bin_path);
+        }
     }
 
     // 4a. Create tool scope directories
@@ -564,98 +847,7 @@ pub fn link_project_env_at(
     while (tit.next()) |entry| {
         const bin_name = entry.key_ptr.*;
         const bin_info = entry.value_ptr.*;
-        const hash = bin_info.artifact_hash;
-        const art_path = try index.get_artifact_path(hash) orelse continue;
-        defer allocator.free(art_path);
-
-        const scope_dir_rel = try std.fs.path.join(allocator, &.{ "bin-runtime", bin_name });
-        defer allocator.free(scope_dir_rel);
-        try env_dir.createDirPath(io, scope_dir_rel);
-        var scope_dir = try env_dir.openDir(io, scope_dir_rel, .{});
-        defer scope_dir.close(io);
-
-        var scope_aw = std.Io.Writer.Allocating.init(allocator);
-        defer scope_aw.deinit();
-        try scope_aw.writer.print("[env]\n", .{});
-
-        const bin_dir_path = std.fs.path.dirname(bin_info.path) orelse art_path;
-        const runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, index, hash);
-        defer if (runtime_bin_path) |path| allocator.free(path);
-        try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, runtime_bin_path);
-
-        const provs = try index.get_provisions(hash);
-        defer {
-            for (provs.bins) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.bin_luas) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.headers) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.libs) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.lua_modules) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.lua_cmodules) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            allocator.free(provs.bins);
-            allocator.free(provs.bin_luas);
-            allocator.free(provs.headers);
-            allocator.free(provs.libs);
-            allocator.free(provs.lua_modules);
-            allocator.free(provs.lua_cmodules);
-        }
-
-        if (provs.lua_modules.len > 0) {
-            try scope_aw.writer.print("lua_path = [", .{});
-            var first = true;
-            for (provs.lua_modules) |m| {
-                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
-                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
-                defer allocator.free(abs_mod_dir);
-                const lua_file_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.lua" });
-                defer allocator.free(lua_file_pattern);
-                const lua_init_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?", "init.lua" });
-                defer allocator.free(lua_init_pattern);
-                if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ lua_file_pattern, lua_init_pattern });
-                first = false;
-            }
-            try scope_aw.writer.print("]\n", .{});
-        }
-        if (provs.lua_cmodules.len > 0) {
-            try scope_aw.writer.print("lua_cpath = [", .{});
-            var first = true;
-            for (provs.lua_cmodules) |m| {
-                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
-                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
-                defer allocator.free(abs_mod_dir);
-                const cmod_so_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.so" });
-                defer allocator.free(cmod_so_pattern);
-                const cmod_dylib_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.dylib" });
-                defer allocator.free(cmod_dylib_pattern);
-                if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ cmod_so_pattern, cmod_dylib_pattern });
-                first = false;
-            }
-            try scope_aw.writer.print("]\n", .{});
-        }
-
-        try scope_aw.writer.flush();
-        const scope_toml_file = try scope_dir.createFile(io, "env.toml", .{});
-        defer scope_toml_file.close(io);
-        try scope_toml_file.writeStreamingAll(io, scope_aw.writer.buffer[0..scope_aw.writer.end]);
+        try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", bin_name, bin_info.path, bin_info.artifact_hash, true, null);
     }
 
     // 4a-bis. Create helper scope directories
@@ -663,28 +855,7 @@ pub fn link_project_env_at(
     while (hit.next()) |entry| {
         const bin_name = entry.key_ptr.*;
         const bin_info = entry.value_ptr.*;
-        const hash = bin_info.artifact_hash;
-        const art_path = try index.get_artifact_path(hash) orelse continue;
-        defer allocator.free(art_path);
-
-        const scope_dir_rel = try std.fs.path.join(allocator, &.{ "bin-helper", bin_name });
-        defer allocator.free(scope_dir_rel);
-        try env_dir.createDirPath(io, scope_dir_rel);
-        var scope_dir = try env_dir.openDir(io, scope_dir_rel, .{});
-        defer scope_dir.close(io);
-
-        var scope_aw = std.Io.Writer.Allocating.init(allocator);
-        defer scope_aw.deinit();
-        try scope_aw.writer.print("[env]\n", .{});
-
-        const bin_dir_path = std.fs.path.dirname(bin_info.path) orelse art_path;
-        const runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, index, hash);
-        defer if (runtime_bin_path) |path| allocator.free(path);
-        try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, runtime_bin_path);
-        try scope_aw.writer.flush();
-        const scope_toml_file = try scope_dir.createFile(io, "env.toml", .{});
-        defer scope_toml_file.close(io);
-        try scope_toml_file.writeStreamingAll(io, scope_aw.writer.buffer[0..scope_aw.writer.end]);
+        try writeRuntimeScope(allocator, io, env_dir, index, "bin-helper", bin_name, bin_info.path, bin_info.artifact_hash, false, null);
     }
 
     // 4b. Link C modules from store artifacts
@@ -819,9 +990,9 @@ pub fn link_project_env_at(
                     }
                 };
                 if (policy.expose_tool_scope) {
-                    try writeLiveLinkScope(allocator, io, env_dir, "bin-runtime", sub_entry.name, ll.source_path, lua_ver_dot);
+                    try writeLiveLinkScope(allocator, io, env_dir, index, "bin-runtime", sub_entry.name, ll.source_path, lua_ver_dot, project_runtime_bin_path);
                 } else if (policy.expose_helper_scope) {
-                    try writeLiveLinkScope(allocator, io, env_dir, "bin-helper", sub_entry.name, ll.source_path, lua_ver_dot);
+                    try writeLiveLinkScope(allocator, io, env_dir, index, "bin-helper", sub_entry.name, ll.source_path, lua_ver_dot, project_runtime_bin_path);
                 }
             }
         } else if (ll.pkg_kind == .lib or ll.pkg_kind == .script) {
@@ -831,9 +1002,9 @@ pub fn link_project_env_at(
                     defer allocator.free(script_command);
                     try writeLiveLinkScriptShim(allocator, io, bin_dir, bin_name, ll.source_path, script_command);
                     if (policy.expose_tool_scope) {
-                        try writeLiveLinkScope(allocator, io, env_dir, "bin-runtime", bin_name, ll.source_path, lua_ver_dot);
+                        try writeLiveLinkScope(allocator, io, env_dir, index, "bin-runtime", bin_name, ll.source_path, lua_ver_dot, project_runtime_bin_path);
                     } else if (policy.expose_helper_scope) {
-                        try writeLiveLinkScope(allocator, io, env_dir, "bin-helper", bin_name, ll.source_path, lua_ver_dot);
+                        try writeLiveLinkScope(allocator, io, env_dir, index, "bin-helper", bin_name, ll.source_path, lua_ver_dot, project_runtime_bin_path);
                     }
                 }
             }

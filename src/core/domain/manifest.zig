@@ -558,6 +558,23 @@ pub const RemoteArtifact = struct {
     }
 };
 
+fn parseArtifactRuntimeValue(allocator: std.mem.Allocator, value: toml.Value) ![]const u8 {
+    return switch (value) {
+        .string => |runtime| blk: {
+            if (std.mem.startsWith(u8, runtime, "table:")) break :blk try allocator.dupe(u8, "");
+            break :blk try allocator.dupe(u8, runtime);
+        },
+        .table => |runtime_table| blk: {
+            const name_value = runtime_table.get("name") orelse break :blk try allocator.dupe(u8, "");
+            if (name_value != .string) break :blk try allocator.dupe(u8, "");
+            const version_value = runtime_table.get("version") orelse break :blk try allocator.dupe(u8, name_value.string);
+            if (version_value != .string or version_value.string.len == 0) break :blk try allocator.dupe(u8, name_value.string);
+            break :blk try std.fmt.allocPrint(allocator, "{s}@{s}", .{ name_value.string, version_value.string });
+        },
+        else => try allocator.dupe(u8, ""),
+    };
+}
+
 pub const RemotePackageDescriptor = struct {
     package: struct {
         name: []const u8,
@@ -719,7 +736,7 @@ pub const RemotePackageDescriptor = struct {
                         art.target = if (a_table.get("target")) |target| try allocator.dupe(u8, target.string) else try allocator.dupe(u8, "");
                         art.lua_abi = if (a_table.get("lua_abi")) |abi| try allocator.dupe(u8, abi.string) else try allocator.dupe(u8, "");
                         art.lua_api = if (a_table.get("lua_api")) |la| try allocator.dupe(u8, la.string) else try allocator.dupe(u8, "");
-                        art.runtime = if (a_table.get("runtime")) |rt| try allocator.dupe(u8, rt.string) else try allocator.dupe(u8, "");
+                        art.runtime = if (a_table.get("runtime")) |rt| try parseArtifactRuntimeValue(allocator, rt) else try allocator.dupe(u8, "");
                         art.runtime_artifact_hash = if (a_table.get("runtime_artifact_hash")) |rh| try allocator.dupe(u8, rh.string) else try allocator.dupe(u8, "");
                         art.native_compat_required = if (a_table.get("native_compat_required")) |required| required.boolean else false;
 
@@ -1627,6 +1644,93 @@ test "MoonstoneToml parse migrates legacy commands to scripts" {
     defer manifest.deinit(allocator);
 
     try std.testing.expectEqualStrings("lua src/main.lua", manifest.scripts.get("export").?);
+}
+
+test "RemotePackageDescriptor parses table artifact runtime" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.12"
+        \\kind = "bin"
+        \\
+        \\[[artifacts]]
+        \\id = "bin-any"
+        \\kind = "bin"
+        \\target = "any"
+        \\lua_api = "5.1"
+        \\lua_abi = "any"
+        \\runtime = { name = "moonstone/luajit", version = "2.1.0" }
+        \\format = "tar.gz"
+        \\url = "blobs/b3/00/00/fake.tar.gz"
+        \\hash = "b3:fake"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
+    try std.testing.expectEqualStrings("moonstone/luajit@2.1.0", desc.artifact[0].runtime);
+}
+
+test "RemotePackageDescriptor parses string artifact runtime" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.12"
+        \\kind = "bin"
+        \\
+        \\[[artifacts]]
+        \\id = "bin-any"
+        \\kind = "bin"
+        \\target = "any"
+        \\lua_api = "5.1"
+        \\lua_abi = "any"
+        \\runtime = "moonstone/luajit@2.1.0"
+        \\format = "tar.gz"
+        \\url = "blobs/b3/00/00/fake.tar.gz"
+        \\hash = "b3:fake"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
+    try std.testing.expectEqualStrings("moonstone/luajit@2.1.0", desc.artifact[0].runtime);
+}
+
+test "RemotePackageDescriptor ignores malformed table pointer runtime string" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.12"
+        \\kind = "bin"
+        \\
+        \\[[artifacts]]
+        \\id = "bin-any"
+        \\kind = "bin"
+        \\target = "any"
+        \\lua_api = "5.1"
+        \\lua_abi = "any"
+        \\runtime = "table: 0x01001bb928"
+        \\format = "tar.gz"
+        \\url = "blobs/b3/00/00/fake.tar.gz"
+        \\hash = "b3:fake"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
+    try std.testing.expectEqualStrings("", desc.artifact[0].runtime);
 }
 
 test "StoreManifest round-trip with dependencies" {

@@ -40,6 +40,7 @@ fn projectedArtifactFromPkg(
     return .{
         .name = try allocator.dupe(u8, pkg.name),
         .version = try allocator.dupe(u8, pkg.version),
+        .kind = pkg.kind,
         .constraint = constraint,
         .resolver = resolver,
         .role = role,
@@ -438,6 +439,7 @@ pub const SyncCommand = struct {
                 if (is_link or is_path) {
                     // Link/path entries are reconstructed directly from lockfile metadata
                     const source_path = if (entry.source.len > 0) entry.source else "";
+                    try checkLinkedRuntimeAbiForReplay(allocator, io, ctx, &mt, active_lua_abi, entry.name, entry.version, source_path);
                     const candidate = moonstone.resolution.candidate.Candidate{
                         .name = try allocator.dupe(u8, entry.name),
                         .version = try allocator.dupe(u8, entry.version),
@@ -467,7 +469,7 @@ pub const SyncCommand = struct {
                     .artifact_hash = if (entry.artifact_hash.len > 0) entry.artifact_hash else null,
                     .runtime = if (entry.runtime.len > 0) entry.runtime else null,
                     .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else null,
-                    .runtime_artifact_hash = if (entry.recipe_hash.len > 0) entry.recipe_hash else null,
+                    .runtime_artifact_hash = null,
                 };
 
                 const maybe_art = try provider_impl.get_artifact(req);
@@ -1179,6 +1181,23 @@ pub const SyncCommand = struct {
                 }
             }
         }
+        // Ensure any isolated runtimes required by tool-scope packages are present.
+        try ensureIsolatedRuntimes(
+            allocator,
+            io,
+            stdout,
+            ctx,
+            &solution,
+            &coordinator,
+            idx,
+            registries,
+            &mat,
+            active_lua_abi,
+            self.offline,
+            &report,
+            emitter,
+        );
+
         report.materialize_ms = elapsedMs(io, materialize_started_ns);
         profiler.spanCount("sync.materialize", profile_span, "packages", solution.count());
         if (emitter) |e| {
@@ -1209,7 +1228,7 @@ pub const SyncCommand = struct {
         } else {
             try @import("command.zig").progress(stdout, "Linking project environment...\n", .{});
         }
-        try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env);
+        try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env, rt_res.name);
         report.linked = projected_artifacts.items.len + live_links.items.len;
         report.env_refreshed = true;
         report.link_ms = elapsedMs(io, link_started_ns);
@@ -1386,6 +1405,8 @@ fn lockedDependenciesMatch(
     deps: []const moonstone.domain.manifest.StoreDependency,
     lf: *moonstone.domain.lockfile.LockFile,
 ) bool {
+    if (deps.len == 0 and lf.packages.items.len > 0) return false;
+
     for (deps) |dep| {
         const dep_name = dep.name;
 
@@ -1396,6 +1417,16 @@ fn lockedDependenciesMatch(
         const lock_entry = lf.find(dep_name) orelse return false;
         const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
+    }
+    return true;
+}
+
+fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
+    if (runtime_spec.len == 0) return false;
+    if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
+    if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
+    if (std.mem.indexOfScalar(u8, runtime_spec, '@')) |at| {
+        return at > 0 and at + 1 < runtime_spec.len;
     }
     return true;
 }
@@ -1483,4 +1514,264 @@ fn countBrokenSymlinks(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir
         }
     }
     return broken;
+}
+fn checkLinkedRuntimeAbiForReplay(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    ctx: *router.Context,
+    mt: *const moonstone.domain.manifest.MoonstoneToml,
+    active_lua_abi: []const u8,
+    pkg_name: []const u8,
+    pkg_version: []const u8,
+    source_path: []const u8,
+) !void {
+    if (source_path.len == 0) return;
+    const role = roleForResolvedPackage(mt, pkg_name);
+    const policy = role.getProjectionPolicy();
+    if (policy.expose_tool_scope or policy.expose_helper_scope) return;
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ source_path, "moonstone.toml" });
+    defer allocator.free(manifest_path);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer allocator.free(content);
+
+    var linked_mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, content);
+    defer linked_mt.deinit(allocator);
+
+    if (!moonstone.resolution.options.runtimeAbiMatches(active_lua_abi, linked_mt.runtime.abi)) {
+        const suggested_role: ?[]const u8 = if (linked_mt.package.kind == .script or linked_mt.package.kind == .bin)
+            "tool"
+        else
+            null;
+        if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+        if (suggested_role) |sr| {
+            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}\nIf this is a development CLI tool, add it with --{s} instead.", .{ pkg_name, pkg_version, linked_mt.runtime.abi, active_lua_abi, manifest_path, sr }) } };
+        } else {
+            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "linked package {s}@{s} requires Lua ABI {s}, but the root project selected ABI {s}. Linked manifest: {s}", .{ pkg_name, pkg_version, linked_mt.runtime.abi, active_lua_abi, manifest_path }) } };
+        }
+        return error.LinkedRuntimeAbiMismatch;
+    }
+}
+
+fn runtimeSpecFromLinkedPackage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+) !?[]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ source_path, "moonstone.toml" });
+    defer allocator.free(manifest_path);
+    if (std.Io.Dir.cwd().access(io, manifest_path, .{})) |_| {
+        const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch null;
+        if (content) |c| {
+            defer allocator.free(c);
+            var linked_mt: ?moonstone.domain.manifest.MoonstoneToml = moonstone.domain.manifest.MoonstoneToml.parse(allocator, c) catch null;
+            defer if (linked_mt) |*lmt| lmt.deinit(allocator);
+            if (linked_mt) |*mt| {
+                if (mt.runtime.name.len > 0 and mt.runtime.version.len > 0) {
+                    return try std.fmt.allocPrint(allocator, "{s}@{s}", .{ mt.runtime.name, mt.runtime.version });
+                }
+            }
+        }
+    } else |_| {}
+    return null;
+}
+
+fn runtimeInStore(
+    allocator: std.mem.Allocator,
+    index: moonstone.store.driver.StoreDriver,
+    rt_spec: []const u8,
+) !bool {
+    var spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, rt_spec);
+    defer spec.deinit(allocator);
+
+    var runtime_name = moonstone.domain.package_spec.canonicalOfficialRuntime(spec.name);
+    if (std.mem.startsWith(u8, runtime_name, "moonstone/")) {
+        runtime_name = runtime_name["moonstone/".len..];
+    }
+    const runtime_constraint = spec.constraint orelse "*";
+
+    const query_names = [_][]const u8{ runtime_name, try std.fmt.allocPrint(allocator, "moonstone/{s}", .{runtime_name}) };
+    defer allocator.free(query_names[1]);
+
+    for (query_names) |query_name| {
+        const candidates = try index.findCandidates(.{
+            .name = query_name,
+            .kind = .runtime,
+        });
+        defer {
+            for (candidates) |candidate| {
+                var mut_candidate = candidate;
+                mut_candidate.deinit(allocator);
+            }
+            allocator.free(candidates);
+        }
+        for (candidates) |cand| {
+            const candidate_name = if (std.mem.startsWith(u8, cand.name, "moonstone/")) cand.name["moonstone/".len..] else cand.name;
+            if (std.mem.eql(u8, candidate_name, runtime_name) and moonstone.domain.semver.matches(cand.version, runtime_constraint)) return true;
+        }
+    }
+    return false;
+}
+
+fn resolveAndMaterializeRuntime(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stdout: *std.Io.Writer,
+    ctx: *router.Context,
+    pkg_name: []const u8,
+    pkg_version: []const u8,
+    pkg_lua_abi: ?[]const u8,
+    rt_spec: []const u8,
+    coordinator: *moonstone.resolution.coordinator.Coordinator,
+    index: moonstone.store.driver.StoreDriver,
+    registries: []const moonstone.registry.core.ResolvedRegistry,
+    mat: *moonstone.materialization.materializer.Materializer,
+    active_lua_abi: []const u8,
+    offline: bool,
+    report: *SyncReport,
+    emitter: ?*ndjson.Emitter,
+    resolve_cb_ctx: *@import("command.zig").ResolveCallbackContext,
+    fail_hard: bool,
+) !void {
+    var spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, rt_spec);
+    defer spec.deinit(allocator);
+
+    var runtime_name = moonstone.domain.package_spec.canonicalOfficialRuntime(spec.name);
+    if (std.mem.startsWith(u8, runtime_name, "moonstone/")) {
+        runtime_name = runtime_name["moonstone/".len..];
+    }
+    const runtime_constraint = spec.constraint orelse "*";
+    const target_abi = pkg_lua_abi orelse active_lua_abi;
+
+    if (emitter) |e| {
+        try e.emit(io, .STATUS, pkg_name, "isolated_runtime.resolve", .{ .runtime = rt_spec });
+    } else {
+        try @import("command.zig").progress(stdout, "Resolving isolated runtime {s} for {s}@{s}...\n", .{ rt_spec, pkg_name, pkg_version });
+    }
+
+    const rt_res_iso = coordinator.resolve(runtime_name, runtime_constraint, index, registries, .{
+        .offline = offline,
+        .prefer_local = true,
+        .runtime = target_abi,
+        .on_event = @import("command.zig").onResolveEvent,
+        .on_event_context = resolve_cb_ctx,
+    }, ctx.env) catch |err| {
+        if (fail_hard) {
+            if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "package {s}@{s} requires isolated runtime {s}, but it could not be resolved: {s}", .{ pkg_name, pkg_version, rt_spec, @errorName(err) }) } };
+            return error.IsolatedRuntimeResolutionFailed;
+        }
+        return;
+    };
+    defer rt_res_iso.deinit(allocator);
+
+    switch (rt_res_iso.location) {
+        .local_store, .local_path => {},
+        .remote => switch (rt_res_iso.origin) {
+            .moonstone_registry => |r| {
+                _ = try mat.materialize_remote(
+                    r.url,
+                    r.token,
+                    r.descriptor_path,
+                    rt_res_iso.remote_desc.?,
+                    r.artifact_idx,
+                );
+                report.downloads += 1;
+                report.materializations += 1;
+            },
+            else => {
+                if (fail_hard) {
+                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "package {s}@{s} requires isolated runtime {s}, but it has an unsupported origin", .{ pkg_name, pkg_version, rt_spec }) } };
+                    return error.IsolatedRuntimeResolutionFailed;
+                }
+            },
+        },
+    }
+}
+
+fn ensureIsolatedRuntimes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stdout: *std.Io.Writer,
+    ctx: *router.Context,
+    solution: *const std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact),
+    coordinator: *moonstone.resolution.coordinator.Coordinator,
+    idx: moonstone.store.driver.StoreDriver,
+    registries: []const moonstone.registry.core.ResolvedRegistry,
+    mat: *moonstone.materialization.materializer.Materializer,
+    active_lua_abi: []const u8,
+    offline: bool,
+    report: *SyncReport,
+    emitter: ?*ndjson.Emitter,
+) !void {
+    var seen = std.StringArrayHashMapUnmanaged(void).empty;
+    defer {
+        var sit = seen.iterator();
+        while (sit.next()) |entry| allocator.free(entry.key_ptr.*);
+        seen.deinit(allocator);
+    }
+
+    var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
+        .io = io,
+        .stdout = stdout,
+        .emitter = emitter,
+    };
+
+    var it = solution.iterator();
+    while (it.next()) |entry| {
+        const pkg = entry.value_ptr.*;
+        if (pkg.kind == .runtime) continue;
+
+        const is_link_or_path = std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path");
+
+        const rt_spec: ?[]const u8 = blk: {
+            if (is_link_or_path) {
+                if (pkg.local_path) |lp| {
+                    if (try runtimeSpecFromLinkedPackage(allocator, io, lp)) |linked_rt| {
+                        break :blk linked_rt;
+                    }
+                }
+                break :blk null;
+            }
+            if (pkg.runtime) |r| {
+                if (isResolvableRuntimeSpec(r)) break :blk try allocator.dupe(u8, r);
+            }
+            break :blk null;
+        };
+        defer if (rt_spec) |r| allocator.free(r);
+        const rt = rt_spec orelse continue;
+
+        if (seen.contains(rt)) {
+            continue;
+        }
+        try seen.put(allocator, try allocator.dupe(u8, rt), {});
+
+        const in_store = try runtimeInStore(allocator, idx, rt);
+        if (in_store) continue;
+
+        try resolveAndMaterializeRuntime(
+            allocator,
+            io,
+            stdout,
+            ctx,
+            pkg.name,
+            pkg.version,
+            pkg.lua_abi,
+            rt,
+            coordinator,
+            idx,
+            registries,
+            mat,
+            active_lua_abi,
+            offline,
+            report,
+            emitter,
+            &resolve_cb_ctx,
+            !is_link_or_path,
+        );
+    }
 }
