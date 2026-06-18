@@ -63,6 +63,10 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/registry_list.zig").RegistryListCommand),
             router.CommandNode.from(@import("commands/registry_add.zig").RegistryAddCommand),
             router.CommandNode.from(@import("commands/registry_remove.zig").RegistryRemoveCommand),
+            router.CommandNode.from(@import("commands/registry_file.zig").RegistryCreateCommand),
+            router.CommandNode.from(@import("commands/registry_file.zig").RegistrySyncCommand),
+            router.CommandNode.from(@import("commands/registry_file.zig").RegistryPushCommand),
+            router.CommandNode.from(@import("commands/registry_file.zig").RegistryPurgeCommand),
         }),
         
         router.CommandNode.group("runtime", "Manage Lua runtimes", &.{

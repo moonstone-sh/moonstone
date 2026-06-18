@@ -42,7 +42,7 @@ pub const init_command = struct {
             \\  --lib            Shortcut for --kind lib
             \\  --bin            Shortcut for --kind bin
             \\  --runtime <spec> Lua runtime spec: lua@5.4|luajit@2.1|...
-            \\  --template <t>   Project template: script|lib|nvim|love|c-bin|zig-bin|rust-bin|bin
+            \\  --template <t>   Project template: script|lib|nvim|love|lua-zig|c-bin|zig-bin|rust-bin|bin
             \\  --license <id>   SPDX license identifier
             \\  --no-git         Do not initialize a git repository
             \\  --no-sync     Do not run moon sync after init
@@ -56,23 +56,51 @@ pub const init_command = struct {
         allocator.free(self.positionals);
     }
 
+    fn moduleNameFromProjectName(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+        var module_name = try allocator.alloc(u8, name.len);
+        errdefer allocator.free(module_name);
+
+        for (name, 0..) |char, idx| {
+            module_name[idx] = if (std.ascii.isAlphanumeric(char))
+                std.ascii.toLower(char)
+            else
+                '_';
+        }
+
+        return module_name;
+    }
+
+    fn replaceAll(allocator: std.mem.Allocator, input: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
+        var result = try allocator.dupe(u8, input);
+        errdefer allocator.free(result);
+
+        while (std.mem.indexOf(u8, result, needle)) |pos| {
+            const new_res = try std.mem.concat(allocator, u8, &.{ result[0..pos], replacement, result[pos + needle.len ..] });
+            allocator.free(result);
+            result = new_res;
+        }
+
+        return result;
+    }
+
     fn renderTemplate(allocator: std.mem.Allocator, template: []const u8, name: []const u8, lua_ver: []const u8) ![]const u8 {
         var result = try allocator.dupe(u8, template);
         errdefer allocator.free(result);
 
-        // Replace {{name}}
-        while (std.mem.indexOf(u8, result, "{{name}}")) |pos| {
-            const new_res = try std.mem.concat(allocator, u8, &.{ result[0..pos], name, result[pos + 8 ..] });
-            allocator.free(result);
-            result = new_res;
-        }
+        const module_name = try moduleNameFromProjectName(allocator, name);
+        defer allocator.free(module_name);
 
-        // Replace {{lua_ver}}
-        while (std.mem.indexOf(u8, result, "{{lua_ver}}")) |pos| {
-            const new_res = try std.mem.concat(allocator, u8, &.{ result[0..pos], lua_ver, result[pos + 11 ..] });
-            allocator.free(result);
-            result = new_res;
-        }
+        const with_name = try replaceAll(allocator, result, "{{name}}", name);
+        allocator.free(result);
+        result = with_name;
+
+        const with_lua_ver = try replaceAll(allocator, result, "{{lua_ver}}", lua_ver);
+        allocator.free(result);
+        result = with_lua_ver;
+
+        const with_module_name = try replaceAll(allocator, result, "{{module_name}}", module_name);
+        allocator.free(result);
+        result = with_module_name;
 
         return result;
     }
@@ -171,7 +199,7 @@ pub const init_command = struct {
             if (self.template) |t| {
                 if (std.mem.eql(u8, t, "lib")) break :blk Kind.lib;
                 if (std.mem.eql(u8, t, "nvim")) break :blk Kind.lib;
-                if (std.mem.eql(u8, t, "c-bin") or std.mem.eql(u8, t, "zig-bin") or std.mem.eql(u8, t, "rust-bin") or std.mem.eql(u8, t, "bin")) break :blk Kind.bin;
+                if (std.mem.eql(u8, t, "c-bin") or std.mem.eql(u8, t, "zig-bin") or std.mem.eql(u8, t, "lua-zig") or std.mem.eql(u8, t, "rust-bin") or std.mem.eql(u8, t, "bin")) break :blk Kind.bin;
             }
             break :blk Kind.script;
         };
@@ -319,6 +347,52 @@ pub const init_command = struct {
                 defer allocator.free(content);
                 try f.writeStreamingAll(io, content);
             }
+        } else if (std.mem.eql(u8, template, "lua-zig")) {
+            try project_dir.createDirPath(io, "src");
+            try project_dir.createDirPath(io, "native/src");
+
+            if (project_dir.access(io, "src/main.lua", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "src/main.lua", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_main, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+            if (project_dir.access(io, "src/app.lua", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "src/app.lua", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_app, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+            if (project_dir.access(io, "native/src/bridge.zig", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "native/src/bridge.zig", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_bridge, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+            if (project_dir.access(io, "build.zig", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "build.zig", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_build, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+            if (project_dir.access(io, ".luarc.json", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, ".luarc.json", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_luarc, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+            if (project_dir.access(io, "README.md", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "README.md", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.lua_zig_readme, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
         } else if (std.mem.eql(u8, template, "rust-bin")) {
             try project_dir.createDirPath(io, "src");
             if (project_dir.access(io, "src/main.rs", .{})) |_| {} else |_| {
@@ -360,6 +434,11 @@ pub const init_command = struct {
 
         if (std.mem.eql(u8, template, "script")) {
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
+        } else if (std.mem.eql(u8, template, "lua-zig")) {
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-native"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "zig build install-native && lua ./src/main.lua \"$@\""));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "test"), try allocator.dupe(u8, "zig build"));
         } else if (std.mem.eql(u8, template, "love")) {
             try pkg.add_dependency(allocator, "moonstone/love", "11.5", .runtime, false);
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "love ."));
