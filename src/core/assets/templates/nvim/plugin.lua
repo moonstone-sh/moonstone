@@ -1,1 +1,1 @@
-require('{{name}}').setup()
+require("{{module_name}}").setup()

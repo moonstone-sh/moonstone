@@ -1,0 +1,13 @@
+*{{module_name}}.txt*  {{name}}
+
+==============================================================================
+INTRODUCTION                                                    *{{module_name}}*
+
+{{name}} is a Neovim plugin scaffolded by Moonstone.
+
+Setup: >lua
+  require("{{module_name}}").setup({})
+<
+
+==============================================================================
+ vim:tw=78:ts=8:ft=help:norl:

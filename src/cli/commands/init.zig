@@ -102,6 +102,10 @@ pub const init_command = struct {
         allocator.free(result);
         result = with_module_name;
 
+        const with_nvim_version = try replaceAll(allocator, result, "{{nvim_version}}", "0.12.2");
+        allocator.free(result);
+        result = with_nvim_version;
+
         return result;
     }
 
@@ -207,7 +211,9 @@ pub const init_command = struct {
         const template = self.template orelse if (pkg_kind == .lib) "lib" else "script";
         const configured_runtime = if (self.runtime == null) try defaultRuntimeSpec(allocator, ctx.env, io) else null;
         defer if (configured_runtime) |spec| allocator.free(spec);
-        const runtime_spec = if (std.mem.eql(u8, template, "love") and self.runtime == null and configured_runtime == null)
+        const runtime_spec = if (std.mem.eql(u8, template, "nvim") and self.runtime == null)
+            "luajit@2.1"
+        else if (std.mem.eql(u8, template, "love") and self.runtime == null and configured_runtime == null)
             "love@11.5"
         else
             self.runtime orelse configured_runtime orelse "5.4";
@@ -251,14 +257,18 @@ pub const init_command = struct {
                 defer allocator.free(content);
                 try f.writeStreamingAll(io, content);
             }
-        }
- else if (std.mem.eql(u8, template, "nvim")) {
-            const lua_path = try std.fmt.allocPrint(allocator, "lua/{s}", .{final_name});
+        } else if (std.mem.eql(u8, template, "nvim")) {
+            const module_name = try moduleNameFromProjectName(allocator, final_name);
+            defer allocator.free(module_name);
+
+            const lua_path = try std.fmt.allocPrint(allocator, "lua/{s}", .{module_name});
             defer allocator.free(lua_path);
             try project_dir.createDirPath(io, lua_path);
             try project_dir.createDirPath(io, "plugin");
+            try project_dir.createDirPath(io, "doc");
+            try project_dir.createDirPath(io, "tests");
 
-            const init_lua_path = try std.fmt.allocPrint(allocator, "lua/{s}/init.lua", .{final_name});
+            const init_lua_path = try std.fmt.allocPrint(allocator, "lua/{s}/init.lua", .{module_name});
             defer allocator.free(init_lua_path);
             if (project_dir.access(io, init_lua_path, .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, init_lua_path, .{});
@@ -268,20 +278,56 @@ pub const init_command = struct {
                 try f.writeStreamingAll(io, content);
             }
 
-            const config_lua_path = try std.fmt.allocPrint(allocator, "lua/{s}/config.lua", .{final_name});
+            const config_lua_path = try std.fmt.allocPrint(allocator, "lua/{s}/config.lua", .{module_name});
             defer allocator.free(config_lua_path);
             if (project_dir.access(io, config_lua_path, .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, config_lua_path, .{});
                 defer f.close(io);
-                try f.writeStreamingAll(io, T.nvim_config);
+                const content = try renderTemplate(allocator, T.nvim_config, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
             }
 
-            const plugin_lua_path = try std.fmt.allocPrint(allocator, "plugin/{s}.lua", .{final_name});
+            const plugin_lua_path = try std.fmt.allocPrint(allocator, "plugin/{s}.lua", .{module_name});
             defer allocator.free(plugin_lua_path);
             if (project_dir.access(io, plugin_lua_path, .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, plugin_lua_path, .{});
                 defer f.close(io);
                 const content = try renderTemplate(allocator, T.nvim_plugin, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+
+            const doc_path = try std.fmt.allocPrint(allocator, "doc/{s}.txt", .{module_name});
+            defer allocator.free(doc_path);
+            if (project_dir.access(io, doc_path, .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, doc_path, .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.nvim_doc, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+
+            if (project_dir.access(io, "tests/minimal_init.lua", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "tests/minimal_init.lua", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.nvim_minimal_init, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+
+            if (project_dir.access(io, "partiture.lua", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "partiture.lua", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.nvim_partiture, final_name, lua_ver);
+                defer allocator.free(content);
+                try f.writeStreamingAll(io, content);
+            }
+
+            if (project_dir.access(io, "README.md", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "README.md", .{});
+                defer f.close(io);
+                const content = try renderTemplate(allocator, T.nvim_readme, final_name, lua_ver);
                 defer allocator.free(content);
                 try f.writeStreamingAll(io, content);
             }
@@ -470,6 +516,14 @@ pub const init_command = struct {
             try pkg.add_dependency(allocator, "moonstone/love", "11.5", .runtime, false);
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "love ."));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
+        } else if (std.mem.eql(u8, template, "nvim")) {
+            const module_name = try moduleNameFromProjectName(allocator, final_name);
+            defer allocator.free(module_name);
+            const smoke_script = try std.fmt.allocPrint(allocator, "nvim --headless -u tests/minimal_init.lua -c 'lua require(\"{s}\").setup({{}})' -c qa", .{module_name});
+            defer allocator.free(smoke_script);
+            try pkg.add_dependency(allocator, "moonstone/ballad", "^0.2", .tool, false);
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "smoke"), try allocator.dupe(u8, smoke_script));
         } else if (std.mem.eql(u8, template, "meteorite")) {
             try pkg.add_dependency(allocator, "moonstone/meteorite", "link:moonstone/meteorite@^0.1.0", .tool, false);
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "generate-graph"), try allocator.dupe(u8, "moon exec meteorite -- graph src/main.lua .meteorite/graph/current hybrid"));

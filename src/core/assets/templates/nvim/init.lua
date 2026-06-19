@@ -1,7 +1,10 @@
+local config = require("{{module_name}}.config")
+
 local M = {}
 
 function M.setup(opts)
-    print("Neovim plugin {{name}} loaded!")
+  M.config = vim.tbl_deep_extend("force", {}, config.defaults, opts or {})
+  return M.config
 end
 
 return M

@@ -1,7 +1,7 @@
 local M = {}
 
 M.defaults = {
-    debug = false,
+  debug = false,
 }
 
 return M
