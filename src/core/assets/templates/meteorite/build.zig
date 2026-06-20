@@ -14,6 +14,10 @@ pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, fast_http_strategy, "threaded_probe") and !std.mem.eql(u8, fast_http_strategy, "pool")) {
         std.debug.panic("unsupported -Dfast-http-strategy={s}; expected threaded_probe or pool", .{fast_http_strategy});
     }
+    const router_dispatch = b.option([]const u8, "router-dispatch", "Router dispatch strategy: method_buckets, static_fast_path, param_matchers, or legacy_scan") orelse "method_buckets";
+    if (!std.mem.eql(u8, router_dispatch, "method_buckets") and !std.mem.eql(u8, router_dispatch, "static_fast_path") and !std.mem.eql(u8, router_dispatch, "param_matchers") and !std.mem.eql(u8, router_dispatch, "legacy_scan")) {
+        std.debug.panic("unsupported -Drouter-dispatch={s}; expected method_buckets, static_fast_path, param_matchers, or legacy_scan", .{router_dispatch});
+    }
     const optimize: std.builtin.OptimizeMode = if (std.mem.startsWith(u8, mode, "release-"))
         .ReleaseFast
     else
@@ -44,6 +48,7 @@ pub fn build(b: *std.Build) void {
         \\pub const lua_runtime = {};
         \\pub const hybrid_profile = "{s}";
         \\pub const lua_state_strategy = "{s}";
+        \\pub const router_dispatch = "{s}";
         \\
         \\pub const zig_optimize = @tagName(builtin.mode);
         \\pub const cpu_arch = @tagName(builtin.cpu.arch);
@@ -51,7 +56,7 @@ pub fn build(b: *std.Build) void {
         \\pub const abi = @tagName(builtin.abi);
         \\pub const target = cpu_arch ++ "-" ++ os_tag ++ "-" ++ abi;
         \\
-    , .{ mode, backend, fast_http_strategy, fast_http_workers, fast_http_queue, lua_runtime, hybrid_profile, lua_state_strategy }) catch @panic("OOM");
+    , .{ mode, backend, fast_http_strategy, fast_http_workers, fast_http_queue, lua_runtime, hybrid_profile, lua_state_strategy, router_dispatch }) catch @panic("OOM");
     const write_build_info = b.addWriteFiles();
     const build_info_file = write_build_info.add(".meteorite/graph/current/build_info.zig", build_info_content);
     graph_step.step.dependOn(&write_build_info.step);

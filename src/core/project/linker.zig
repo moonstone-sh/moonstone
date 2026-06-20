@@ -739,6 +739,13 @@ pub fn link_project_env_at(
         return err;
     };
     defer bin_dir.close(io);
+    env_dir.createDirPath(io, "libexec") catch |err| {
+        return err;
+    };
+    var libexec_dir = env_dir.openDir(io, "libexec", .{}) catch |err| {
+        return err;
+    };
+    defer libexec_dir.close(io);
 
     const abi = if (runtime_info) |ri| ri.abi else "lua54";
     var lua_ver_dot: []const u8 = undefined;
@@ -1033,6 +1040,14 @@ pub fn link_project_env_at(
         }
     }
 
+    // 5b. Link non-metadata live dependencies into libexec/ for stable references.
+    for (live_links) |ll| {
+        const ll_policy = ll.role.getProjectionPolicy();
+        if (ll_policy.metadata_only) continue;
+        const ll_local = packageLocalName(ll.pkg_name);
+        try linkPackageIntoLibexec(io, libexec_dir, ll_local, ll.source_path);
+    }
+
     // 6. Fallback linking for artifacts without successful module metadata linking
     for (projected_artifacts) |pa| {
         const hash = pa.artifact_hash;
@@ -1177,6 +1192,16 @@ pub fn link_project_env_at(
         }
     }
 
+    // 6b. Link non-metadata store artifacts into libexec/ for stable references.
+    for (projected_artifacts) |pa2| {
+        const pa_policy = pa2.role.getProjectionPolicy();
+        if (pa_policy.metadata_only) continue;
+        const pa_path = try index.get_artifact_path(pa2.artifact_hash) orelse continue;
+        defer allocator.free(pa_path);
+        const pa_local = packageLocalName(pa2.name);
+        try linkPackageIntoLibexec(io, libexec_dir, pa_local, pa_path);
+    }
+
     // 7. Generate env.toml
     const env_toml_file = try env_dir.createFile(io, "env.toml", .{});
     defer env_toml_file.close(io);
@@ -1280,6 +1305,23 @@ fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.
     const file = project_root.openFile(io, ".luarc.json", .{ .mode = .read_write }) catch return;
     defer file.close(io);
     file.setTimestampsNow(io) catch {};
+}
+
+fn linkPackageIntoLibexec(
+    io: std.Io,
+    libexec_dir: std.Io.Dir,
+    local_name: []const u8,
+    src_path: []const u8,
+) !void {
+    libexec_dir.deleteTree(io, local_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+    libexec_dir.symLink(io, src_path, local_name, .{}) catch |err| {
+        if (err == error.PathAlreadyExists) {
+            try libexec_dir.deleteFile(io, local_name);
+            try libexec_dir.symLink(io, src_path, local_name, .{});
+        } else return err;
+    };
 }
 
 fn symlinkTree(allocator: std.mem.Allocator, io: std.Io, dest_parent_dir: std.Io.Dir, src_path: []const u8) !void {

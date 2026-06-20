@@ -464,6 +464,7 @@ pub const init_command = struct {
                 .{ "native/src/validators.zig", T.meteorite_validators },
                 .{ "native/src/main.zig", T.meteorite_native_main },
                 .{ "build.zig", T.meteorite_build },
+                .{ "dev.lua", T.meteorite_dev },
                 .{ ".luarc.json", T.meteorite_luarc },
                 .{ "README.md", T.meteorite_readme },
             };
@@ -472,11 +473,8 @@ pub const init_command = struct {
                 if (project_dir.access(io, path, .{})) |_| {} else |_| {
                     const f = try project_dir.createFile(io, path, .{});
                     defer f.close(io);
-                    const rendered = if (std.mem.eql(u8, path, ".luarc.json") or std.mem.eql(u8, path, "README.md") or std.mem.eql(u8, path, "src/app.lua"))
-                        try renderTemplate(allocator, content, final_name, lua_ver)
-                    else
-                        content;
-                    defer if (std.mem.eql(u8, path, ".luarc.json") or std.mem.eql(u8, path, "README.md") or std.mem.eql(u8, path, "src/app.lua")) allocator.free(rendered);
+                    const rendered = try renderTemplate(allocator, content, final_name, lua_ver);
+                    defer allocator.free(rendered);
                     try f.writeStreamingAll(io, rendered);
                 }
             }
@@ -526,9 +524,9 @@ pub const init_command = struct {
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "smoke"), try allocator.dupe(u8, smoke_script));
         } else if (std.mem.eql(u8, template, "meteorite")) {
             try pkg.add_dependency(allocator, "moonstone/meteorite", "link:moonstone/meteorite@^0.1.0", .tool, false);
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "generate-graph"), try allocator.dupe(u8, "moon exec meteorite -- graph src/main.lua .meteorite/graph/current hybrid"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "generate-graph"), try allocator.dupe(u8, "lua .moonstone/env/libexec/meteorite/src/meteorite/cli.lua graph src/main.lua .meteorite/graph/current hybrid"));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-server \"$@\""));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "moon exec meteorite -- graph src/main.lua .meteorite/graph/current dev && moon exec meteorite -- invoke src/main.lua GET / && moon exec meteorite -- invoke src/main.lua GET /health"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua dev.lua src/main.lua .meteorite/graph/current hybrid_dev"));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "./dist/server"));
         }
 

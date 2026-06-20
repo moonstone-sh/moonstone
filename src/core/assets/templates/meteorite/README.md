@@ -8,8 +8,13 @@ A Meteorite service project.
 moon sync
 moon run generate-graph   # materialize the Meteorite graph
 moon run build            # compile dist/server
-moon run dev              # graph in dev mode and smoke-test routes
+moon run dev              # start the HMR dev loop (rebuilds + Lua reloads)
 ```
+
+The `dev` script starts the Meteorite dev loop: it watches `src/`, `native/`,
+`build.zig`, and `moonstone.toml`, regenerates the graph, rebuilds the server
+when native/router/graph shape changes, and reloads inline Lua handlers and
+plugins in-process when only Lua/plugin chunks changed.
 
 ## Build flags
 
