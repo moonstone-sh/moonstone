@@ -29,8 +29,10 @@ Production exports are owned by the Meteorite Ballad plugin:
 local ballad = require("ballad")
 
 return ballad.partiture(function(p)
+  local moonstone = p:use(ballad.plugins.moonstone)
   local meteorite = p:use("meteorite.ballad")
-  local release = meteorite.release({ mode = "hybrid", output = "dist/server" })
+  local project = moonstone.project({ root = "." })
+  local release = meteorite.release({ project = project, mode = "hybrid", output = "dist/server" })
   p.sink.directory(release, { out = "dist/release", file_graph = true })
 end)
 ```
@@ -39,8 +41,8 @@ Use `mode = "static"` for Zig-only releases. Static and hybrid validate the
 same graph: Lua may produce the graph, but static fails with source locations if
 Lua runtime execution nodes remain. Use `mode = "hybrid"` when shipping Lua
 handlers/plugins; same-host exports include lifted inline chunks and Moonstone
-Lua module/C-module trees, while cross-target hybrid exports require target Lua
-runtime source facts so the release can materialize target Lua and modules.
+Lua module/C-module trees, while cross-target hybrid exports use Moonstone
+runtime/package source facts to materialize target Lua and modules.
 
 ## Build flags
 

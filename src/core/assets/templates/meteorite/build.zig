@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
     const mode = b.option([]const u8, "mode", "Meteorite build mode") orelse "hybrid";
     const graph_input = b.option([]const u8, "graph-input", "Meteorite app entry Lua file") orelse "src/main.lua";
     const graph_output = b.option([]const u8, "graph-output", "Generated Meteorite graph directory") orelse ".meteorite/graph/current";
+    const lua_root = b.option([]const u8, "lua-root", "Lua runtime root with include/ and lib/") orelse ".moonstone/env/libexec/lua/files";
     const hybrid_profile = b.option([]const u8, "hybrid-profile", "Hybrid profile") orelse "default";
     const backend = b.option([]const u8, "backend", "HTTP backend: std_http or fast_http") orelse "std_http";
     const fast_http_strategy = b.option([]const u8, "fast-http-strategy", "fast_http strategy: threaded_probe or pool") orelse "threaded_probe";
@@ -28,8 +29,6 @@ pub fn build(b: *std.Build) void {
     const lua_state_strategy = if (lua_runtime and std.mem.eql(u8, hybrid_profile, "optimized")) "per_thread_cached_refs" else if (lua_runtime) "per_request_state" else "none";
 
     const meteorite_root = ".moonstone/env/libexec/meteorite";
-    const lua_root = ".moonstone/env/libexec/lua/files";
-
     const graph_step = b.addSystemCommand(&.{ ".moonstone/env/bin/lua", meteorite_root ++ "/src/meteorite/cli.lua", "graph", graph_input, graph_output, mode });
 
     const build_info_content = std.fmt.allocPrint(b.allocator,
@@ -103,8 +102,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    bridge_module.addIncludePath(b.path(lua_root ++ "/include"));
-    bridge_module.addLibraryPath(b.path(lua_root ++ "/lib"));
+    bridge_module.addIncludePath(b.path(std.fs.path.join(b.allocator, &.{ lua_root, "include" }) catch @panic("OOM")));
+    bridge_module.addLibraryPath(b.path(std.fs.path.join(b.allocator, &.{ lua_root, "lib" }) catch @panic("OOM")));
     bridge_module.linkSystemLibrary("lua", .{});
     bridge_module.linkSystemLibrary("m", .{});
     bridge_module.addImport("meteorite_graph", graph_module);
