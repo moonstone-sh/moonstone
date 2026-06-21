@@ -456,6 +456,7 @@ pub const init_command = struct {
         } else if (std.mem.eql(u8, template, "meteorite")) {
             try project_dir.createDirPath(io, "src");
             try project_dir.createDirPath(io, "native/src");
+            try project_dir.createDirPath(io, "scripts");
 
             const files = .{
                 .{ "src/main.lua", T.meteorite_main },
@@ -465,6 +466,7 @@ pub const init_command = struct {
                 .{ "native/src/main.zig", T.meteorite_native_main },
                 .{ "build.zig", T.meteorite_build },
                 .{ "dev.lua", T.meteorite_dev },
+                .{ "scripts/guard.sh", T.meteorite_guard },
                 .{ ".luarc.json", T.meteorite_luarc },
                 .{ "README.md", T.meteorite_readme },
             };
@@ -526,7 +528,7 @@ pub const init_command = struct {
             try pkg.add_dependency(allocator, "moonstone/meteorite", "link:moonstone/meteorite@^0.1.0", .tool, false);
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "generate-graph"), try allocator.dupe(u8, "lua .moonstone/env/libexec/meteorite/src/meteorite/cli.lua graph src/main.lua .meteorite/graph/current hybrid"));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-server \"$@\""));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua dev.lua src/main.lua .meteorite/graph/current hybrid_dev"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "sh -c 'METEORITE_GUARD_EXCLUDE_PID=$$ sh scripts/guard.sh handoff; trap \"sh scripts/guard.sh cleanup >/dev/null 2>&1 || true\" EXIT INT TERM; lua dev.lua src/main.lua .meteorite/graph/current hybrid_dev'"));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "./dist/server"));
         }
 

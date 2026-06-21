@@ -6,7 +6,8 @@ local server = arg[5] or "dist/server"
 local state_dir = ".meteorite/dev"
 local pid_file = state_dir .. "/server.pid"
 local log_file = state_dir .. "/server.log"
-local port = "8080"
+local guard_script = "scripts/guard.sh"
+local dev_port = os.getenv("METEORITE_DEV_PORT") or "8080"
 
 local function path_exists(path)
   local file = io.open(path, "rb")
@@ -27,6 +28,11 @@ local function run(command)
   return ok == true or ok == 0 or code == 0
 end
 
+local function quiet_run(command)
+  local ok, _, code = os.execute(command)
+  return ok == true or ok == 0 or code == 0
+end
+
 local function capture(command)
   local pipe = io.popen(command, "r")
   if not pipe then return "" end
@@ -36,7 +42,7 @@ local function capture(command)
 end
 
 local function mkdir_p(path)
-  os.execute("mkdir -p " .. string.format("%q", path))
+  os.execute("mkdir -p " .. shell_quote(path))
 end
 
 local function read_file(path)
@@ -54,69 +60,49 @@ local function write_file(path, content)
   file:close()
 end
 
-local function processes_on_port()
-  return capture("lsof -i :" .. port .. " 2>/dev/null | awk '/LISTEN/ {print $2}' | sort -u")
+local function guard(command)
+  if not path_exists(guard_script) then return false end
+  local env = table.concat({
+    "METEORITE_DEV_STATE_DIR=" .. shell_quote(state_dir),
+    "METEORITE_DEV_PID_FILE=" .. shell_quote(pid_file),
+    "METEORITE_DEV_PORT=" .. shell_quote(dev_port),
+    "METEORITE_DEV_SERVER=" .. shell_quote(server),
+  }, " ")
+  return run(env .. " sh " .. shell_quote(guard_script) .. " " .. shell_quote(command))
+end
+
+local function pid_running(pid)
+  return pid ~= nil and quiet_run("kill -0 " .. tostring(pid) .. " >/dev/null 2>&1")
+end
+
+local function current_server_pid()
+  local pid = read_file(pid_file)
+  return pid and pid:match("%d+") or nil
+end
+
+local function server_running()
+  return pid_running(current_server_pid())
 end
 
 local function stop_server()
-  -- Kill by recorded PID first.
-  local pid = read_file(pid_file)
+  if guard("cleanup") then return end
+  local pid = current_server_pid()
   if pid then
-    pid = pid:match("%d+")
-    if pid then os.execute("kill " .. pid .. " >/dev/null 2>&1 || true") end
-  end
-  -- Also kill anything still listening on the dev port so restarts do not
-  -- pile up when the recorded PID is stale.
-  for stale_pid in processes_on_port():gmatch("%d+") do
-    os.execute("kill " .. stale_pid .. " >/dev/null 2>&1 || true")
-  end
-  -- Wait until the port is actually free.
-  for _ = 1, 30 do
-    if processes_on_port():match("%d+") then
-      os.execute("sleep 0.1")
-    else
-      break
-    end
+    os.execute("kill " .. pid .. " >/dev/null 2>&1 || true")
+    os.remove(pid_file)
   end
 end
 
 local function start_server()
-  stop_server()
-  -- TODO: implement a more robust child-process supervisor (e.g. luaposix
-  -- signal handling) so SIGINT/SIGTERM reliably reaps the server instead of
-  -- relying on a background guard shell.
-  local guard_script = state_dir .. "/guard.sh"
-  local guard_body = table.concat({
-    "#!/bin/sh",
-    "set -eu",
-    "trap 'kill $SERVER_PID 2>/dev/null || true' EXIT INT TERM",
-    shell_quote(server) .. " >" .. shell_quote(log_file) .. " 2>&1 & SERVER_PID=$!",
-    "echo $SERVER_PID > " .. shell_quote(pid_file),
-    "while kill -0 $SERVER_PID 2>/dev/null; do sleep 1; done",
-  }, "\n")
-  write_file(guard_script, guard_body)
-  os.execute("chmod +x " .. shell_quote(guard_script))
-  -- nohup detaches the guard from dev.lua's controlling terminal so the
-  -- dev loop can keep watching files. The guard still lives in the same
-  -- process group, so a terminal signal usually reaches it.
-  os.execute("nohup " .. shell_quote(guard_script) .. " >/dev/null 2>&1 &")
-  -- Wait for the server to actually listen before declaring it started.
-  local server_pid = nil
-  for _ = 1, 100 do
-    local pids = processes_on_port()
-    server_pid = pids:match("%d+")
-    if server_pid then break end
-    os.execute("sleep 0.1")
+  if not guard("assert-free") then stop_server() end
+  local command = shell_quote(server) .. " >" .. shell_quote(log_file) .. " 2>&1 & echo $!"
+  local pid = capture(command):match("%d+")
+  if pid then write_file(pid_file, pid .. "\n") end
+  os.execute("sleep 0.1")
+  if pid and not pid_running(pid) then
+    io.stderr:write("Meteorite dev server failed to stay running; see " .. log_file .. "\n")
   end
-  if server_pid then
-    write_file(pid_file, server_pid .. "\n")
-    io.stderr:write("Meteorite dev server: http://127.0.0.1:" .. port .. " pid=" .. server_pid .. " log=" .. log_file .. "\n")
-  else
-    io.stderr:write("Meteorite dev server: failed to start on port " .. port .. "; log follows:\n")
-    local log = read_file(log_file) or ""
-    io.stderr:write(log)
-    io.stderr:write("\n")
-  end
+  io.stderr:write("Meteorite dev server: http://127.0.0.1:" .. dev_port .. " pid=" .. tostring(pid or "?") .. " log=" .. log_file .. "\n")
 end
 
 local function source_fingerprint()
@@ -163,13 +149,10 @@ local function classify_changes(changes, force_build)
   if force_build then return "rebuild", "native/build input changed" end
   if #changes == 0 then return "none", "no graph partition changes" end
   local only_lua_chunks = true
-  local only_plugins = true
   for _, change in ipairs(changes) do
     if change.kind ~= "lua_chunk" and change.kind ~= "lua_chunks" and change.kind ~= "plugin" and change.kind ~= "plugins" then
       only_lua_chunks = false
-    end
-    if change.kind ~= "plugin" and change.kind ~= "plugins" then
-      only_plugins = false
+      break
     end
   end
   if only_lua_chunks then return "reload", "Lua/plugin chunk changes only" end
@@ -177,7 +160,7 @@ local function classify_changes(changes, force_build)
 end
 
 local function reload_lua()
-  return run("curl -fsS -X POST http://127.0.0.1:" .. port .. "/__meteorite/reload-lua >/dev/null")
+  return run("curl -fsS -X POST http://127.0.0.1:" .. dev_port .. "/__meteorite/reload-lua >/dev/null")
 end
 
 local function graph()
@@ -197,7 +180,7 @@ local function file_exists(path)
 end
 
 local function changed_native_or_build(previous, current)
-  if not previous then return false end
+  if not previous then return true end
   local function filter(text)
     local out = {}
     for line in tostring(text):gmatch("[^\n]+") do
@@ -224,7 +207,7 @@ local last = nil
 while running do
   local current = source_fingerprint()
   if current ~= last then
-    local force_build = not file_exists(server) or changed_native_or_build(last, current)
+    local force_build = changed_native_or_build(last, current) or not file_exists(server)
     last = current
     io.stderr:write("\nMeteorite dev: change detected; regenerating graph...\n")
     if graph() then
@@ -233,7 +216,7 @@ while running do
       local action, reason = classify_changes(changes, force_build)
       io.stderr:write("Meteorite dev: action=" .. action .. " reason=" .. reason .. "\n")
       if action == "none" then
-        if not processes_on_port():match("%d+") then start_server() end
+        if not server_running() then start_server() end
       elseif action == "reload" then
         if reload_lua() then
           io.stderr:write("Meteorite dev: Lua handlers and plugins reloaded in-process.\n")

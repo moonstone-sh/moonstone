@@ -99,6 +99,7 @@ pub const assets = struct {
             pub const meteorite_luarc = @embedFile("assets/templates/meteorite/.luarc.json");
             pub const meteorite_readme = @embedFile("assets/templates/meteorite/README.md");
             pub const meteorite_dev = @embedFile("assets/templates/meteorite/dev.lua");
+            pub const meteorite_guard = @embedFile("assets/templates/meteorite/scripts/guard.sh");
             pub const rust_bin_main = @embedFile("assets/templates/rust-bin/main.rs");
             pub const rust_bin_cargo = @embedFile("assets/templates/rust-bin/Cargo.toml");
             pub const bin_main = @embedFile("assets/templates/bin/main.c");

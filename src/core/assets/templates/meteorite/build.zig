@@ -3,6 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const mode = b.option([]const u8, "mode", "Meteorite build mode") orelse "hybrid";
+    const graph_input = b.option([]const u8, "graph-input", "Meteorite app entry Lua file") orelse "src/main.lua";
+    const graph_output = b.option([]const u8, "graph-output", "Generated Meteorite graph directory") orelse ".meteorite/graph/current";
     const hybrid_profile = b.option([]const u8, "hybrid-profile", "Hybrid profile") orelse "default";
     const backend = b.option([]const u8, "backend", "HTTP backend: std_http or fast_http") orelse "std_http";
     const fast_http_strategy = b.option([]const u8, "fast-http-strategy", "fast_http strategy: threaded_probe or pool") orelse "threaded_probe";
@@ -28,14 +30,7 @@ pub fn build(b: *std.Build) void {
     const meteorite_root = ".moonstone/env/libexec/meteorite";
     const lua_root = ".moonstone/env/libexec/lua/files";
 
-    const graph_step = b.addSystemCommand(&.{
-        ".moonstone/env/bin/lua",
-        meteorite_root ++ "/src/meteorite/cli.lua",
-        "graph",
-        "src/main.lua",
-        ".meteorite/graph/current",
-        mode,
-    });
+    const graph_step = b.addSystemCommand(&.{ ".moonstone/env/bin/lua", meteorite_root ++ "/src/meteorite/cli.lua", "graph", graph_input, graph_output, mode });
 
     const build_info_content = std.fmt.allocPrint(b.allocator,
         \\const builtin = @import("builtin");
@@ -58,7 +53,7 @@ pub fn build(b: *std.Build) void {
         \\
     , .{ mode, backend, fast_http_strategy, fast_http_workers, fast_http_queue, lua_runtime, hybrid_profile, lua_state_strategy, router_dispatch }) catch @panic("OOM");
     const write_build_info = b.addWriteFiles();
-    const build_info_file = write_build_info.add(".meteorite/graph/current/build_info.zig", build_info_content);
+    const build_info_file = write_build_info.add(std.fs.path.join(b.allocator, &.{ graph_output, "build_info.zig" }) catch @panic("OOM"), build_info_content);
     graph_step.step.dependOn(&write_build_info.step);
 
     const pattern_module = b.createModule(.{
@@ -72,12 +67,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const graph_module = b.createModule(.{
-        .root_source_file = b.path(".meteorite/graph/current/graph.zig"),
+        .root_source_file = b.path(std.fs.path.join(b.allocator, &.{ graph_output, "graph.zig" }) catch @panic("OOM")),
         .target = target,
         .optimize = optimize,
     });
     const ctx_module = b.createModule(.{
-        .root_source_file = b.path(".meteorite/graph/current/ctx.zig"),
+        .root_source_file = b.path(std.fs.path.join(b.allocator, &.{ graph_output, "ctx.zig" }) catch @panic("OOM")),
         .target = target,
         .optimize = optimize,
     });
