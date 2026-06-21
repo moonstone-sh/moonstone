@@ -35,10 +35,12 @@ return ballad.partiture(function(p)
 end)
 ```
 
-Use `mode = "static"` for Zig-only releases. Static mode fails with source
-locations if inline Lua handlers, Lua file/module handlers, or scoped Lua plugins
-remain in the graph. Use `mode = "hybrid"` when shipping Lua handlers/plugins;
-the export includes lifted inline chunks and Moonstone Lua module/C-module trees.
+Use `mode = "static"` for Zig-only releases. Static and hybrid validate the
+same graph: Lua may produce the graph, but static fails with source locations if
+Lua runtime execution nodes remain. Use `mode = "hybrid"` when shipping Lua
+handlers/plugins; same-host exports include lifted inline chunks and Moonstone
+Lua module/C-module trees, while cross-target hybrid exports require target Lua
+runtime source facts so the release can materialize target Lua and modules.
 
 ## Build flags
 
