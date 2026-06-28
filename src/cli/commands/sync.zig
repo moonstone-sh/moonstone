@@ -307,6 +307,47 @@ pub const SyncCommand = struct {
             },
         }
 
+        // Enrich store-hit artifacts with source provenance from the registry.
+        // When an artifact was already in the local store, the initial materialization
+        // may have predated registry descriptors gaining source_url/source_kind.
+        // This fetches the source payload and updates the on-disk manifest so that
+        // downstream tools (e.g. Meteorite cross-compilation) can access source archives.
+        if (rt_res.location == .local_store and !self.offline) {
+            for (registries) |reg| {
+                const remote_res = coordinator.resolve_remote(
+                    pkg_name,
+                    pkg_ver,
+                    reg.url,
+                    reg.token,
+                    .{
+                        .on_event = @import("command.zig").onResolveEvent,
+                        .on_event_context = &resolve_cb_ctx,
+                        .offline = false,
+                    },
+                    env,
+                ) catch null;
+                if (remote_res) |rr| {
+                    defer {
+                        var mut_desc = rr.desc;
+                        mut_desc.deinit(allocator);
+                        allocator.free(rr.descriptor_path);
+                    }
+                    mat.enrich_source_provenance(
+                        rt_mat_res.path,
+                        reg.url,
+                        reg.token,
+                        rr.descriptor_path,
+                        rr.desc,
+                        rr.artifact_idx,
+                    ) catch |err| {
+                        // Best-effort: enrichment failure should not break sync
+                        if (!self.json) try stdout.print("  source provenance enrichment skipped: {s}\n", .{@errorName(err)});
+                    };
+                    break;
+                }
+            }
+        }
+
         mat.runtime_path = rt_mat_res.path;
 
         const rt_recipe_options = moonstone.store.facade.RecipeOptions{
@@ -1031,6 +1072,7 @@ pub const SyncCommand = struct {
                         const store_source = if (store_prov_opt) |store_prov| store_prov.source else "";
                         const store_source_kind = if (store_prov_opt) |store_prov| store_prov.source_kind else "";
                         const store_source_payload = if (store_prov_opt) |store_prov| store_prov.source_payload else "";
+                        const store_source_url = if (store_prov_opt) |store_prov| store_prov.source_url else "";
                         const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
                         const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
                         const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
@@ -1061,6 +1103,7 @@ pub const SyncCommand = struct {
                             },
                             .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                             .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
+                            .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                             .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
                             .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
                             .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
@@ -1134,6 +1177,7 @@ pub const SyncCommand = struct {
                 const store_source = if (store_prov_opt) |store_prov| store_prov.source else "";
                 const store_source_kind = if (store_prov_opt) |store_prov| store_prov.source_kind else "";
                 const store_source_payload = if (store_prov_opt) |store_prov| store_prov.source_payload else "";
+                const store_source_url = if (store_prov_opt) |store_prov| store_prov.source_url else "";
                 const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
                 const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
                 const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
@@ -1164,6 +1208,7 @@ pub const SyncCommand = struct {
                     },
                     .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                     .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
+                    .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                     .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
                     .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
                     .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},

@@ -78,6 +78,7 @@ pub const Materializer = struct {
                 return .{
                     .source_kind = src.kind,
                     .source_payload_path = payload_path,
+                    .source_url = source_url,
                 };
             }
         }
@@ -86,6 +87,7 @@ pub const Materializer = struct {
             return .{
                 .source_kind = art.kind,
                 .source_payload_path = blob_path,
+                .source_url = art.source_url,
             };
         }
 
@@ -430,5 +432,133 @@ pub const Materializer = struct {
             else => return error.UnsupportedOS,
         };
         return try std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ arch, os });
+    }
+
+    /// Enriches an already-materialized store artifact with source provenance
+    /// from the registry descriptor. Called for store hits during sync to
+    /// ensure source_payload_path and source_kind are updated when the
+    /// registry descriptor gains source provenance after the initial download.
+    ///
+    /// Enrichment Invariant Contract:
+    ///
+    ///   Store artifact content is immutable.
+    ///   Store manifest provenance may be enriched only when it does not change:
+    ///     - files/ directory (artifact content)
+    ///     - artifact_hash (immutable identity)
+    ///     - recipe_hash (build reproducibility identity)
+    ///     - target, ABI, runtime identity
+    ///
+    ///   Enrichment may update only:
+    ///     - origin.source_kind  (e.g. "runtime" → "puc_lua_source")
+    ///     - origin.source_payload  (relative path: "sources/source.tar.gz")
+    ///     - origin.source_url  (registry URL for re-fetching)
+    ///     - artifact.source_hash  (content hash of the source archive)
+    ///
+    ///   Absolute paths may appear in query/hydration outputs, never in portable
+    ///   manifests or lockfiles. The manifest stores only relative payload paths.
+    ///   The store query computes absolute paths at read time for execution.
+    ///
+    ///   Provenance chain:
+    ///     registry descriptor
+    ///       → source payload cached under store artifact sources/
+    ///       → manifest enriched with portable relative provenance
+    ///       → lockfile captures portable provenance
+    ///       → Ballad hydrates absolute execution path
+    ///       → Meteorite release copies source into release-relative runtime/source/
+    pub fn enrich_source_provenance(
+        self: *Materializer,
+        store_path: []const u8,
+        registry_url: []const u8,
+        token: ?[]const u8,
+        descriptor_path: []const u8,
+        desc: manifest.RemotePackageDescriptor,
+        artifact_idx: usize,
+    ) !void {
+        const art = desc.artifact[artifact_idx];
+
+        // No source URL in the descriptor → nothing to enrich
+        if (art.source_url.len == 0) return;
+
+        // Read existing manifest
+        const manifest_path = try std.fs.path.join(self.allocator, &.{ store_path, "manifest.toml" });
+        defer self.allocator.free(manifest_path);
+
+        const manifest_content = std.Io.Dir.cwd().readFileAlloc(self.io, manifest_path, self.allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+            if (err == error.FileNotFound) return;
+            return err;
+        };
+        defer self.allocator.free(manifest_content);
+
+        var existing = try manifest.StoreManifest.parse(self.allocator, manifest_content);
+        defer existing.deinit(self.allocator);
+
+        // Already has non-"runtime" source_kind → already enriched
+        if (existing.origin.source_kind.len > 0 and
+            !std.mem.eql(u8, existing.origin.source_kind, "runtime"))
+        {
+            return;
+        }
+
+        // Fetch the source blob from the registry
+        var client = registry.RegistryClient.init(self.allocator, self.io, registry_url, token, self.environ_map);
+        defer client.deinit();
+
+        const source_blob = try client.fetch_blob(descriptor_path, art.source_url);
+        defer self.allocator.free(source_blob);
+
+        // Verify hash if source_hash is set
+        if (art.source_hash.len > 0) {
+            var hash_buf: [32]u8 = undefined;
+            std.crypto.hash.Blake3.hash(source_blob, &hash_buf, .{});
+            const actual_hex = std.fmt.bytesToHex(hash_buf, .lower);
+            const actual_hash = try std.fmt.allocPrint(self.allocator, "b3:{s}", .{&actual_hex});
+            defer self.allocator.free(actual_hash);
+            if (!std.mem.eql(u8, actual_hash, art.source_hash)) return error.HashMismatch;
+        }
+
+        // Determine the source format and payload name
+        const source_format = if (art.source_format.len > 0) art.source_format else "tar.gz";
+        const payload_name = try std.fmt.allocPrint(self.allocator, "source.{s}", .{source_format});
+        defer self.allocator.free(payload_name);
+
+        // Write the source blob to the store's sources/ directory
+        const sources_dir = try std.fs.path.join(self.allocator, &.{ store_path, "sources" });
+        defer self.allocator.free(sources_dir);
+        try std.Io.Dir.cwd().createDirPath(self.io, sources_dir);
+
+        const payload_dest = try std.fs.path.join(self.allocator, &.{ sources_dir, payload_name });
+        defer self.allocator.free(payload_dest);
+
+        const payload_file = try std.Io.Dir.cwd().createFile(self.io, payload_dest, .{});
+        try payload_file.writeStreamingAll(self.io, source_blob);
+        payload_file.close(self.io);
+
+        // Update the manifest with new source provenance
+        const new_source_kind = if (art.source_kind.len > 0) art.source_kind else art.kind;
+        const new_source_payload = try std.fmt.allocPrint(self.allocator, "sources/{s}", .{payload_name});
+        defer self.allocator.free(new_source_payload);
+        const new_source_hash = if (art.source_hash.len > 0) art.source_hash else art.hash;
+
+        // Free old origin strings that we are about to replace
+        self.allocator.free(existing.origin.source_kind);
+        self.allocator.free(existing.origin.source_payload);
+        self.allocator.free(existing.origin.source_url);
+        self.allocator.free(existing.artifact.source_hash);
+
+        // Set new values (serialize will read these)
+        existing.origin.source_kind = try self.allocator.dupe(u8, new_source_kind);
+        existing.origin.source_payload = try self.allocator.dupe(u8, new_source_payload);
+        existing.origin.source_url = try self.allocator.dupe(u8, art.source_url);
+        existing.artifact.source_hash = try self.allocator.dupe(u8, new_source_hash);
+
+        // Serialize and write the updated manifest
+        var aw = std.Io.Writer.Allocating.init(self.allocator);
+        defer aw.deinit();
+        try existing.serialize(self.allocator, &aw.writer);
+        try aw.writer.flush();
+
+        const manifest_file = try std.Io.Dir.cwd().createFile(self.io, manifest_path, .{});
+        defer manifest_file.close(self.io);
+        try manifest_file.writeStreamingAll(self.io, aw.writer.buffer[0..aw.writer.end]);
     }
 };

@@ -508,6 +508,9 @@ pub const RemoteArtifact = struct {
     url: []const u8,
     hash: []const u8,
     source_hash: []const u8 = "",
+    source_url: []const u8 = "",
+    source_kind: []const u8 = "",
+    source_format: []const u8 = "",
     format: []const u8,
     bytes: ?u64 = null,
     recipe_hash: []const u8 = "",
@@ -530,6 +533,9 @@ pub const RemoteArtifact = struct {
         res.url = try allocator.dupe(u8, self.url);
         res.hash = try allocator.dupe(u8, self.hash);
         res.source_hash = try allocator.dupe(u8, self.source_hash);
+        res.source_url = try allocator.dupe(u8, self.source_url);
+        res.source_kind = try allocator.dupe(u8, self.source_kind);
+        res.source_format = try allocator.dupe(u8, self.source_format);
         res.format = try allocator.dupe(u8, self.format);
         res.bytes = self.bytes;
         res.recipe_hash = try allocator.dupe(u8, self.recipe_hash);
@@ -551,6 +557,9 @@ pub const RemoteArtifact = struct {
         allocator.free(self.url);
         allocator.free(self.hash);
         allocator.free(self.source_hash);
+        allocator.free(self.source_url);
+        allocator.free(self.source_kind);
+        allocator.free(self.source_format);
         allocator.free(self.format);
         allocator.free(self.recipe_hash);
         if (self.materialize) |*m| m.deinit(allocator);
@@ -731,7 +740,7 @@ pub const RemotePackageDescriptor = struct {
                             .hash = "",
                             .format = "",
                         };
-                        art.id = try allocator.dupe(u8, a_table.get("id").?.string);
+                        art.id = if (a_table.get("id")) |id| try allocator.dupe(u8, id.string) else try allocator.dupe(u8, "");
                         art.kind = try allocator.dupe(u8, a_table.get("kind").?.string);
                         art.target = if (a_table.get("target")) |target| try allocator.dupe(u8, target.string) else try allocator.dupe(u8, "");
                         art.lua_abi = if (a_table.get("lua_abi")) |abi| try allocator.dupe(u8, abi.string) else try allocator.dupe(u8, "");
@@ -743,6 +752,9 @@ pub const RemotePackageDescriptor = struct {
                         art.url = try allocator.dupe(u8, a_table.get("url").?.string);
                         art.hash = try allocator.dupe(u8, a_table.get("hash").?.string);
                         art.source_hash = if (a_table.get("source_hash")) |sh| try allocator.dupe(u8, sh.string) else try allocator.dupe(u8, "");
+                        art.source_url = if (a_table.get("source_url")) |su| try allocator.dupe(u8, su.string) else try allocator.dupe(u8, "");
+                        art.source_kind = if (a_table.get("source_kind")) |sk| try allocator.dupe(u8, sk.string) else try allocator.dupe(u8, "");
+                        art.source_format = if (a_table.get("source_format")) |sf| try allocator.dupe(u8, sf.string) else try allocator.dupe(u8, "");
                         art.format = try allocator.dupe(u8, a_table.get("format").?.string);
                         if (a_table.get("bytes")) |b| art.bytes = @intCast(b.integer) else art.bytes = null;
                         if (a_table.get("recipe_hash")) |rh| art.recipe_hash = try allocator.dupe(u8, rh.string) else art.recipe_hash = "";
@@ -920,6 +932,7 @@ pub const StoreManifest = struct {
         source: []const u8 = "",
         source_kind: []const u8 = "",
         source_payload: []const u8 = "",
+        source_url: []const u8 = "",
         rockspec: []const u8 = "",
         rockspec_hash: []const u8 = "",
         rockspec_payload: []const u8 = "",
@@ -952,6 +965,7 @@ pub const StoreManifest = struct {
         allocator.free(self.origin.source);
         allocator.free(self.origin.source_kind);
         allocator.free(self.origin.source_payload);
+        allocator.free(self.origin.source_url);
         allocator.free(self.origin.rockspec);
         allocator.free(self.origin.rockspec_hash);
         allocator.free(self.origin.rockspec_payload);
@@ -988,6 +1002,7 @@ pub const StoreManifest = struct {
         try writer.print("source = \"{s}\"\n", .{self.origin.source});
         if (self.origin.source_kind.len > 0) try writer.print("source_kind = \"{s}\"\n", .{self.origin.source_kind});
         if (self.origin.source_payload.len > 0) try writer.print("source_payload = \"{s}\"\n", .{self.origin.source_payload});
+        if (self.origin.source_url.len > 0) try writer.print("source_url = \"{s}\"\n", .{self.origin.source_url});
         if (self.origin.rockspec.len > 0) try writer.print("rockspec = \"{s}\"\n", .{self.origin.rockspec});
         if (self.origin.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{self.origin.rockspec_hash});
         if (self.origin.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{self.origin.rockspec_payload});
@@ -1733,6 +1748,40 @@ test "RemotePackageDescriptor ignores malformed table pointer runtime string" {
     try std.testing.expectEqualStrings("", desc.artifact[0].runtime);
 }
 
+test "RemotePackageDescriptor parses artifact source provenance" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "moonstone/lua"
+        \\version = "5.4.7"
+        \\kind = "runtime"
+        \\
+        \\[[artifacts]]
+        \\kind = "runtime"
+        \\target = "aarch64-macos"
+        \\lua_api = "lua54"
+        \\lua_abi = "lua54"
+        \\format = "tar.zst"
+        \\url = "blobs/b3/runtime.tar.zst"
+        \\hash = "b3:runtime"
+        \\source_hash = "b3:source"
+        \\source_url = "blobs/b3/lua-5.4.7.tar.gz"
+        \\source_kind = "puc_lua_source"
+        \\source_format = "tar.gz"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
+    try std.testing.expectEqualStrings("b3:source", desc.artifact[0].source_hash);
+    try std.testing.expectEqualStrings("blobs/b3/lua-5.4.7.tar.gz", desc.artifact[0].source_url);
+    try std.testing.expectEqualStrings("puc_lua_source", desc.artifact[0].source_kind);
+    try std.testing.expectEqualStrings("tar.gz", desc.artifact[0].source_format);
+}
+
 test "StoreManifest round-trip with dependencies" {
     const toml_text =
         \\
@@ -1780,4 +1829,135 @@ test "StoreManifest round-trip with dependencies" {
     try std.testing.expectEqualStrings(">=1.0.0", sm.dependencies[0].constraint);
     try std.testing.expectEqualStrings("rocks", sm.dependencies[0].resolver.?);
     try std.testing.expectEqual(DependencyRole.runtime, sm.dependencies[0].role);
+}
+
+test "StoreManifest source provenance enrichment preserves artifact identity" {
+    // Simulate the before-enrichment state: source_kind = "runtime" (fallback)
+    const before =
+        \\[artifact]
+        \\name = "moonstone/lua"
+        \\version = "5.4.7"
+        \\kind = "runtime"
+        \\source_hash = "b3:c93068e49db579e7b12639eed8bd5706aa84a997601ff776d8a4e7ef8d163077"
+        \\recipe_hash = "b3:d1d80b54ca5882dc885d65536acd15bf98dd1709d9f91e29b2107af45ba5d6be"
+        \\artifact_hash = "b3:c93068e49db579e7b12639eed8bd5706aa84a997601ff776d8a4e7ef8d163077"
+        \\target = "aarch64-macos"
+        \\
+        \\[origin]
+        \\resolver = "moonstone"
+        \\source = "blobs/b3/c9/30/c93068e49db579e7b12639eed8bd5706aa84a997601ff776d8a4e7ef8d163077.tar.zst"
+        \\source_kind = "runtime"
+        \\source_payload = "sources/blob.tar.zst"
+        \\
+        \\[compat]
+        \\runtime_version = "lua@unknown"
+        \\lua_abi = "lua54"
+        \\runtime_artifact_hash = ""
+        \\
+        \\[provides]
+        \\runtime = [{ name = "lua", version = "5.4.7", abi = "lua54" }]
+        \\bin = [{ name = "lua", path = "bin/lua" }, { name = "luac", path = "bin/luac" }]
+    ;
+
+    var sm_before = try StoreManifest.parse(std.testing.allocator, before);
+    defer sm_before.deinit(std.testing.allocator);
+
+    // Capture immutable identity fields before enrichment
+    const artifact_hash_before = sm_before.artifact.artifact_hash;
+    const recipe_hash_before = sm_before.artifact.recipe_hash;
+    const target_before = sm_before.artifact.target;
+    const name_before = sm_before.artifact.name;
+    const version_before = sm_before.artifact.version;
+
+    // Simulate enrichment: update provenance metadata only
+    std.testing.allocator.free(sm_before.origin.source_kind);
+    std.testing.allocator.free(sm_before.origin.source_payload);
+    std.testing.allocator.free(sm_before.artifact.source_hash);
+
+    sm_before.origin.source_kind = try std.testing.allocator.dupe(u8, "puc_lua_source");
+    sm_before.origin.source_payload = try std.testing.allocator.dupe(u8, "sources/source.tar.gz");
+    sm_before.origin.source_url = try std.testing.allocator.dupe(u8, "https://moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz");
+    sm_before.artifact.source_hash = try std.testing.allocator.dupe(u8, "b3:aabbccdd1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+
+    // Serialize the enriched manifest
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+    try sm_before.serialize(std.testing.allocator, &aw.writer);
+    try aw.writer.flush();
+    const serialized = aw.writer.buffer[0..aw.writer.end];
+
+    // Parse it back
+    var sm_after = try StoreManifest.parse(std.testing.allocator, serialized);
+    defer sm_after.deinit(std.testing.allocator);
+
+    // Assert: provenance metadata was enriched
+    try std.testing.expectEqualStrings("puc_lua_source", sm_after.origin.source_kind);
+    try std.testing.expectEqualStrings("sources/source.tar.gz", sm_after.origin.source_payload);
+    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz", sm_after.origin.source_url);
+    try std.testing.expectEqualStrings("b3:aabbccdd1234567890abcdef1234567890abcdef1234567890abcdef1234567890", sm_after.artifact.source_hash);
+
+    // Assert: artifact identity is unchanged
+    try std.testing.expectEqualStrings(artifact_hash_before, sm_after.artifact.artifact_hash);
+    try std.testing.expectEqualStrings(recipe_hash_before, sm_after.artifact.recipe_hash);
+    try std.testing.expectEqualStrings(target_before, sm_after.artifact.target);
+    try std.testing.expectEqualStrings(name_before, sm_after.artifact.name);
+    try std.testing.expectEqualStrings(version_before, sm_after.artifact.version);
+
+    // Assert: source_payload is relative (not absolute)
+    try std.testing.expect(!std.fs.path.isAbsolute(sm_after.origin.source_payload));
+    try std.testing.expect(std.mem.startsWith(u8, sm_after.origin.source_payload, "sources/"));
+
+    // Assert: serialized manifest contains no absolute paths in provenance fields
+    // (source_url is a URL, not a filesystem path — that's allowed)
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "/Users/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "/home/") == null);
+}
+
+test "StoreManifest source_url round-trips through serialize and parse" {
+    const toml_with_url =
+        \\[artifact]
+        \\name = "moonstone/lua"
+        \\version = "5.4.7"
+        \\kind = "runtime"
+        \\source_hash = "b3:sourcehash"
+        \\recipe_hash = "b3:recipehash"
+        \\artifact_hash = "b3:artifacthash"
+        \\target = "aarch64-macos"
+        \\
+        \\[origin]
+        \\resolver = "moonstone"
+        \\source = "blobs/b3/ar/ti/facthash.tar.zst"
+        \\source_kind = "puc_lua_source"
+        \\source_payload = "sources/source.tar.gz"
+        \\source_url = "https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
+        \\
+        \\[compat]
+        \\runtime_version = "lua@5.4.7"
+        \\lua_abi = "lua54"
+        \\runtime_artifact_hash = ""
+        \\
+        \\[provides]
+        \\runtime = [{ name = "lua", version = "5.4.7", abi = "lua54" }]
+    ;
+
+    var sm = try StoreManifest.parse(std.testing.allocator, toml_with_url);
+    defer sm.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("puc_lua_source", sm.origin.source_kind);
+    try std.testing.expectEqualStrings("sources/source.tar.gz", sm.origin.source_payload);
+    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm.origin.source_url);
+
+    // Serialize and re-parse
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+    try sm.serialize(std.testing.allocator, &aw.writer);
+    try aw.writer.flush();
+    const serialized = aw.writer.buffer[0..aw.writer.end];
+
+    var sm2 = try StoreManifest.parse(std.testing.allocator, serialized);
+    defer sm2.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("puc_lua_source", sm2.origin.source_kind);
+    try std.testing.expectEqualStrings("sources/source.tar.gz", sm2.origin.source_payload);
+    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm2.origin.source_url);
 }

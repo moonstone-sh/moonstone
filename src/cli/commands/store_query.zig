@@ -24,6 +24,7 @@ const QueryResult = struct {
     source_kind: ?[]const u8,
     source_payload: ?[]const u8,
     source_payload_path: ?[]const u8,
+    source_url: ?[]const u8,
     rockspec_payload: ?[]const u8,
     rockspec_payload_path: ?[]const u8,
     manifest_path: []const u8,
@@ -46,6 +47,7 @@ const QueryResult = struct {
         if (self.source_kind) |v| allocator.free(v);
         if (self.source_payload) |v| allocator.free(v);
         if (self.source_payload_path) |v| allocator.free(v);
+        if (self.source_url) |v| allocator.free(v);
         if (self.rockspec_payload) |v| allocator.free(v);
         if (self.rockspec_payload_path) |v| allocator.free(v);
         allocator.free(self.manifest_path);
@@ -186,6 +188,7 @@ fn makeResult(ctx: *router.Context, sm: moonstone.domain.manifest.StoreManifest,
         .source_kind = if (sm.origin.source_kind.len > 0) try ctx.allocator.dupe(u8, sm.origin.source_kind) else null,
         .source_payload = source_payload,
         .source_payload_path = source_payload_path,
+        .source_url = if (sm.origin.source_url.len > 0) try ctx.allocator.dupe(u8, sm.origin.source_url) else null,
         .rockspec_payload = rockspec_payload,
         .rockspec_payload_path = rockspec_payload_path,
         .manifest_path = try ctx.allocator.dupe(u8, manifest_path),
@@ -254,6 +257,7 @@ fn writeJsonResults(allocator: std.mem.Allocator, stdout: *std.Io.Writer, result
         try writeJsonNullableStringField(stdout, "source_kind", result.source_kind, false);
         try writeJsonNullableStringField(stdout, "source_payload", result.source_payload, false);
         try writeJsonNullableStringField(stdout, "source_payload_path", result.source_payload_path, false);
+        try writeJsonNullableStringField(stdout, "source_url", result.source_url, false);
         try writeJsonNullableStringField(stdout, "rockspec_payload", result.rockspec_payload, false);
         try writeJsonNullableStringField(stdout, "rockspec_payload_path", result.rockspec_payload_path, false);
         try writeJsonStringField(stdout, "manifest_path", result.manifest_path, false);

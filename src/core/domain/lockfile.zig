@@ -17,6 +17,7 @@ pub const LockEntry = struct {
     source: []const u8 = &.{},
     source_kind: []const u8 = &.{},
     source_payload: []const u8 = &.{},
+    source_url: []const u8 = &.{},
     rockspec: []const u8 = &.{},
     rockspec_hash: []const u8 = &.{},
     rockspec_payload: []const u8 = &.{},
@@ -38,6 +39,7 @@ pub const LockEntry = struct {
         if (self.source.len > 0) allocator.free(self.source);
         if (self.source_kind.len > 0) allocator.free(self.source_kind);
         if (self.source_payload.len > 0) allocator.free(self.source_payload);
+        if (self.source_url.len > 0) allocator.free(self.source_url);
         if (self.rockspec.len > 0) allocator.free(self.rockspec);
         if (self.rockspec_hash.len > 0) allocator.free(self.rockspec_hash);
         if (self.rockspec_payload.len > 0) allocator.free(self.rockspec_payload);
@@ -66,15 +68,41 @@ pub const LockFile = struct {
     }
 
     pub fn serialize(self: LockFile, allocator: std.mem.Allocator, writer: anytype) !void {
-        const S = struct {
-            package: []const LockEntry,
-        };
-
-        const s: S = .{
-            .package = self.packages.items,
-        };
-
-        try toml.serialize(allocator, s, writer);
+        // Manual serialization to avoid comptime branch limit in toml.serialize
+        // when the LockEntry struct has many fields.
+        _ = allocator;
+        for (self.packages.items, 0..) |entry, i| {
+            if (i > 0) try writer.print("\n", .{});
+            try writer.print("[[package]]\n", .{});
+            try writer.print("name = \"{s}\"\n", .{entry.name});
+            try writer.print("version = \"{s}\"\n", .{entry.version});
+            try writer.print("kind = \"{s}\"\n", .{@tagName(entry.kind)});
+            if (entry.source_hash.len > 0) try writer.print("source_hash = \"{s}\"\n", .{entry.source_hash});
+            try writer.print("recipe_hash = \"{s}\"\n", .{entry.recipe_hash});
+            try writer.print("artifact_hash = \"{s}\"\n", .{entry.artifact_hash});
+            try writer.print("runtime = \"{s}\"\n", .{entry.runtime});
+            try writer.print("lua_abi = \"{s}\"\n", .{entry.lua_abi});
+            try writer.print("target = \"{s}\"\n", .{entry.target});
+            try writer.print("constellation = \"{s}\"\n", .{entry.constellation});
+            if (entry.source.len > 0) try writer.print("source = \"{s}\"\n", .{entry.source});
+            if (entry.source_kind.len > 0) try writer.print("source_kind = \"{s}\"\n", .{entry.source_kind});
+            if (entry.source_payload.len > 0) try writer.print("source_payload = \"{s}\"\n", .{entry.source_payload});
+            if (entry.source_url.len > 0) try writer.print("source_url = \"{s}\"\n", .{entry.source_url});
+            if (entry.rockspec.len > 0) try writer.print("rockspec = \"{s}\"\n", .{entry.rockspec});
+            if (entry.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{entry.rockspec_hash});
+            if (entry.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{entry.rockspec_payload});
+            if (entry.resolver.len > 0) try writer.print("resolver = \"{s}\"\n", .{entry.resolver});
+            if (entry.link_mode.len > 0) try writer.print("link_mode = \"{s}\"\n", .{entry.link_mode});
+            if (!entry.reproducible) try writer.print("reproducible = false\n", .{});
+            if (entry.roles.len > 0) {
+                try writer.print("roles = [", .{});
+                for (entry.roles, 0..) |role, j| {
+                    if (j > 0) try writer.print(", ", .{});
+                    try writer.print("\"{s}\"", .{role});
+                }
+                try writer.print("]\n", .{});
+            }
+        }
     }
 
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !LockFile {
@@ -113,6 +141,7 @@ pub const LockFile = struct {
                     .source = if (t.get("source")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .source_kind = if (t.get("source_kind")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .source_payload = if (t.get("source_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .source_url = if (t.get("source_url")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .rockspec = if (t.get("rockspec")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .rockspec_hash = if (t.get("rockspec_hash")) |s| try allocator.dupe(u8, s.string) else &.{},
                     .rockspec_payload = if (t.get("rockspec_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
@@ -227,4 +256,54 @@ test "lockfile roundtrip" {
     try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_hash, lf2.packages.items[0].rockspec_hash);
     try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_payload, lf2.packages.items[0].rockspec_payload);
     try std.testing.expectEqual(lf.packages.items[1].reproducible, lf2.packages.items[1].reproducible);
+}
+
+test "lockfile source_url round-trips through serialize and parse" {
+    const toml_text =
+        \\[[package]]
+        \\name = "moonstone/lua"
+        \\version = "5.4.7"
+        \\kind = "runtime"
+        \\source_hash = "b3:srchash"
+        \\recipe_hash = "b3:recipehash"
+        \\artifact_hash = "b3:artihash"
+        \\runtime = "lua54"
+        \\lua_abi = "lua54"
+        \\target = "native"
+        \\constellation = "default"
+        \\resolver = "moonstone"
+        \\source = "registry"
+        \\source_kind = "puc_lua_source"
+        \\source_payload = "sources/source.tar.gz"
+        \\source_url = "https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
+    ;
+
+    var lf = try LockFile.parse(std.testing.allocator, toml_text);
+    defer lf.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), lf.packages.items.len);
+    const entry = lf.packages.items[0];
+    try std.testing.expectEqualStrings("puc_lua_source", entry.source_kind);
+    try std.testing.expectEqualStrings("sources/source.tar.gz", entry.source_payload);
+    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry.source_url);
+
+    // Serialize and re-parse
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+    try lf.serialize(std.testing.allocator, &aw.writer);
+    try aw.writer.flush();
+    const serialized = aw.writer.buffer[0..aw.writer.end];
+
+    var lf2 = try LockFile.parse(std.testing.allocator, serialized);
+    defer lf2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), lf2.packages.items.len);
+    const entry2 = lf2.packages.items[0];
+    try std.testing.expectEqualStrings("puc_lua_source", entry2.source_kind);
+    try std.testing.expectEqualStrings("sources/source.tar.gz", entry2.source_payload);
+    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry2.source_url);
+
+    // Assert: no absolute filesystem paths in serialized lockfile
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "/Users/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "/home/") == null);
 }

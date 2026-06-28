@@ -7,6 +7,7 @@ pub const StoreProvenance = struct {
     source: []const u8,
     source_kind: []const u8,
     source_payload: []const u8,
+    source_url: []const u8,
     rockspec: []const u8,
     rockspec_hash: []const u8,
     rockspec_payload: []const u8,
@@ -17,6 +18,7 @@ pub const StoreProvenance = struct {
         allocator.free(self.source);
         allocator.free(self.source_kind);
         allocator.free(self.source_payload);
+        allocator.free(self.source_url);
         allocator.free(self.rockspec);
         allocator.free(self.rockspec_hash);
         allocator.free(self.rockspec_payload);
@@ -38,6 +40,7 @@ pub fn read(allocator: std.mem.Allocator, io: std.Io, artifact_path: []const u8)
         .source = try allocator.dupe(u8, sm.origin.source),
         .source_kind = try allocator.dupe(u8, sm.origin.source_kind),
         .source_payload = try allocator.dupe(u8, sm.origin.source_payload),
+        .source_url = try allocator.dupe(u8, sm.origin.source_url),
         .rockspec = try allocator.dupe(u8, sm.origin.rockspec),
         .rockspec_hash = try allocator.dupe(u8, sm.origin.rockspec_hash),
         .rockspec_payload = try allocator.dupe(u8, sm.origin.rockspec_payload),

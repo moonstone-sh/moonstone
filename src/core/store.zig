@@ -26,6 +26,7 @@ pub const RecipeOptions = struct {
 pub const SourcePayloadOptions = struct {
     source_kind: []const u8 = "",
     source_payload_path: ?[]const u8 = null,
+    source_url: []const u8 = "",
     rockspec: []const u8 = "",
     rockspec_hash: []const u8 = "",
     rockspec_payload_path: ?[]const u8 = null,
@@ -406,6 +407,7 @@ pub fn commit_to_store_with_sources(
             .source = source,
             .source_kind = source_payloads.source_kind,
             .source_payload = stored_source_payload,
+            .source_url = source_payloads.source_url,
             .rockspec = source_payloads.rockspec,
             .rockspec_hash = source_payloads.rockspec_hash,
             .rockspec_payload = stored_rockspec_payload,
