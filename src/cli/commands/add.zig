@@ -320,7 +320,7 @@ pub const add_command = struct {
         profiler.spanCount("add.provider.plan", profile_span, "targets", targets.items.len);
         // Deinit moved to end of function
 
-        if (!self.json) try @import("command.zig").progress(stdout, "Solving requested dependencies...\n", .{});
+        if (!self.json) try @import("command.zig").renderSpinner(&resolve_cb_ctx, "Solving requested dependencies...", .{});
         var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
             .on_event = @import("command.zig").onSolverEvent,
             .on_event_context = &resolve_cb_ctx,
@@ -330,7 +330,17 @@ pub const add_command = struct {
         profile_span = profiler.now();
         solution = solver.solve(targets.items) catch |err| blk: {
             if (err == error.ArtifactNotFound) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
-            if (err == error.NoSolution) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
+            if (err == error.NoSolution) {
+                if (solver.last_conflict) |inc| {
+                    var aw = std.Io.Writer.Allocating.init(allocator);
+                    defer aw.deinit();
+                    try moonstone.resolution.solver.report.explain(&aw.writer, inc, allocator);
+                    ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, aw.writer.buffer[0..aw.writer.end]) } };
+                } else {
+                    ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "No compatible resolution could be found.") } };
+                }
+                return err;
+            }
             if (err == error.LinkedRuntimeAbiMismatch) {
                 if (provider_impl.linked_runtime_diagnostic) |diag| {
                     if (diag.suggested_role) |sr| {
@@ -343,6 +353,7 @@ pub const add_command = struct {
             return err;
         };
         profiler.spanCount("add.pubgrub.solve", profile_span, "packages", solution.count());
+        if (!self.json) try @import("command.zig").renderDone(&resolve_cb_ctx, "Resolved {d} dependencies.", .{solution.count()});
         defer {
             var sit = solution.iterator();
             while (sit.next()) |entry| {

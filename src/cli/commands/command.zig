@@ -243,6 +243,7 @@ pub fn reportError(
             }
         }
     } else {
+        try stdout.print("\x1b[2K\r", .{});
         if (detail) |d| {
             switch (d) {
                 .hash_mismatch => |hm| try stdout.print("Error: hash mismatch for {s}. Expected {s}, got {s}\n", .{ about, hm.expected, hm.got }),
@@ -306,12 +307,58 @@ pub const ResolveCallbackContext = struct {
     io: std.Io,
     stdout: *std.Io.Writer,
     emitter: ?*@import("ndjson.zig").Emitter = null,
+    spinner_frame: usize = 0,
 };
 
 pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
     try stdout.print(fmt, args);
     try stdout.flush();
 }
+
+const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+
+pub fn renderSpinner(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
+    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    context.spinner_frame +%= 1;
+    try context.stdout.print("\x1b[2K\r{s} ", .{frame});
+    try context.stdout.print(fmt, args);
+    try context.stdout.flush();
+}
+
+pub fn renderDone(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
+    try context.stdout.print("\x1b[2K\r⠿ ", .{});
+    try context.stdout.print(fmt, args);
+    try context.stdout.print("\n", .{});
+    try context.stdout.flush();
+}
+
+const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿" };
+
+pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: usize, comptime fmt: []const u8, args: anytype) !void {
+    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    context.spinner_frame +%= 1;
+    
+    try context.stdout.print("\x1b[2K\r{s} [", .{frame});
+    
+    const total_states = width * 8; // 8 states per character (from 0 to 8 fill levels)
+    const current_state = @as(usize, @intFromFloat(fraction * @as(f32, @floatFromInt(total_states))));
+    
+    for (0..width) |i| {
+        const char_state = if (current_state >= (i + 1) * 8) 
+            8 
+        else if (current_state <= i * 8) 
+            0 
+        else 
+            current_state - i * 8;
+            
+        try context.stdout.print("{s}", .{fill_levels[char_state]});
+    }
+    
+    try context.stdout.print("] ", .{});
+    try context.stdout.print(fmt, args);
+    try context.stdout.flush();
+}
+
 
 pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.options.ResolveEvent) void {
     const context: *ResolveCallbackContext = @ptrCast(@alignCast(ctx orelse return));
@@ -325,7 +372,7 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
                     .delay_seconds = r.delay_seconds,
                 }) catch {};
             } else {
-                progress(context.stdout, "Retrying {s} due to {s} (attempt {d}/{d}, waiting {d}s)...\n", .{
+                renderSpinner(context, "Retrying {s} due to {s} (attempt {d}/{d}, waiting {d}s)...", .{
                     r.url, r.err_name, r.attempt, r.max_retries, r.delay_seconds,
                 }) catch {};
             }
@@ -334,25 +381,58 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
             if (context.emitter) |e| {
                 e.emit(context.io, .INFO, s.pkg_name, s.msg, .{}) catch {};
             } else {
-                progress(context.stdout, "{s}: {s}\n", .{ s.pkg_name, s.msg }) catch {};
+                renderSpinner(context, "{s}: {s}", .{ s.pkg_name, s.msg }) catch {};
+            }
+        },
+        .download_progress => |dp| {
+            if (context.emitter) |e| {
+                e.emit(context.io, .INFO, dp.pkg_name orelse "fetch", "downloading", .{
+                    .url = dp.url,
+                    .downloaded_bytes = dp.downloaded_bytes,
+                    .total_bytes = dp.total_bytes,
+                }) catch {};
+            } else {
+                if (dp.total_bytes) |total| {
+                    const fraction = @as(f32, @floatFromInt(dp.downloaded_bytes)) / @as(f32, @floatFromInt(total));
+                    renderProgress(context, fraction, 10, "{s} downloading... {d}/{d} bytes", .{ dp.pkg_name orelse dp.url, dp.downloaded_bytes, total }) catch {};
+                } else {
+                    renderSpinner(context, "{s} downloading... {d} bytes", .{ dp.pkg_name orelse dp.url, dp.downloaded_bytes }) catch {};
+                }
             }
         },
     }
 }
 
 pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.solver.report.SolverEvent, data: std.json.Value) void {
-    _ = data;
     const context: *ResolveCallbackContext = @ptrCast(@alignCast(ctx orelse return));
     const msg = switch (event) {
-        .resolving => "solver: choosing package version...",
-        .propagating => "solver: applying constraints...",
-        .conflict => "solver: conflict found; deriving explanation...",
-        .backtracking => "solver: backtracking...",
+        .resolving => "choosing package version...",
+        .propagating => "applying constraints...",
+        .conflict => "conflict found; deriving explanation...",
+        .backtracking => "backtracking...",
     };
     if (context.emitter) |e| {
-        e.emit(context.io, .INFO, "solver", msg, .{}) catch {};
+        e.emit(context.io, .INFO, "solver", switch (event) {
+            .resolving => "solver: choosing package version...",
+            .propagating => "solver: applying constraints...",
+            .conflict => "solver: conflict found; deriving explanation...",
+            .backtracking => "solver: backtracking...",
+        }, data) catch {};
     } else {
-        progress(context.stdout, "{s}\n", .{msg}) catch {};
+        if (data == .object) {
+            if (data.object.get("package")) |pkg| {
+                if (pkg == .string) {
+                    if (event == .resolving) {
+                        renderSpinner(context, "solver: choosing package version for {s}...", .{pkg.string}) catch {};
+                        return;
+                    } else if (event == .propagating) {
+                        renderSpinner(context, "solver: applying constraints for {s}...", .{pkg.string}) catch {};
+                        return;
+                    }
+                }
+            }
+        }
+        renderSpinner(context, "solver: {s}", .{msg}) catch {};
     }
 }
 

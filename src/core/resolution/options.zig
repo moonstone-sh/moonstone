@@ -26,6 +26,12 @@ pub const ResolveEvent = union(enum) {
         max_retries: u32,
         delay_seconds: u32,
     },
+    download_progress: struct {
+        url: []const u8,
+        pkg_name: ?[]const u8,
+        downloaded_bytes: usize,
+        total_bytes: ?usize,
+    },
 };
 
 pub const ResolveCallback = *const fn (ctx: ?*anyopaque, event: ResolveEvent) void;

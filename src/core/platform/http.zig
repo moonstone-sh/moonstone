@@ -42,12 +42,16 @@ fn ensureCaBundle(client: *std.http.Client) !void {
     std.mem.swap(std.crypto.Certificate.Bundle, &client.ca_bundle, &bundle);
 }
 
+pub const ProgressCallback = *const fn (ctx: ?*anyopaque, downloaded_bytes: usize, total_bytes: ?usize) void;
+
 fn doFetch(
     allocator: std.mem.Allocator,
     client: *std.http.Client,
     url: []const u8,
     extra_headers: ?[]const std.http.Header,
     timeout_ms: u32,
+    on_progress: ?ProgressCallback,
+    progress_ctx: ?*anyopaque,
 ) !FetchResponse {
     const uri = try std.Uri.parse(url);
     const protocol = std.http.Client.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
@@ -95,7 +99,22 @@ fn doFetch(
     var transfer_buf: [8192]u8 = undefined;
     var decompress: std.http.Decompress = undefined;
     var reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buffer);
-    const body = try reader.allocRemaining(allocator, std.Io.Limit.limited(50 * 1024 * 1024));
+    
+    var out_list = std.ArrayList(u8).empty;
+    errdefer out_list.deinit(allocator);
+    
+    var downloaded: usize = 0;
+    while (true) {
+        var chunk_buf: [8192]u8 = undefined;
+        const n = try reader.readSliceShort(&chunk_buf);
+        if (n == 0) break;
+        try out_list.appendSlice(allocator, chunk_buf[0..n]);
+        downloaded += n;
+        if (on_progress) |cb| {
+            cb(progress_ctx, downloaded, resp.head.content_length);
+        }
+    }
+    const body = try out_list.toOwnedSlice(allocator);
 
     return .{
         .status = resp.head.status,
@@ -109,11 +128,20 @@ pub fn fetchGet(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra
         .io = io,
     };
     defer client.deinit();
-    return doFetch(allocator, &client, url, extra_headers, timeout_ms);
+    return doFetch(allocator, &client, url, extra_headers, timeout_ms, null, null);
+}
+
+pub fn fetchGetWithProgress(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32, on_progress: ?ProgressCallback, progress_ctx: ?*anyopaque) !FetchResponse {
+    var client = std.http.Client{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+    return doFetch(allocator, &client, url, extra_headers, timeout_ms, on_progress, progress_ctx);
 }
 
 pub fn fetchGetWithClient(allocator: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32) !FetchResponse {
-    return doFetch(allocator, client, url, extra_headers, timeout_ms);
+    return doFetch(allocator, client, url, extra_headers, timeout_ms, null, null);
 }
 
 pub fn fetchGetBody(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32) ![]u8 {
@@ -127,6 +155,15 @@ pub fn fetchGetBody(allocator: std.mem.Allocator, io: std.Io, url: []const u8, e
 
 pub fn fetchGetBodyWithClient(allocator: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32) ![]u8 {
     const resp = try fetchGetWithClient(allocator, client, url, extra_headers, timeout_ms);
+    if (resp.status != .ok) {
+        allocator.free(resp.body);
+        return error.HttpError;
+    }
+    return resp.body;
+}
+
+pub fn fetchGetBodyWithClientAndProgress(allocator: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32, on_progress: ?ProgressCallback, progress_ctx: ?*anyopaque) ![]u8 {
+    const resp = try doFetch(allocator, client, url, extra_headers, timeout_ms, on_progress, progress_ctx);
     if (resp.status != .ok) {
         allocator.free(resp.body);
         return error.HttpError;

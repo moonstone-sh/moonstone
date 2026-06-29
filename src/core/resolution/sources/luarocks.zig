@@ -20,8 +20,44 @@ fn get_luarocks_base(env_map: *std.process.Environ.Map) []const u8 {
 // Phase 1 — Candidate discovery
 // ---------------------------------------------------------------------------
 
-fn http_get_single(allocator: std.mem.Allocator, io: std.Io, url: []const u8, timeout_ms: u32) ![]u8 {
-    const resp = try http.fetchGet(allocator, io, url, null, timeout_ms);
+const ProgressAdapterCtx = struct {
+    url: []const u8,
+    on_event: options_mod.ResolveCallback,
+    on_event_context: ?*anyopaque,
+};
+
+fn progress_adapter(ctx_ptr: ?*anyopaque, downloaded: usize, total: ?usize) void {
+    const ctx: *ProgressAdapterCtx = @ptrCast(@alignCast(ctx_ptr orelse return));
+    ctx.on_event(ctx.on_event_context, .{
+        .download_progress = .{
+            .url = ctx.url,
+            .pkg_name = null,
+            .downloaded_bytes = downloaded,
+            .total_bytes = total,
+        }
+    });
+}
+
+fn http_get_single(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    timeout_ms: u32,
+    on_event: ?options_mod.ResolveCallback,
+    on_event_context: ?*anyopaque,
+) ![]u8 {
+    var pctx: ?ProgressAdapterCtx = null;
+    var pcb: ?http.ProgressCallback = null;
+    if (on_event) |cb| {
+        pctx = .{
+            .url = url,
+            .on_event = cb,
+            .on_event_context = on_event_context,
+        };
+        pcb = progress_adapter;
+    }
+    
+    const resp = try http.fetchGetWithProgress(allocator, io, url, null, timeout_ms, pcb, if (pctx) |*p| p else null);
     if (resp.status == .not_found) {
         allocator.free(resp.body);
         return error.FileNotFound;
@@ -49,7 +85,7 @@ fn http_get(
 
     var attempt: u32 = 0;
     while (true) {
-        if (http_get_single(allocator, io, url, http_cfg.timeout_ms)) |data| {
+        if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context)) |data| {
             return data;
         } else |err| {
             if (err == error.FileNotFound) return err;

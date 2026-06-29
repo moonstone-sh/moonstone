@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Test: Init Templates
+# - Verifies all templates generate expected files
+
+if [[ -z "${MOONSTONE_HOME:-}" ]]; then
+    source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
+fi
+
+TEMPLATES=("script" "lib" "nvim" "love" "lua-zig" "c-bin" "zig-bin" "rust-bin" "bin")
+
+for T in "${TEMPLATES[@]}"; do
+    echo "━━━ testing template: $T ━━━"
+    WORKDIR="/tmp/moon-test-template-$T"
+    rm -rf "${WORKDIR}"
+    mkdir -p "${WORKDIR}"
+    
+    moon init "${WORKDIR}" --template "$T" --name "tmp-$T-$(date +%s)" --no-sync
+    
+    case $T in
+        script)
+            [[ -f "${WORKDIR}/src/main.lua" ]]
+            [[ -f "${WORKDIR}/.luarc.json" ]]
+            ;;
+        lib)
+            [[ -f "${WORKDIR}/src/my-lib.lua" ]]
+            [[ -f "${WORKDIR}/.luarc.json" ]]
+            ;;
+        nvim)
+            MODULE_NAME="tmp_nvim_$(date +%s)"
+            MODULE_NAME="$(find "${WORKDIR}/lua" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)"
+            [[ -f "${WORKDIR}/lua/${MODULE_NAME}/init.lua" ]]
+            [[ -f "${WORKDIR}/lua/${MODULE_NAME}/config.lua" ]]
+            [[ -f "${WORKDIR}/plugin/${MODULE_NAME}.lua" ]]
+            [[ -f "${WORKDIR}/doc/${MODULE_NAME}.txt" ]]
+            [[ -f "${WORKDIR}/tests/minimal_init.lua" ]]
+            [[ -f "${WORKDIR}/partiture.lua" ]]
+            [[ -f "${WORKDIR}/README.md" ]]
+            [[ -f "${WORKDIR}/.luarc.json" ]]
+            grep "vim" "${WORKDIR}/.luarc.json"
+            grep -q 'name = "luajit"' "${WORKDIR}/moonstone.toml"
+            grep -q 'version = "2.1"' "${WORKDIR}/moonstone.toml"
+            grep -q 'abi = "5.1"' "${WORKDIR}/moonstone.toml"
+            grep -q 'moonstone/ballad' "${WORKDIR}/moonstone.toml"
+            grep -q 'module = "'"${MODULE_NAME}"'"' "${WORKDIR}/partiture.lua"
+            grep -q 'local nvim_version = os.getenv("NVIM_VERSION") or "0.12.2"' "${WORKDIR}/partiture.lua"
+            grep -q 'runtime = nvim_runtime' "${WORKDIR}/partiture.lua"
+            ;;
+        love)
+            [[ -f "${WORKDIR}/main.lua" ]]
+            [[ -f "${WORKDIR}/conf.lua" ]]
+            [[ -f "${WORKDIR}/.luarc.json" ]]
+            ;;
+        c-bin)
+            [[ -f "${WORKDIR}/src/main.c" ]]
+            [[ -f "${WORKDIR}/Makefile" ]]
+            ;;
+        zig-bin)
+            [[ -f "${WORKDIR}/src/main.zig" ]]
+            [[ -f "${WORKDIR}/build.zig" ]]
+            ;;
+        lua-zig)
+            [[ -f "${WORKDIR}/src/main.lua" ]]
+            [[ -f "${WORKDIR}/src/app.lua" ]]
+            [[ -f "${WORKDIR}/zig/bridge.zig" ]]
+            [[ -f "${WORKDIR}/build.zig" ]]
+            [[ -f "${WORKDIR}/.luarc.json" ]]
+            [[ -f "${WORKDIR}/README.md" ]]
+            grep "require(\"tmp_lua_zig_" "${WORKDIR}/src/app.lua"
+            grep "luaopen_tmp_lua_zig" "${WORKDIR}/zig/bridge.zig"
+            ;;
+        rust-bin)
+            [[ -f "${WORKDIR}/src/main.rs" ]]
+            [[ -f "${WORKDIR}/Cargo.toml" ]]
+            ;;
+        bin)
+            [[ -f "${WORKDIR}/src/main.c" ]]
+            ;;
+    esac
+    
+    rm -rf "${WORKDIR}"
+done
+
+echo "━━━ ✓ Init templates test passed ━━━"

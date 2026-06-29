@@ -42,7 +42,7 @@ pub const init_command = struct {
             \\  --lib            Shortcut for --kind lib
             \\  --bin            Shortcut for --kind bin
             \\  --runtime <spec> Lua runtime spec: lua@5.4|luajit@2.1|...
-            \\  --template <t>   Project template: script|lib|nvim|love|lua-zig|c-bin|zig-bin|rust-bin|meteorite|bin
+            \\  --template <t>   Project template: script|lib|nvim|love|lua-zig|c-bin|zig-bin|rust-bin|bin
             \\  --license <id>   SPDX license identifier
             \\  --no-git         Do not initialize a git repository
             \\  --no-sync     Do not run moon sync after init
@@ -395,7 +395,7 @@ pub const init_command = struct {
             }
         } else if (std.mem.eql(u8, template, "lua-zig")) {
             try project_dir.createDirPath(io, "src");
-            try project_dir.createDirPath(io, "native/src");
+            try project_dir.createDirPath(io, "zig");
 
             if (project_dir.access(io, "src/main.lua", .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, "src/main.lua", .{});
@@ -411,8 +411,8 @@ pub const init_command = struct {
                 defer allocator.free(content);
                 try f.writeStreamingAll(io, content);
             }
-            if (project_dir.access(io, "native/src/bridge.zig", .{})) |_| {} else |_| {
-                const f = try project_dir.createFile(io, "native/src/bridge.zig", .{});
+            if (project_dir.access(io, "zig/bridge.zig", .{})) |_| {} else |_| {
+                const f = try project_dir.createFile(io, "zig/bridge.zig", .{});
                 defer f.close(io);
                 const content = try renderTemplate(allocator, T.lua_zig_bridge, final_name, lua_ver);
                 defer allocator.free(content);
@@ -453,33 +453,6 @@ pub const init_command = struct {
                 defer allocator.free(content);
                 try f.writeStreamingAll(io, content);
             }
-        } else if (std.mem.eql(u8, template, "meteorite")) {
-            try project_dir.createDirPath(io, "src");
-            try project_dir.createDirPath(io, "native/src");
-            try project_dir.createDirPath(io, "scripts");
-
-            const files = .{
-                .{ "src/main.lua", T.meteorite_main },
-                .{ "src/app.lua", T.meteorite_app },
-                .{ "native/src/handlers.zig", T.meteorite_handlers },
-                .{ "native/src/validators.zig", T.meteorite_validators },
-                .{ "native/src/main.zig", T.meteorite_native_main },
-                .{ "build.zig", T.meteorite_build },
-                .{ "dev.lua", T.meteorite_dev },
-                .{ "scripts/guard.sh", T.meteorite_guard },
-                .{ ".luarc.json", T.meteorite_luarc },
-                .{ "README.md", T.meteorite_readme },
-            };
-            inline for (files) |entry| {
-                const path, const content = entry;
-                if (project_dir.access(io, path, .{})) |_| {} else |_| {
-                    const f = try project_dir.createFile(io, path, .{});
-                    defer f.close(io);
-                    const rendered = try renderTemplate(allocator, content, final_name, lua_ver);
-                    defer allocator.free(rendered);
-                    try f.writeStreamingAll(io, rendered);
-                }
-            }
         } else if (std.mem.eql(u8, template, "bin")) {
              try project_dir.createDirPath(io, "src");
              if (project_dir.access(io, "src/main.c", .{})) |_| {} else |_| {
@@ -508,8 +481,8 @@ pub const init_command = struct {
         if (std.mem.eql(u8, template, "script")) {
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
         } else if (std.mem.eql(u8, template, "lua-zig")) {
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-native"));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "zig build install-native && lua ./src/main.lua \"$@\""));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-zig"));
+            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "zig build install-zig && lua ./src/main.lua \"$@\""));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "test"), try allocator.dupe(u8, "zig build"));
         } else if (std.mem.eql(u8, template, "love")) {
@@ -524,12 +497,6 @@ pub const init_command = struct {
             try pkg.add_dependency(allocator, "moonstone/ballad", "^0.2", .tool, false);
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
             try pkg.scripts.put(allocator, try allocator.dupe(u8, "smoke"), try allocator.dupe(u8, smoke_script));
-        } else if (std.mem.eql(u8, template, "meteorite")) {
-            try pkg.add_dependency(allocator, "moonstone/meteorite", "link:moonstone/meteorite@^0.1.0", .tool, false);
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "generate-graph"), try allocator.dupe(u8, "lua .moonstone/env/libexec/meteorite/src/meteorite/cli.lua graph src/main.lua .meteorite/graph/current hybrid"));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-server \"$@\""));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "sh -c 'METEORITE_GUARD_EXCLUDE_PID=$$ sh scripts/guard.sh handoff; trap \"sh scripts/guard.sh cleanup >/dev/null 2>&1 || true\" EXIT INT TERM; lua dev.lua src/main.lua .meteorite/graph/current hybrid_dev'"));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "./dist/server"));
         }
 
         const toml_path = "moonstone.toml";

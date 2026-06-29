@@ -13,6 +13,10 @@ id = "lua_module-any"
 kind = "lua_module"
 target = "any"
 hash = "b3:<64 lowercase hex characters>"
+source_hash = "b3:<64 lowercase hex characters>"
+source_url = "blobs/b3/cc/dd/<source-digest>.tar.gz"
+source_kind = "upstream_archive"
+source_format = "tar.gz"
 bytes = 1234
 url = "blobs/b3/aa/bb/<digest>.tar.gz"
 format = "tar.gz"
@@ -29,5 +33,7 @@ path = "lua/inspect.lua"
 ```
 
 Frozen artifact kinds are `runtime`, `lua_module`, `lua_cmodule`, `bin`, `tool`, and `source`. Frozen provision kinds are `runtime`, `bin`, `lua_module`, `lua_cmodule`, `lib`, `include`, `script`, and `asset`. Frozen materializers are `archive`, `command`, `cmake`, and `native_cmodule`. Frozen formats are `tar.gz`, `tar.zst`, and `zip`.
+
+Artifacts may carry optional per-artifact source provenance with `source_hash`, `source_url`, `source_kind`, and `source_format`. Moonstone stores that payload under the artifact's `sources/` directory and exposes it through `moon store query --json` as `source_payload_path`. Runtime packages use this to publish upstream Lua source archives alongside prebuilt runtime artifacts, enabling downstream tools such as Meteorite to rebuild target Lua for cross-target hybrid releases.
 
 Legacy singular `[[artifact]]`, top-level `[compat]`, and top-level `[source]` registry descriptors are intentionally unsupported.

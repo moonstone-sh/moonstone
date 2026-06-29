@@ -559,7 +559,7 @@ pub const SyncCommand = struct {
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.begin", .{ .targets = targets.items.len });
             } else {
-                try @import("command.zig").progress(stdout, "Solving dependencies...\n", .{});
+                try @import("command.zig").renderSpinner(&resolve_cb_ctx, "Solving dependencies...", .{});
             }
             profile_span = profiler.now();
             solution = solver.solve(targets.items) catch |err| blk: {
@@ -586,7 +586,14 @@ pub const SyncCommand = struct {
                         };
                         return error.OfflineTransitiveArtifactMissing;
                     }
-                    if (!self.json) try stdout.print("Error: No solution found for dependencies.\n", .{});
+                    if (solver.last_conflict) |inc| {
+                        var aw = std.Io.Writer.Allocating.init(allocator);
+                        defer aw.deinit();
+                        try moonstone.resolution.solver.report.explain(&aw.writer, inc, allocator);
+                        ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, aw.writer.buffer[0..aw.writer.end]) } };
+                    } else {
+                        ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "No compatible resolution could be found.") } };
+                    }
                     return err;
                 }
                 if (err == error.LinkedRuntimeAbiMismatch) {
@@ -602,6 +609,7 @@ pub const SyncCommand = struct {
                 return err;
             };
             profiler.spanCount("sync.pubgrub.solve", profile_span, "packages", solution.count());
+            if (!self.json) try @import("command.zig").renderDone(&resolve_cb_ctx, "Resolved {d} dependencies.", .{solution.count()});
             profile_span = profiler.now();
             for (mt.dependencies.items) |dep| {
                 const raw_spec = try dep.toSpecString(allocator);

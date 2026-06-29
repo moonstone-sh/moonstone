@@ -23,6 +23,8 @@ pub const Solver = struct {
     incompatibilities: std.ArrayListUnmanaged(*Incompatibility),
     solution: partial_solution_mod.PartialSolution,
 
+    last_conflict: ?*Incompatibility,
+
     pub fn init(allocator: std.mem.Allocator, p: package_provider.PackageProvider, options: report_mod.SolverOptions) Solver {
         return .{
             .allocator = allocator,
@@ -31,13 +33,27 @@ pub const Solver = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .incompatibilities = .empty,
             .solution = partial_solution_mod.PartialSolution.init(),
+            .last_conflict = null,
         };
     }
 
-    fn emit(self: Solver, event: report_mod.SolverEvent, data_map: anytype) void {
+    fn emit(self: *Solver, event: report_mod.SolverEvent, data_map: anytype) void {
         if (self.options.on_event) |cb| {
-            _ = data_map;
-            cb(self.options.on_event_context, event, .null);
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            
+            var obj_map = std.json.ObjectMap.empty;
+            const fields = @typeInfo(@TypeOf(data_map)).@"struct".fields;
+            inline for (fields) |f| {
+                const val = @field(data_map, f.name);
+                const T = @TypeOf(val);
+                if (T == []const u8) {
+                    obj_map.put(arena.allocator(), f.name, .{ .string = val }) catch {};
+                } else if (@typeInfo(T) == .int or @typeInfo(T) == .comptime_int) {
+                    obj_map.put(arena.allocator(), f.name, .{ .integer = @intCast(val) }) catch {};
+                }
+            }
+            cb(self.options.on_event_context, event, .{ .object = obj_map });
         }
     }
 
@@ -73,7 +89,7 @@ pub const Solver = struct {
                 if (backtrack_level < 0) {
                     return error.NoSolution;
                 }
-                self.emit(.backtracking, .{});
+                self.emit(.backtracking, .{ .level = @as(i32, @intCast(backtrack_level)) });
                 
                 while (self.solution.assignments.items.len > 0) {
                     const as = self.solution.assignments.getLast();
@@ -168,7 +184,7 @@ pub const Solver = struct {
                                 .level = self.solution.decision_level,
                                 .cause = inc,
                             });
-                            self.emit(.propagating, .{});
+                            self.emit(.propagating, .{ .package = term.name });
                             changed = true;
                             break;
                         }
@@ -197,7 +213,7 @@ pub const Solver = struct {
                 
                 const versions = try self.provider.getVersions(as.term.name);
                 defer arena.free(versions);
-                self.emit(.resolving, .{});
+                self.emit(.resolving, .{ .package = as.term.name });
 
                 var best: ?semver.Version = null;
                 for (versions) |v| {
@@ -264,6 +280,7 @@ pub const Solver = struct {
                     };
                     inc.* = .{ .terms = terms, .cause = .no_versions };
                     try self.incompatibilities.append(arena, inc);
+                    self.last_conflict = inc;
                     return error.NoSolution;
                 }
             }
@@ -296,6 +313,7 @@ pub const Solver = struct {
             }
 
             if (highest_level == 0) {
+                self.last_conflict = current;
                 return -1;
             }
             if (count_at_highest_level == 1) {
