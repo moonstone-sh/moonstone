@@ -11,7 +11,10 @@ if [[ -z "${MOONSTONE_HOME:-}" ]]; then
 fi
 
 echo "━━━ register my-lib ━━━"
-cd "${SANDBOX_DIR}/my-lib"
+# Copy my-lib to a temp dir to avoid stale link registrations from other tests
+LINK_SRC="$(mktemp -d /tmp/moonstone-local-link-src.XXXXXX)"
+cp -R "${SANDBOX_DIR}/my-lib"/* "${LINK_SRC}/"
+cd "${LINK_SRC}"
 moon link
 
 echo "━━━ consume my-lib in my-app ━━━"
@@ -25,16 +28,16 @@ name = "my-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 EOF
 
 moon add link:my-lib --no-sync
-moon use lua@5.4
+moon interpreter set lua@5.4
 moon sync
 
 echo "━━━ verify project linking and method call ━━━"

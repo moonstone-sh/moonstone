@@ -10,7 +10,7 @@ pub const remove_command = struct {
     positionals: []const []const u8 = &.{},
     lib: bool = false,
     bin: bool = false,
-    runtime: bool = false,
+    interpreter: bool = false,
     dev: bool = false,
     tool: bool = false,
     link: bool = false,
@@ -34,7 +34,7 @@ pub const remove_command = struct {
             \\  --link       Unregister from the global link registry
             \\  --lib        Remove runtime library dependency
             \\  --bin        Deprecated alias for --tool
-            \\  --runtime    Remove project runtime (sets to default)
+            \\  --interpreter Remove project interpreter (sets to default)
             \\  --dev        Remove from dev-dependencies
             \\  --no-sync Do not run moon sync
             \\  --json       Output results as JSON (bloated protocol)
@@ -128,13 +128,13 @@ pub const remove_command = struct {
             return error.MissingArgument;
         }
 
-        if (self.positionals.len == 0 and !self.runtime) {
-            ctx.error_detail = .{ .message = .{ .msg = "package names or --runtime required." } };
+        if (self.positionals.len == 0 and !self.interpreter) {
+            ctx.error_detail = .{ .message = .{ .msg = "package names or --interpreter required." } };
             return error.MissingArgument;
         }
 
         if (emitter) |e| {
-            try e.emit(io, .START, name, "begin", .{ .packages = self.positionals, .runtime = self.runtime });
+            try e.emit(io, .START, name, "begin", .{ .packages = self.positionals, .interpreter = self.interpreter });
         }
 
         const toml_path = self.file orelse "moonstone.toml";
@@ -183,7 +183,7 @@ pub const remove_command = struct {
             }
         }
 
-        if (self.runtime) {
+        if (self.interpreter) {
             allocator.free(mt.runtime.name);
             allocator.free(mt.runtime.version);
             allocator.free(mt.runtime.abi);

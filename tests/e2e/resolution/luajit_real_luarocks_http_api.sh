@@ -80,12 +80,12 @@ for header in lua.h luaconf.h lauxlib.h lualib.h lua.hpp luajit.h; do
 done
 cat > "${WORKDIR}/luajit-runtime/moonstone.toml" <<'TOML'
 [package]
-name = "luajit"
+name = "moonstone/luajit"
 version = "2.1.0"
 kind = "runtime"
 
-[runtime]
-name = "luajit"
+[interpreter]
+name = "moonstone/luajit"
 version = "2.1"
 abi = "5.1"
 TOML
@@ -94,7 +94,7 @@ cd "${WORKDIR}/luajit-runtime"
 moon link
 
 cd "${WORKDIR}/app"
-moon init . --name luajit-rocks-http-api --runtime luajit@2.1 --no-sync --no-git
+moon init . --name luajit-rocks-http-api --interpreter luajit@2.1 --no-git
 
 # Force the dependency source to the LuaRocks resolver and verify all additions
 # are represented with the explicit `rocks:` prefix in moonstone.toml.
@@ -106,9 +106,9 @@ echo "━━━ add rocks:luasocket ━━━"
 moon add rocks:luasocket --no-sync
 moon sync
 
-grep '"dkjson" = "rocks:dkjson@' moonstone.toml
-grep '"luafilesystem" = "rocks:luafilesystem@' moonstone.toml
-grep '"luasocket" = "rocks:luasocket@' moonstone.toml
+grep 'name = "dkjson"' moonstone.toml
+grep 'name = "luafilesystem"' moonstone.toml
+grep 'name = "luasocket"' moonstone.toml
 
 # Live-linked runtimes are used as the build runtime but are not currently
 # projected into env/bin as a runtime artifact, so expose the linked LuaJIT

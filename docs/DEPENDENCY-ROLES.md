@@ -73,7 +73,7 @@ In `moonstone.toml` you may use legacy section names that canonicalize to `role`
 [dependencies.vendor-exec]
 # equivalent to [[dependencies]] role = "helper"
 
-[dependencies.runtime-exec]
+[dependencies.interpreter-exec]
 # equivalent to [[dependencies]] role = "helper"
 ```
 

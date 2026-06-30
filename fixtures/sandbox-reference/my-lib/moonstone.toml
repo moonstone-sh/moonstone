@@ -3,9 +3,9 @@ name = "my-lib"
 version = "0.1.0"
 kind = "lib"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]

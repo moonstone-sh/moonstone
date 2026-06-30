@@ -15,9 +15,9 @@ const Match = struct {
     }
 };
 
-pub const RuntimeRemoveCommand = struct {
+pub const InterpreterRemoveCommand = struct {
     pub const name = "remove";
-    pub const description = "Remove an installed Lua runtime";
+    pub const description = "Remove an installed Lua interpreter";
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
@@ -26,25 +26,25 @@ pub const RuntimeRemoveCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon runtime remove [flags] <name@version>
+            \\Usage: moon interpreter remove [flags] <name@version>
             \\
-            \\Remove one concrete installed runtime artifact from the shared store.
+            \\Remove one concrete installed interpreter artifact from the shared store.
             \\
             \\Flags:
             \\  --target <triple>  Select a target when multiple builds are installed
-            \\  --force            Remove a referenced runtime anyway
+            \\  --force            Remove a referenced interpreter anyway
             \\  --quiet            Suppress non-error output
             \\
         , .{});
     }
 
-    pub fn run(self: RuntimeRemoveCommand, ctx: *router.Context) !void {
+    pub fn run(self: InterpreterRemoveCommand, ctx: *router.Context) !void {
         if (self.positionals.len != 1) return error.MissingArgument;
         const spec = self.positionals[0];
-        const at = std.mem.indexOfScalar(u8, spec, '@') orelse return error.ConcreteRuntimeVersionRequired;
-        const runtime_name = spec[0..at];
+        const at = std.mem.indexOfScalar(u8, spec, '@') orelse return error.ConcreteInterpreterVersionRequired;
+        const interpreter_name = spec[0..at];
         const version = spec[at + 1 ..];
-        if (runtime_name.len == 0 or !isConcreteVersion(version)) return error.ConcreteRuntimeVersionRequired;
+        if (interpreter_name.len == 0 or !isConcreteVersion(version)) return error.ConcreteInterpreterVersionRequired;
 
         const allocator = ctx.allocator;
         const io = ctx.io;
@@ -58,34 +58,34 @@ pub const RuntimeRemoveCommand = struct {
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, db_path_z);
         defer idx.deinit();
 
-        var matches = try findMatches(allocator, idx, runtime_name, version, self.target);
+        var matches = try findMatches(allocator, idx, interpreter_name, version, self.target);
         defer {
             for (matches.items) |item| item.deinit(allocator);
             matches.deinit(allocator);
         }
-        if (matches.items.len == 0) return error.RuntimeNotInstalled;
+        if (matches.items.len == 0) return error.InterpreterNotInstalled;
         if (matches.items.len > 1) {
-            try ctx.stdout.print("Multiple builds match {s}. Re-run with `--target <triple>` using one of:\n", .{spec});
+            try ctx.stdout.print("Multiple interpreter builds match {s}. Re-run with `--target <triple>` using one of:\n", .{spec});
             for (matches.items) |item| try ctx.stdout.print("  {s}\n", .{item.target});
-            return error.RuntimeTargetRequired;
+            return error.InterpreterTargetRequired;
         }
 
-        const global_reference = try isGlobalDefault(allocator, io, paths.config, runtime_name, version);
-        const project_references = try countProjectReferences(allocator, io, paths.projects, runtime_name, version);
+        const global_reference = try isGlobalDefault(allocator, io, paths.config, interpreter_name, version);
+        const project_references = try countProjectReferences(allocator, io, paths.projects, interpreter_name, version);
         if ((global_reference or project_references > 0) and !self.force) {
-            if (global_reference) try ctx.stdout.print("Cannot remove {s}: unset the current global runtime first.\n", .{spec});
+            if (global_reference) try ctx.stdout.print("Cannot remove {s}: unset the current global interpreter first.\n", .{spec});
             if (project_references > 0) try ctx.stdout.print("Cannot remove {s}: {d} registered project(s) rely on it.\n", .{ spec, project_references });
             try ctx.stdout.print("Re-run with `--force` to remove it anyway.\n", .{});
-            return error.RuntimeStillReferenced;
+            return error.InterpreterStillReferenced;
         }
         if (!self.quiet and self.force and (global_reference or project_references > 0)) {
-            try ctx.stdout.print("Warning: removing {s} may break the global default and {d} registered project(s).\n", .{ spec, project_references });
+            try ctx.stdout.print("Warning: removing {s} may break the global interpreter and {d} registered project(s).\n", .{ spec, project_references });
         }
 
         const selected = matches.items[0];
         std.Io.Dir.cwd().deleteTree(io, selected.path) catch |err| if (err != error.FileNotFound) return err;
         try idx.delete_artifact(selected.hash);
-        if (!self.quiet) try ctx.stdout.print("Removed runtime {s} ({s}).\n", .{ spec, selected.target });
+        if (!self.quiet) try ctx.stdout.print("Removed interpreter {s} ({s}).\n", .{ spec, selected.target });
     }
 };
 

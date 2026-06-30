@@ -38,8 +38,8 @@ rm -f moonstone.lock moonstone.toml
 echo "━━━ moon init ━━━"
 moon init . --name my-app --no-git
 
-echo "━━━ moon use lua@5.4 ━━━"
-moon use lua@5.4
+echo "━━━ moon interpreter set lua@5.4 ━━━"
+moon interpreter set lua@5.4
 
 echo "━━━ moon add rocks:parent (online) ━━━"
 moon add rocks:parent

@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/parent/child/grandchild"
 cd "${WORKDIR}/parent"
 
 moon init . --name discovery-test --no-git
-moon use lua@5.4 --no-sync
+moon interpreter set lua@5.4 --no-sync
 
 cd child/grandchild
 list_output=$(moon list)
@@ -17,6 +17,7 @@ assert_contains "${list_output}" "Project: discovery-test" "list discovers paren
 
 run_output=$(moon run missing 2>&1 || true)
 assert_contains "${run_output}" "script 'missing' not found" "run discovers parent project"
+
 
 moon add inspect@3.1.3 --no-sync
 assert_file_contains "${WORKDIR}/parent/moonstone.toml" 'name = "inspect"'

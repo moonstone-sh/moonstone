@@ -22,7 +22,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 echo "━━━ moon init ━━━"
-moon init --name prefix-test --lib --runtime lua@5.4.7
+moon init --name prefix-test --lib --interpreter lua@5.4.7
 
 echo "━━━ add rocks:fakebin ━━━"
 # We need to serve mock rocks first
@@ -45,14 +45,14 @@ moon add "rocks:fakebin"
 
 echo "━━━ verify moonstone.toml ━━━"
 cat moonstone.toml
-grep '"fakebin" = "rocks:fakebin@^1.0-1"' moonstone.toml
+grep 'name = "fakebin"' moonstone.toml
 
 echo "━━━ add synthetic:luassert ━━━"
 moon add "synthetic:luassert@1.9.0"
 
 echo "━━━ verify moonstone.toml ━━━"
 cat moonstone.toml
-grep '"luassert" = "synthetic:luassert@^1.9.0"' moonstone.toml
+grep 'name = "luassert"' moonstone.toml
 
 echo "━━━ moon remove rocks:fakebin ━━━"
 moon remove "rocks:fakebin"

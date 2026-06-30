@@ -16,7 +16,7 @@ moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --versio
 The importer produces `moonstone/love@11.5`, with `files/bin/love` and runtime metadata suitable for:
 
 ```toml
-[dependencies.runtime]
+[dependencies.dependency]
 "moonstone:moonstone/love" = "11.5"
 ```
 

@@ -506,7 +506,7 @@ registered dependency with `moon add link:my-lib`.
 | `STATUS` | `scaffold` | `written` | `{ "scaffold": { "files_created": ["moonstone.toml", "build.zig.zon", ".gitignore"] } }` |
 | `RESULT` | `init` | `ok` | `{ "directory": "my-project", "installed": true }` |
 
-### 7.9 `moon use`
+### 7.9 `moon interpreter set`
 
 | Kind | About | Value | Data Shape |
 |------|-------|-------|------------|
@@ -515,7 +515,7 @@ registered dependency with `moon add link:my-lib`.
 | `STATUS` | `manifest` | `written` | `{ "manifest": { "runtime_updated": true } }` |
 | `RESULT` | `use` | `ok` | `{ "installed": true }` |
 
-### 7.10 `moon runtime install`
+### 7.10 `moon interpreter install`
 
 | Kind | About | Value | Data Shape |
 |------|-------|-------|------------|
@@ -614,7 +614,7 @@ A compliant wrapper should accept **any** of the above. `terminator: true` is th
 | `moon add` | ✅ Full | Uses standard envelopes for resolution and materialization. |
 | `moon sync` | ✅ Full | Supports concurrent materialization progress events. |
 | `moon doctor` | ✅ Full | Uses standard envelopes for each health check result. |
-| `moon use` | ✅ Full | Emits START and RESULT envelopes. |
+| `moon interpreter set` | ✅ Full | Emits START and RESULT envelopes. |
 | `moon list` | ✅ Full | Emits START, STATUS (entries), and RESULT summary. |
 | `moon init` | ✅ Full | Emits START and RESULT envelopes. |
 | `moon run` | ✅ Full | Emits START and STATUS before handing off to sub-process. |

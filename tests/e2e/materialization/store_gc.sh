@@ -22,12 +22,12 @@ name = "my-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 EOF
 
 moon add inspect

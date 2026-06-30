@@ -23,6 +23,32 @@ pub const RuntimeProvision = struct {
     }
 };
 
+test "findCandidates can match LuaRocks names case-insensitively" {
+    const allocator = std.testing.allocator;
+    var driver = try StoreDriver.init(allocator, ":memory:");
+    defer driver.deinit();
+
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:artifact", "LuaSec", "1.3.2-1", "lib", "native", "5.4", "", "/tmp/luasec", "/tmp/luasec/manifest.toml", "5.4", "b3:runtime", "rocks", "https://luarocks.org", "1" },
+    );
+
+    const exact = try driver.findCandidates(.{ .name = "luasec", .resolver = "rocks" });
+    defer {
+        for (exact) |*candidate| candidate.deinit(allocator);
+        allocator.free(exact);
+    }
+    try std.testing.expectEqual(@as(usize, 0), exact.len);
+
+    const folded = try driver.findCandidates(.{ .name = "luasec", .case_insensitive_name = true, .resolver = "rocks" });
+    defer {
+        for (folded) |*candidate| candidate.deinit(allocator);
+        allocator.free(folded);
+    }
+    try std.testing.expectEqual(@as(usize, 1), folded.len);
+    try std.testing.expectEqualStrings("LuaSec", folded[0].name);
+}
+
 pub const Candidate = struct {
     name: []const u8,
     version: []const u8,
@@ -54,6 +80,7 @@ pub const Candidate = struct {
 
 pub const ArtifactQuery = struct {
     name: []const u8,
+    case_insensitive_name: bool = false,
     resolver: ?[]const u8 = null,
     version: ?[]const u8 = null,
     kind: ?manifest.Kind = null,
@@ -126,6 +153,8 @@ pub const StoreDriver = struct {
     fn migrate_schema(self: StoreDriver) !void {
         _ = self.exec("ALTER TABLE provides_bin ADD COLUMN entry_point TEXT;", .{}) catch {};
         _ = self.exec("ALTER TABLE artifacts ADD COLUMN description TEXT;", .{}) catch {};
+        _ = self.exec("CREATE TABLE IF NOT EXISTS artifact_name_trigrams (artifact_hash TEXT NOT NULL, trigram TEXT NOT NULL, PRIMARY KEY (artifact_hash, trigram), FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash));", .{}) catch {};
+        try self.backfillArtifactNameTrigrams();
         try self.ensure_indexes();
     }
 
@@ -153,7 +182,7 @@ pub const StoreDriver = struct {
     }
 
     pub fn clear_all_data(self: StoreDriver) !void {
-        const tables = [_][]const u8{ "provides_runtime", "provides_bin", "provides_headers", "provides_native_lib", "provides_lua_module", "provides_lua_cmodule", "artifacts" };
+        const tables = [_][]const u8{ "artifact_name_trigrams", "provides_runtime", "provides_bin", "provides_headers", "provides_native_lib", "provides_lua_module", "provides_lua_cmodule", "artifacts" };
         for (tables) |table| {
             const sql = try std.fmt.allocPrint(self.allocator, "DELETE FROM {s};", .{table});
             defer self.allocator.free(sql);
@@ -177,6 +206,12 @@ pub const StoreDriver = struct {
             \\  path TEXT NOT NULL,
             \\  manifest_path TEXT NOT NULL,
             \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\);
+            \\CREATE TABLE IF NOT EXISTS artifact_name_trigrams (
+            \\  artifact_hash TEXT NOT NULL,
+            \\  trigram TEXT NOT NULL,
+            \\  PRIMARY KEY (artifact_hash, trigram),
+            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
             \\);
             \\CREATE TABLE IF NOT EXISTS provides_runtime (
             \\  artifact_hash TEXT NOT NULL,
@@ -267,6 +302,7 @@ pub const StoreDriver = struct {
     fn ensure_indexes(self: StoreDriver) !void {
         const indexes =
             \\CREATE INDEX IF NOT EXISTS idx_artifacts_lookup ON artifacts(name, target, resolver, kind, lua_abi, runtime, runtime_artifact_hash, native_compat_required);
+            \\CREATE INDEX IF NOT EXISTS idx_artifact_name_trigrams_lookup ON artifact_name_trigrams(trigram, artifact_hash);
             \\CREATE INDEX IF NOT EXISTS idx_artifacts_name_version ON artifacts(name, version DESC);
             \\CREATE INDEX IF NOT EXISTS idx_artifacts_kind_abi ON artifacts(kind, lua_abi, artifact_hash);
             \\CREATE INDEX IF NOT EXISTS idx_provides_bin_name_hash ON provides_bin(name, artifact_hash);
@@ -396,6 +432,8 @@ pub const StoreDriver = struct {
         const step_res = c.sqlite3_step(stmt);
         if (step_res != c.SQLITE_DONE and step_res != c.SQLITE_ROW) return error.SQLiteStepError;
 
+        try self.refreshArtifactNameTrigrams(sm.artifact.artifact_hash, sm.artifact.name);
+
         try self.exec("DELETE FROM provides_runtime WHERE artifact_hash = ?;", .{sm.artifact.artifact_hash});
         for (sm.provides.runtime) |r| {
             try self.exec("INSERT INTO provides_runtime (artifact_hash, name, version, abi) VALUES (?, ?, ?, ?);", .{ sm.artifact.artifact_hash, r.name, r.version, r.abi });
@@ -469,6 +507,39 @@ pub const StoreDriver = struct {
 
         const step_res = c.sqlite3_step(stmt);
         if (step_res != c.SQLITE_DONE and step_res != c.SQLITE_ROW) return error.SQLiteStepError;
+    }
+
+    fn backfillArtifactNameTrigrams(self: StoreDriver) !void {
+        const sql = "SELECT artifact_hash, name FROM artifacts WHERE artifact_hash NOT IN (SELECT DISTINCT artifact_hash FROM artifact_name_trigrams);";
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
+        defer _ = c.sqlite3_finalize(stmt);
+
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const artifact_hash = std.mem.span(c.sqlite3_column_text(stmt, 0));
+            const name = std.mem.span(c.sqlite3_column_text(stmt, 1));
+            try self.refreshArtifactNameTrigrams(artifact_hash, name);
+        }
+    }
+
+    fn refreshArtifactNameTrigrams(self: StoreDriver, artifact_hash: []const u8, name: []const u8) !void {
+        try self.exec("DELETE FROM artifact_name_trigrams WHERE artifact_hash = ?;", .{artifact_hash});
+        const lower = try std.ascii.allocLowerString(self.allocator, name);
+        defer self.allocator.free(lower);
+        if (lower.len < 3) return;
+
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        var i: usize = 0;
+        while (i + 3 <= lower.len) : (i += 1) {
+            const trigram = lower[i .. i + 3];
+            if (seen.contains(trigram)) continue;
+            try seen.put(try self.allocator.dupe(u8, trigram), {});
+            try self.exec("INSERT OR IGNORE INTO artifact_name_trigrams (artifact_hash, trigram) VALUES (?, ?);", .{ artifact_hash, trigram });
+        }
+
+        var it = seen.keyIterator();
+        while (it.next()) |key| self.allocator.free(key.*);
     }
 
     pub fn get_provision_runtime(self: StoreDriver, artifact_hash: []const u8) !?RuntimeProvision {
@@ -684,9 +755,10 @@ pub const StoreDriver = struct {
         const sql_asset = "DELETE FROM provides_asset WHERE artifact_hash = ?;";
         const sql_ballad_plugin = "DELETE FROM provides_ballad_plugin WHERE artifact_hash = ?;";
         const sql_runtime = "DELETE FROM provides_runtime WHERE artifact_hash = ?;";
+        const sql_trigrams = "DELETE FROM artifact_name_trigrams WHERE artifact_hash = ?;";
         const sql_artifacts = "DELETE FROM artifacts WHERE artifact_hash = ?;";
 
-        inline for (&.{ sql_bin, sql_bin_lua, sql_headers, sql_native, sql_lua_module, sql_lua_cmodule, sql_script, sql_asset, sql_ballad_plugin, sql_runtime, sql_artifacts }) |sql| {
+        inline for (&.{ sql_bin, sql_bin_lua, sql_headers, sql_native, sql_lua_module, sql_lua_cmodule, sql_script, sql_asset, sql_ballad_plugin, sql_runtime, sql_trigrams, sql_artifacts }) |sql| {
             var stmt: ?*c.sqlite3_stmt = null;
             if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) == c.SQLITE_OK) {
                 defer _ = c.sqlite3_finalize(stmt);
@@ -730,14 +802,14 @@ pub const StoreDriver = struct {
         // Build dynamic WHERE clause
         var where_parts = std.ArrayList([]const u8).empty;
         defer where_parts.deinit(self.allocator);
-        try where_parts.append(self.allocator, "name = ?");
+        try where_parts.append(self.allocator, if (query.case_insensitive_name) "lower(name) = lower(?)" else "name = ?");
         if (query.resolver) |_| try where_parts.append(self.allocator, "resolver = ?");
         if (query.kind) |_| try where_parts.append(self.allocator, "kind = ?");
         if (query.target) |_| try where_parts.append(self.allocator, "target = ?");
         if (query.lua_abi) |_| try where_parts.append(self.allocator, "lua_abi = ?");
         if (query.lua_api) |_| try where_parts.append(self.allocator, "lua_api = ?");
         if (query.runtime) |_| try where_parts.append(self.allocator, "runtime = ?");
-        if (query.runtime_artifact_hash) |_| try where_parts.append(self.allocator, "runtime_artifact_hash = ?");
+        if (query.runtime_artifact_hash) |_| try where_parts.append(self.allocator, "interpreter_artifact_hash = ?");
         if (query.native_compat_required) |_| try where_parts.append(self.allocator, "native_compat_required = ?");
 
         const where_clause = try std.mem.join(self.allocator, " AND ", where_parts.items);

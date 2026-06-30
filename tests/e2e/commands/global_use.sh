@@ -18,7 +18,7 @@ cd "${CLEAN_WORKDIR}"
 
 # 1. Set global runtime
 echo "━━━ set global runtime 5.4 ━━━"
-moon use --global lua@5.4.7
+moon interpreter set --global lua@5.4.7
 
 # 2. Verify config.toml
 echo "━━━ verify config.toml ━━━"
@@ -44,7 +44,7 @@ rm -rf "${WORKDIR}"
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
-moon init --name "p54" --lib --runtime lua@5.4.7
+moon init --name "p54" --lib --interpreter lua@5.4.7
 moon sync
 
 SHIM_VERSION_LOCAL=$(lua -v 2>&1)

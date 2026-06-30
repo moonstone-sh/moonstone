@@ -14,6 +14,10 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+    const stderr_buffer = try arena.alloc(u8, 64 * 1024);
+    var stderr_writer = std.Io.File.stderr().writer(init.io, stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
     const all_args = try init.minimal.args.toSlice(arena);
 
     profiler.init(init.environ_map);
@@ -22,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
         .allocator = arena,
         .io = init.io,
         .stdout = stdout,
+        .stderr = stderr,
         .env = init.environ_map,
         .root = null,
     };
@@ -39,11 +44,10 @@ pub fn main(init: std.process.Init) !void {
         router.CommandNode.from(command_mod.remove),
         router.CommandNode.from(command_mod.list),
         router.CommandNode.from(command_mod.doctor),
-        router.CommandNode.from(command_mod.use),
         router.CommandNode.from(command_mod.version),
         router.CommandNode.from(command_mod.env),
         router.CommandNode.from(@import("commands/completions.zig").CompletionsCommand),
-        
+
         router.CommandNode.group("store", "Manage content store", &.{
             router.CommandNode.from(command_mod.store.gc),
             router.CommandNode.from(command_mod.store.verify),
@@ -51,14 +55,14 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.store.list),
             router.CommandNode.from(command_mod.store.query),
         }),
-        
+
         router.CommandNode.group("index", "Manage metadata index", &.{
             router.CommandNode.from(command_mod.index.rebuild),
             router.CommandNode.from(command_mod.index.check),
             router.CommandNode.from(command_mod.index.stats),
             router.CommandNode.from(command_mod.index.vacuum),
         }),
-        
+
         router.CommandNode.group("registry", "Manage registries", &.{
             router.CommandNode.from(@import("commands/registry_list.zig").RegistryListCommand),
             router.CommandNode.from(@import("commands/registry_add.zig").RegistryAddCommand),
@@ -68,13 +72,14 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/registry_file.zig").RegistryPushCommand),
             router.CommandNode.from(@import("commands/registry_file.zig").RegistryPurgeCommand),
         }),
-        
-        router.CommandNode.group("runtime", "Manage Lua runtimes", &.{
-            router.CommandNode.from(@import("commands/runtime_install.zig").RuntimeInstallCommand),
-            router.CommandNode.from(@import("commands/runtime_remove.zig").RuntimeRemoveCommand),
-            router.CommandNode.from(@import("commands/runtime_list.zig").RuntimeListCommand),
-            router.CommandNode.from(@import("commands/runtime_current.zig").RuntimeCurrentCommand),
-            router.CommandNode.from(@import("commands/runtime_path.zig").RuntimePathCommand),
+
+        router.CommandNode.group("interpreter", "Manage Lua interpreters", &.{
+            router.CommandNode.from(command_mod.interpreter.set),
+            router.CommandNode.from(@import("commands/interpreter_install.zig").InterpreterInstallCommand),
+            router.CommandNode.from(@import("commands/interpreter_remove.zig").InterpreterRemoveCommand),
+            router.CommandNode.from(@import("commands/interpreter_list.zig").InterpreterListCommand),
+            router.CommandNode.from(@import("commands/interpreter_current.zig").InterpreterCurrentCommand),
+            router.CommandNode.from(@import("commands/interpreter_path.zig").InterpreterPathCommand),
         }),
     });
 

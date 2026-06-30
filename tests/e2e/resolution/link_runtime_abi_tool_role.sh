@@ -7,13 +7,13 @@ WORKDIR="$(mktemp -d /tmp/moonstone-link-abi-tool-role.XXXXXX)"
 trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p "$WORKDIR/linked/src" "$WORKDIR/app"
 
-cat > "$WORKDIR/linked/moonstone.toml" <<'TOML'
+cat >"$WORKDIR/linked/moonstone.toml" <<'TOML'
 [package]
 name = "hyg-tool-mismatch"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.1"
 abi = "5.1"
@@ -22,12 +22,12 @@ abi = "5.1"
 "hello" = "lua -e 'print(\"hello\")'"
 TOML
 
-cat > "$WORKDIR/linked/src/hyg_tool_mismatch.lua" <<'LUA'
+cat >"$WORKDIR/linked/src/hyg_tool_mismatch.lua" <<'LUA'
 return true
 LUA
 
 (cd "$WORKDIR/linked" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-tool-app --no-git --no-sync && "$MOON_BIN" use lua@5.4 --no-sync)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-tool-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync)
 
 # 1. --tool should succeed despite ABI mismatch
 if ! (cd "$WORKDIR/app" && "$MOON_BIN" add --tool link:hyg-tool-mismatch >"$WORKDIR/tool-output" 2>&1); then
@@ -44,13 +44,13 @@ fi
 grep 'If this is a development CLI tool, add it with --tool instead.' "$WORKDIR/dev-output"
 
 # 3. sync with --tool in manifest should also succeed
-cat > "$WORKDIR/app/moonstone.toml" <<'TOML'
+cat >"$WORKDIR/app/moonstone.toml" <<'TOML'
 [package]
 name = "hyg-tool-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
@@ -66,13 +66,13 @@ fi
 grep 'If this is a development CLI tool, add it with --tool instead.' "$WORKDIR/sync-output"
 
 # 4. sync with tool dependency should succeed
-cat > "$WORKDIR/app/moonstone.toml" <<'TOML'
+cat >"$WORKDIR/app/moonstone.toml" <<'TOML'
 [package]
 name = "hyg-tool-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"

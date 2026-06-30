@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/project/subdir"
 cd "${WORKDIR}/project"
 
 moon init . --name rru-contract --no-git
-moon use lua@5.4 --no-sync
+moon interpreter set lua@5.4 --no-sync
 moon add inspect@3.1.3 --no-sync
 
 cat >> moonstone.toml <<'TOML'
@@ -24,7 +24,7 @@ assert_contains "${run_output}" "hello-from-contract" "run discovers parent scri
 args_output=$(moon run args -- "hello world" --flag tail)
 assert_contains "${args_output}" "args:<hello world><--flag><tail>" "run forwards args after --"
 
-moon use lua@5.4.7 --no-sync
+moon interpreter set lua@5.4.7 --no-sync
 
 moon remove inspect
 assert_file_not_contains "${WORKDIR}/project/moonstone.toml" '"inspect"'

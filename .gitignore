@@ -64,3 +64,4 @@ __pycache__/
 # --- Documentation ---
 coverage/
 docs/_site/
+release-tools/

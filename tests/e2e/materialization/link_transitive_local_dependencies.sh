@@ -13,12 +13,12 @@ name = "hyg-child-link"
 version = "0.1.0"
 kind = "lib"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 TOML
 cat > "$WORKDIR/child-link/src/hyg_child_link.lua" <<'LUA'
 return { value = "linked-child" }
@@ -30,12 +30,12 @@ name = "hyg-child-path"
 version = "0.1.0"
 kind = "lib"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 TOML
 cat > "$WORKDIR/child-path/src/hyg_child_path.lua" <<'LUA'
 return { value = "path-child" }
@@ -47,12 +47,12 @@ name = "hyg-parent"
 version = "0.1.0"
 kind = "lib"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 "hyg-child-link" = "link:hyg-child-link"
 "hyg-child-path" = "path:../child-path"
 TOML
@@ -64,7 +64,7 @@ LUA
 
 (cd "$WORKDIR/child-link" && "$MOON_BIN" link)
 (cd "$WORKDIR/parent" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-app --no-git --no-sync && "$MOON_BIN" use lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-parent)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-parent)
 
 test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/hyg_parent.lua"
 test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/hyg_child_link.lua"

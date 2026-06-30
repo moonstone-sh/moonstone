@@ -104,6 +104,13 @@ pub const SelfInstallCommand = struct {
 
         const extracted = try std.fs.path.join(allocator, &.{ work_dir, "moon" });
         defer allocator.free(extracted);
+        // On macOS, replacing an executable in-place via atomic rename can leave
+        // the kernel's code-signing provenance cache stale, causing the new
+        // binary to be killed with SIGKILL ("Code Signature Invalid") on the
+        // next launch (macOS 26 "Tahoe" and later).  Deleting the destination
+        // first clears the cached provenance binding for that path so the new
+        // binary gets a fresh, valid entry.
+        std.Io.Dir.deleteFileAbsolute(io, destination) catch {};
         try std.Io.Dir.renameAbsolute(extracted, destination, io);
 
         try stdout.print("Installed Moonstone {s} to {s}\nRun `moon setup` to configure shims.\n", .{ selected_version, destination });

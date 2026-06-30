@@ -15,7 +15,7 @@ pub const init_command = struct {
     version: ?[]const u8 = null,
     desc: ?[]const u8 = null,
     kind: ?[]const u8 = null,
-    runtime: ?[]const u8 = null,
+    interpreter: ?[]const u8 = null,
     template: ?[]const u8 = null,
     license: ?[]const u8 = null,
     lib: bool = false,
@@ -41,7 +41,7 @@ pub const init_command = struct {
             \\  --kind <kind>    Package kind: script|lib|bin|runtime (default: script)
             \\  --lib            Shortcut for --kind lib
             \\  --bin            Shortcut for --kind bin
-            \\  --runtime <spec> Lua runtime spec: lua@5.4|luajit@2.1|...
+            \\  --interpreter <spec> Lua interpreter spec: lua@5.4|luajit@2.1|...
             \\  --template <t>   Project template: script|lib|nvim|love|lua-zig|c-bin|zig-bin|rust-bin|bin
             \\  --license <id>   SPDX license identifier
             \\  --no-git         Do not initialize a git repository
@@ -209,14 +209,14 @@ pub const init_command = struct {
         };
 
         const template = self.template orelse if (pkg_kind == .lib) "lib" else "script";
-        const configured_runtime = if (self.runtime == null) try defaultRuntimeSpec(allocator, ctx.env, io) else null;
+        const configured_runtime = if (self.interpreter == null) try defaultRuntimeSpec(allocator, ctx.env, io) else null;
         defer if (configured_runtime) |spec| allocator.free(spec);
-        const runtime_spec = if (std.mem.eql(u8, template, "nvim") and self.runtime == null)
+        const runtime_spec = if (std.mem.eql(u8, template, "nvim") and self.interpreter == null)
             "luajit@2.1"
-        else if (std.mem.eql(u8, template, "love") and self.runtime == null and configured_runtime == null)
+        else if (std.mem.eql(u8, template, "love") and self.interpreter == null and configured_runtime == null)
             "love@11.5"
         else
-            self.runtime orelse configured_runtime orelse "5.4";
+            self.interpreter orelse configured_runtime orelse "5.4";
         const runtime_name = moonstone.domain.manifest.runtimeNameFromSpec(runtime_spec);
         const runtime_version = moonstone.domain.manifest.runtimeVersionFromSpec(runtime_spec);
         const runtime_abi = try moonstone.domain.manifest.inferRuntimeAbi(allocator, runtime_name, runtime_version);

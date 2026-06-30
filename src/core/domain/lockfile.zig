@@ -176,6 +176,13 @@ pub const LockFile = struct {
         return null;
     }
 
+    pub fn findIgnoreCase(self: *const LockFile, name: []const u8) ?*const LockEntry {
+        for (self.packages.items) |*entry| {
+            if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
+        }
+        return null;
+    }
+
     pub fn remove(self: *LockFile, name: []const u8) void {
         var i: usize = 0;
         while (i < self.packages.items.len) {
@@ -256,6 +263,32 @@ test "lockfile roundtrip" {
     try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_hash, lf2.packages.items[0].rockspec_hash);
     try std.testing.expectEqualStrings(lf.packages.items[0].rockspec_payload, lf2.packages.items[0].rockspec_payload);
     try std.testing.expectEqual(lf.packages.items[1].reproducible, lf2.packages.items[1].reproducible);
+}
+
+test "lockfile findIgnoreCase matches LuaRocks canonical casing" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\[[package]]
+        \\name = "LuaSec"
+        \\version = "1.3.2-1"
+        \\kind = "lib"
+        \\source_hash = "b3:src"
+        \\recipe_hash = "b3:recipe"
+        \\artifact_hash = "b3:artifact"
+        \\runtime = "5.4"
+        \\lua_abi = "5.4"
+        \\target = "native"
+        \\constellation = "default"
+        \\resolver = "rocks"
+        \\
+    ;
+
+    var lf = try LockFile.parse(allocator, content);
+    defer lf.deinit();
+
+    try std.testing.expect(lf.find("luasec") == null);
+    const entry = lf.findIgnoreCase("luasec") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("LuaSec", entry.name);
 }
 
 test "lockfile source_url round-trips through serialize and parse" {

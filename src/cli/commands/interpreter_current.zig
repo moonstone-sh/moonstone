@@ -2,17 +2,17 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
 
-pub const RuntimeCurrentCommand = struct {
+pub const InterpreterCurrentCommand = struct {
     pub const name = "current";
-    pub const description = "Show currently active Lua runtime";
+    pub const description = "Show currently active Lua interpreter";
 
     json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon runtime current [flags]
+            \\Usage: moon interpreter current [flags]
             \\
-            \\Show the Lua runtime currently active for this project.
+            \\Show the Lua interpreter currently active for this project.
             \\
             \\Flags:
             \\  --json    Output as JSON
@@ -20,7 +20,7 @@ pub const RuntimeCurrentCommand = struct {
         , .{});
     }
 
-    pub fn run(self: RuntimeCurrentCommand, ctx: *router.Context) !void {
+    pub fn run(self: InterpreterCurrentCommand, ctx: *router.Context) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -28,7 +28,7 @@ pub const RuntimeCurrentCommand = struct {
         const env_toml_path = ".moonstone/env/env.toml";
         const content = std.Io.Dir.cwd().readFileAlloc(io, env_toml_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
-                try stdout.print("No runtime selected for current project. Run 'moon use <spec>'.\n", .{});
+                try stdout.print("No interpreter selected for current project. Run 'moon interpreter set <spec>'.\n", .{});
                 return;
             }
             return err;

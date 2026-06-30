@@ -60,17 +60,17 @@ moon install --latest             # Install the latest Moonstone CLI release
 moon install --version 0.1.1      # Install an exact CLI release
 moon setup                        # Configure or repair global shims
 moon uninstall --preserve-store   # Remove the CLI while retaining artifacts and index metadata
-moon runtime remove lua@5.4.7     # Remove one unreferenced runtime artifact
+moon interpreter remove lua@5.4.7     # Remove one unreferenced interpreter artifact
 ```
 
-`moon runtime remove` requires `--target <triple>` when multiple target builds match
+`moon interpreter remove` requires `--target <triple>` when multiple target builds match
 and requires `--force` when the runtime is still selected globally or referenced by projects.
 
 ## 📚 Guides
 
 - [LÖVE + Moonstone](docs/LOVE.md) — import a LÖVE runtime, create a game project, run `love .`, and export with Ballad.
 - [Global Tools](docs/GLOBAL_TOOLS.md) — install and run ecosystem tools from any directory.
-- [Adding a Runtime](docs/ADD-RUNTIME.md) — build or import runtime artifacts.
+- [Adding a Runtime](docs/ADD-RUNTIME.md) — build or import interpreter artifacts.
 
 ## 🗂️ Directory Layout
 

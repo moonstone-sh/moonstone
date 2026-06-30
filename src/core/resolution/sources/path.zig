@@ -17,12 +17,10 @@ pub fn resolve(
     _ = _options;
 
     const path = pkg_name;
-    const abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch blk: {
-        if (std.fs.path.isAbsolute(path)) break :blk try allocator.dupe(u8, path);
-        const cwd = try std.process.currentPathAlloc(io, allocator);
-        defer allocator.free(cwd);
-        break :blk try std.fs.path.join(allocator, &.{ cwd, path });
-    };
+    const abs_path = if (std.fs.path.isAbsolute(path))
+        try allocator.dupe(u8, path)
+    else
+        try std.fs.path.join(allocator, &.{ try std.process.currentPathAlloc(io, allocator), path });
     defer allocator.free(abs_path);
 
     const mt_path = try std.fs.path.join(allocator, &.{ abs_path, "moonstone.toml" });

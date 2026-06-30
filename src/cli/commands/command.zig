@@ -14,7 +14,6 @@ pub const exec = @import("exec.zig").ExecCommand;
 pub const remove = @import("remove.zig").remove_command;
 pub const list = @import("list.zig").ListCommand;
 pub const doctor = @import("doctor.zig").DoctorCommand;
-pub const use = @import("use.zig").use_command;
 pub const version = @import("version.zig").VersionCommand;
 pub const env = @import("env.zig").EnvCommand;
 
@@ -42,13 +41,14 @@ pub const registry = struct {
     pub const remove = @import("registry_remove.zig").RegistryRemoveCommand;
 };
 
-// Runtime group
-pub const runtime = struct {
-    pub const install = @import("runtime_install.zig").RuntimeInstallCommand;
-    pub const remove = @import("runtime_remove.zig").RuntimeRemoveCommand;
-    pub const list = @import("runtime_list.zig").RuntimeListCommand;
-    pub const current = @import("runtime_current.zig").RuntimeCurrentCommand;
-    pub const path = @import("runtime_path.zig").RuntimePathCommand;
+// Interpreter group
+pub const interpreter = struct {
+    pub const set = @import("interpreter_set.zig").InterpreterSetCommand;
+    pub const install = @import("interpreter_install.zig").InterpreterInstallCommand;
+    pub const remove = @import("interpreter_remove.zig").InterpreterRemoveCommand;
+    pub const list = @import("interpreter_list.zig").InterpreterListCommand;
+    pub const current = @import("interpreter_current.zig").InterpreterCurrentCommand;
+    pub const path = @import("interpreter_path.zig").InterpreterPathCommand;
 };
 
 pub const CliErrorSet = error{
@@ -170,10 +170,10 @@ fn manifestErrorDetail(err: anyerror) ?[]const u8 {
         error.InvalidPackageVersion => "moonstone.toml [package].version must be a string.",
         error.MissingPackageKind => "moonstone.toml [package] is missing kind.",
         error.InvalidPackageKind => "moonstone.toml [package].kind must be a string.",
-        error.InvalidRuntimeSection => "moonstone.toml [runtime] must be a TOML table.",
-        error.InvalidRuntimeName => "moonstone.toml [runtime].name must be a string.",
-        error.InvalidRuntimeVersion => "moonstone.toml [runtime].version must be a string.",
-        error.InvalidRuntimeAbi => "moonstone.toml [runtime].abi must be a string.",
+        error.InvalidRuntimeSection => "moonstone.toml [interpreter] must be a TOML table.",
+        error.InvalidRuntimeName => "moonstone.toml [interpreter].name must be a string.",
+        error.InvalidRuntimeVersion => "moonstone.toml [interpreter].version must be a string.",
+        error.InvalidRuntimeAbi => "moonstone.toml [interpreter].abi must be a string.",
         else => null,
     };
 }
@@ -248,10 +248,10 @@ pub fn reportError(
             switch (d) {
                 .hash_mismatch => |hm| try stdout.print("Error: hash mismatch for {s}. Expected {s}, got {s}\n", .{ about, hm.expected, hm.got }),
                 .materializer_failed => |mf| try stdout.print("Error: materializer failed for {s} with exit code {d}. Stderr: {s}\n", .{ about, mf.exit_code, mf.stderr }),
-                .missing_argument => |ma| try stdout.print("Error: missing argument for flag --{s}\n", .{ ma.flag }),
+                .missing_argument => |ma| try stdout.print("Error: missing argument for flag --{s}\n", .{ma.flag}),
                 .unknown_flag => |uf| try stdout.print("Error: unknown flag --{s} for command '{s}'\n", .{ uf.flag, uf.command }),
-                .unknown_command => |uc| try stdout.print("Error: unknown command '{s}'\n", .{ uc.command }),
-                .message => |m| try stdout.print("Error: {s}\n", .{ m.msg }),
+                .unknown_command => |uc| try stdout.print("Error: unknown command '{s}'\n", .{uc.command}),
+                .message => |m| try stdout.print("Error: {s}\n", .{m.msg}),
                 .offline_transitive_missing => |otm| {
                     try stdout.print("Error: Cannot resolve ", .{});
                     try formatMaybeResolverPrefix(otm.child_resolver, otm.child_name, stdout);
@@ -261,7 +261,7 @@ pub fn reportError(
                     try stdout.print("@{s} from local store manifest:\n", .{otm.parent_version});
                     try stdout.print("  {s}\n\n", .{otm.parent_manifest_path});
                     try stdout.print("Required constraint:\n", .{});
-                    try stdout.print("  {s} {s}\n\n", .{otm.child_name, otm.child_constraint});
+                    try stdout.print("  {s} {s}\n\n", .{ otm.child_name, otm.child_constraint });
                     try stdout.print("No compatible artifact was found in the local store.\n", .{});
                 },
                 .locked_artifact_missing => |lam| {
@@ -337,28 +337,27 @@ const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "�
 pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: usize, comptime fmt: []const u8, args: anytype) !void {
     const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
     context.spinner_frame +%= 1;
-    
+
     try context.stdout.print("\x1b[2K\r{s} [", .{frame});
-    
+
     const total_states = width * 8; // 8 states per character (from 0 to 8 fill levels)
     const current_state = @as(usize, @intFromFloat(fraction * @as(f32, @floatFromInt(total_states))));
-    
+
     for (0..width) |i| {
-        const char_state = if (current_state >= (i + 1) * 8) 
-            8 
-        else if (current_state <= i * 8) 
-            0 
-        else 
+        const char_state = if (current_state >= (i + 1) * 8)
+            8
+        else if (current_state <= i * 8)
+            0
+        else
             current_state - i * 8;
-            
+
         try context.stdout.print("{s}", .{fill_levels[char_state]});
     }
-    
+
     try context.stdout.print("] ", .{});
     try context.stdout.print(fmt, args);
     try context.stdout.flush();
 }
-
 
 pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.options.ResolveEvent) void {
     const context: *ResolveCallbackContext = @ptrCast(@alignCast(ctx orelse return));
@@ -435,7 +434,6 @@ pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.so
         renderSpinner(context, "solver: {s}", .{msg}) catch {};
     }
 }
-
 
 pub fn moonstone_sqlite_transient() @import("moonstone").store.driver.c.sqlite3_destructor_type {
     return @import("moonstone").store.driver.moonstone_sqlite_transient_ptr;

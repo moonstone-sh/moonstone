@@ -37,7 +37,7 @@ echo "━━━ moon init ━━━"
 moon init . --name my-app --no-git
 
 echo "━━━ add rocks:fakebin ━━━"
-moon use lua@5.4
+moon interpreter set lua@5.4
 moon add rocks:fakebin
 moon sync
 

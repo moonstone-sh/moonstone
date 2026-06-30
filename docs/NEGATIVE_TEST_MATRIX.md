@@ -27,7 +27,7 @@ This matrix tracks failure-mode coverage for Moonstone commands, with emphasis o
 | Compatibility | Unsupported build type | `UnsupportedLuaRocksBuildType`; no manifest mutation | Planned |
 | Materialization | Source download fails | Materializer/download error with package context | Planned |
 | Materialization | Hash mismatch | Structured `hash_mismatch`; no env replacement | Planned |
-| Runtime | Missing runtime parser for rockspec | Runtime-required error with `moon use` guidance | Planned |
+| Runtime | Missing runtime parser for rockspec | Runtime-required error with `moon interpreter set` guidance | Planned |
 | Runtime | Bad runtime executable path | Runtime-required error with concrete path | Planned |
 | Store/offline | Cached rocks artifact missing transitive dep | `OfflineTransitiveArtifactMissing` with parent/child/resolver/constraint details; lock/env unchanged | `fixtures/scenario-tests/26-rocks-transitive-offline-missing-child.sh` (plain text + JSON diagnostic assertions) |
 | Store/offline | Locked replay artifact missing from store | `LockedArtifactMissing` with `locked_artifact_missing` diagnostic (name, version, resolver, expected hash); lock/env unchanged | Covered by `install --locked` path; `graph_provider.getArtifact` enforces strict hash identity gate |

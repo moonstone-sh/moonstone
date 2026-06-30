@@ -2,9 +2,9 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
 
-pub const RuntimePathCommand = struct {
+pub const InterpreterPathCommand = struct {
     pub const name = "path";
-    pub const description = "Derive path to a runtime";
+    pub const description = "Derive path to an interpreter";
 
     positionals: []const []const u8 = &.{},
     current: bool = false,
@@ -16,15 +16,15 @@ pub const RuntimePathCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon runtime path [spec] [flags]
+            \\Usage: moon interpreter path [spec] [flags]
             \\
-            \\Print paths associated with a Lua runtime.
+            \\Print paths associated with a Lua interpreter.
             \\
             \\Arguments:
-            \\  [spec]        Runtime version spec (e.g. 5.4, 5.1.5)
+            \\  [spec]        Interpreter version spec (e.g. 5.4, 5.1.5)
             \\
             \\Flags:
-            \\  --current     Use the current project's runtime
+            \\  --current     Use the current project's interpreter
             \\  --bin         Path to the 'bin' directory (e.g. where lua executable lives)
             \\  --include     Path to the 'include' directory
             \\  --lib         Path to the 'lib' directory
@@ -34,7 +34,7 @@ pub const RuntimePathCommand = struct {
         , .{});
     }
 
-    pub fn run(self: RuntimePathCommand, ctx: *router.Context) !void {
+    pub fn run(self: InterpreterPathCommand, ctx: *router.Context) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -165,8 +165,8 @@ pub const RuntimePathCommand = struct {
                     };
                 }
             } else {
-                try stdout.print("Error: runtime {s} not found in local store for target {s}.\n", .{ spec, self.target orelse "native" });
-                return error.RuntimeNotFound;
+                try stdout.print("Error: interpreter {s} not found in local store for target {s}.\n", .{ spec, self.target orelse "native" });
+                return error.InterpreterNotFound;
             }
         } else {
             return error.MissingArgument;

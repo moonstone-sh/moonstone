@@ -82,14 +82,7 @@ pub const Version = struct {
         return 0;
     }
 
-    pub fn format(
-        self: Version,
-        comptime fmt: []const u8,
-        options: std.fmt.Options,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    pub fn print(self: Version, writer: anytype) !void {
         try writer.print("{d}", .{self.major});
         if (self.precision >= 2) try writer.print(".{d}", .{self.minor});
         if (self.precision >= 3) try writer.print(".{d}", .{self.patch});
@@ -138,6 +131,20 @@ pub const Version = struct {
 
 /// Represents a single interval of versions.
 pub const Interval = struct {
+
+    pub fn print(self: Interval, writer: anytype) !void {
+        if (self.min == null and self.max == null) {
+            try writer.writeAll("*");
+            return;
+        }
+        
+        try writer.writeAll(if (self.include_min) "[" else "(");
+        if (self.min) |min| try min.print(writer) else try writer.writeAll("0.0.0");
+        try writer.writeAll(", ");
+        if (self.max) |max| try max.print(writer) else try writer.writeAll("∞");
+        try writer.writeAll(if (self.include_max) "]" else ")");
+    }
+
     min: ?Version = null,
     max: ?Version = null,
     include_min: bool = true,
@@ -272,6 +279,22 @@ pub const Interval = struct {
 
     /// Represents a set of allowed versions (disjoint intervals).
     pub const VersionRange = struct {
+
+    pub fn print(self: VersionRange, writer: anytype) !void {
+        if (self.intervals.len == 0) {
+            try writer.writeAll("empty");
+            return;
+        }
+        if (self.intervals.len == 1 and self.intervals[0].min == null and self.intervals[0].max == null) {
+            try writer.writeAll("*");
+            return;
+        }
+        for (self.intervals, 0..) |interval, i| {
+            if (i > 0) try writer.writeAll(" || ");
+            try interval.print(writer);
+        }
+    }
+
         intervals: []const Interval,
 
         pub fn any(allocator: std.mem.Allocator) !VersionRange {

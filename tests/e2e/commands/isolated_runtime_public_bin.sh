@@ -20,7 +20,7 @@ mkdir -p "$WORKDIR/app"
 
 # Create the app with lua@5.4.7 and add the isolated bin package as a runtime dependency.
 (cd "$WORKDIR/app" && moon init . --name my-app --no-git --no-sync)
-(cd "$WORKDIR/app" && moon use lua@5.4.7 --no-sync)
+(cd "$WORKDIR/app" && moon interpreter set lua@5.4.7 --no-sync)
 (cd "$WORKDIR/app" && moon add synthetic-isolated-bin)
 
 # Verify the public bin scope env.toml exists and prepends the isolated luajit bin directory.

@@ -232,8 +232,13 @@ pub const RegistryProvider = struct {
                 break;
             }
         }
+        if (resolver_str == null) {
+            if (self.findStoreDependencyOrigin(request.name, null)) |origin| {
+                resolver_str = resolverKindToStoreString(origin.child_resolver);
+            }
+        }
 
-        const query = driver_mod.ArtifactQuery{ .name = request.name };
+        const query = storeQueryForName(request.name, resolver_str, self.options.target);
         const candidates = try self.index.findCandidates(query);
         defer {
             for (candidates) |*c| c.deinit(self.allocator);
@@ -244,24 +249,15 @@ pub const RegistryProvider = struct {
             if (candidateHasMalformedRuntimeMetadata(c)) continue;
             if (resolver_str) |rs| {
                 if (c.resolver) |cr| {
-                    if (cr.len == 0 and std.mem.eql(u8, rs, "moonstone")) continue;
+                    if (cr.len == 0 and !std.mem.eql(u8, rs, "moonstone")) continue;
                     if (cr.len > 0 and !std.mem.eql(u8, cr, rs)) continue;
-                } else if (std.mem.eql(u8, rs, "moonstone")) {
+                } else if (!std.mem.eql(u8, rs, "moonstone")) {
                     continue;
                 }
             }
             const v = semver.Version.parse(c.version) catch continue;
             if (v.compare(req_version) == 0) {
-                if (self.options.runtime) |active_abi| {
-                    if (c.kind != .runtime) {
-                        const has_isolated_runtime = if (c.runtime) |r| r.len > 0 else false;
-                        if (!has_isolated_runtime) {
-                            if (c.lua_abi) |candidate_abi| {
-                                if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
-                            }
-                        }
-                    }
-                }
+                if (!storeCandidateCompatible(c, self.options)) continue;
 
                 // Verify the artifact path actually exists on disk
                 std.Io.Dir.cwd().access(self.io, c.path, .{}) catch |err| {
@@ -453,17 +449,11 @@ pub const RegistryProvider = struct {
         // 2. Check local store
         const may_check_store = if (res_constraint) |rc| rc != .path and rc != .link else true;
         if (may_check_store) {
-            const query = driver_mod.ArtifactQuery{ .name = name };
             var resolver_filter: ?[]const u8 = null;
             if (res_constraint) |rc| {
-                resolver_filter = switch (rc) {
-                    .moonstone => "moonstone",
-                    .rocks => "rocks",
-                    .artifact => null,
-                    .path => null,
-                    .link => null,
-                };
+                resolver_filter = resolverKindToStoreString(rc);
             }
+            const query = storeQueryForName(name, resolver_filter, self.options.target);
             const local_candidates = self.index.findCandidates(query) catch |err| blk: {
                 if (err == error.SQLitePrepareError) break :blk @as([]driver_mod.Candidate, &.{});
                 return err;
@@ -488,16 +478,7 @@ pub const RegistryProvider = struct {
                     if (rc == .path and !std.mem.eql(u8, cand.artifact_hash, "path")) continue;
                     if (rc == .artifact and (std.mem.eql(u8, cand.artifact_hash, "link") or std.mem.eql(u8, cand.artifact_hash, "path"))) continue;
                 }
-                if (self.options.runtime) |active_abi| {
-                    if (cand.kind != .runtime) {
-                        const has_isolated_runtime = if (cand.runtime) |r| r.len > 0 else false;
-                        if (!has_isolated_runtime) {
-                            if (cand.lua_abi) |candidate_abi| {
-                                if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) continue;
-                            }
-                        }
-                    }
-                }
+                if (!storeCandidateCompatible(cand, self.options)) continue;
 
                 if (res_constraint) |_| {
                     var already_present = false;
@@ -976,6 +957,49 @@ fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
     const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love") else index_name;
 
     return std.mem.eql(u8, canonical_idx, canonical_req);
+}
+
+fn resolverKindToStoreString(kind: ?root.ResolverKind) ?[]const u8 {
+    const resolved = kind orelse return null;
+    return switch (resolved) {
+        .moonstone => "moonstone",
+        .rocks => "rocks",
+        .artifact => null,
+        .path => null,
+        .link => null,
+    };
+}
+
+fn storeQueryForName(name: []const u8, resolver: ?[]const u8, target: ?[]const u8) driver_mod.ArtifactQuery {
+    return .{
+        .name = name,
+        .case_insensitive_name = if (resolver) |r| std.mem.eql(u8, r, "rocks") else false,
+        .resolver = resolver,
+        .target = target,
+    };
+}
+
+fn storeCandidateCompatible(candidate: driver_mod.Candidate, options: root.ResolveOptions) bool {
+    if (options.runtime) |active_abi| {
+        if (candidate.kind != .runtime) {
+            const has_isolated_runtime = if (candidate.runtime) |runtime| runtime.len > 0 else false;
+            if (!has_isolated_runtime) {
+                if (candidate.lua_abi) |candidate_abi| {
+                    if (!root.options.runtimeAbiMatches(active_abi, candidate_abi)) return false;
+                }
+            }
+        }
+    }
+
+    if (candidate.runtime_artifact_hash) |runtime_artifact_hash| {
+        if (runtime_artifact_hash.len > 0) {
+            if (options.runtime_artifact_hash) |expected_runtime_artifact_hash| {
+                if (!std.mem.eql(u8, runtime_artifact_hash, expected_runtime_artifact_hash)) return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {

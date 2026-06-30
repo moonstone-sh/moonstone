@@ -10,10 +10,10 @@ cp -R "${SANDBOX_DIR}/my-lib" "${WORKDIR}/my-lib"
 cd "${WORKDIR}/consumer"
 
 moon init . --name link-check-consumer --no-git
-moon use lua@5.4
+moon interpreter set lua@5.4
 
 moon add path:../my-lib --no-sync
-assert_file_contains moonstone.toml '"my-lib" = "path:../my-lib"'
+assert_file_contains moonstone.toml 'constraint = "path:../my-lib"'
 
 cd subdir
 moon sync
@@ -33,7 +33,7 @@ if [[ "${after_env}" != "${before_env}" ]]; then
 fi
 
 cd "${WORKDIR}/consumer"
-printf '\n[dependencies.libs]\n"inspect" = "^3.1.3"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "inspect"\nconstraint = "^3.1.3"\nrole = "dependency"\n' >> moonstone.toml
 if moon sync --check >/tmp/moonstone-contract-install-check-stale.out 2>&1; then
   echo "✗ install --check should fail for stale lockfile"
   exit 1
@@ -66,4 +66,4 @@ mkdir -p "${WORKDIR}/absolute-consumer"
 cd "${WORKDIR}/absolute-consumer"
 moon init . --name absolute-consumer --no-git
 moon add "path:${WORKDIR}/my-lib" --no-sync
-assert_file_contains moonstone.toml "path:${WORKDIR}/my-lib"
+assert_file_contains moonstone.toml "constraint = \"path:${WORKDIR}/my-lib\""

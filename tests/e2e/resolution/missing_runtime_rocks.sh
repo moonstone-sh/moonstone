@@ -25,6 +25,6 @@ moon add rocks:inspect 2>&1 | tee output.log
 set -o pipefail
 
 grep "Error: Moonstone requires an active Lua runtime for this command" output.log
-grep "Please run \`moon use lua@5.4\` or \`moon runtime install\` first" output.log
+grep "Please run \`moon interpreter set lua@5.4\` or \`moon interpreter install\` first" output.log
 
 echo "━━━ ✓ Missing runtime for rocks test passed ━━━"

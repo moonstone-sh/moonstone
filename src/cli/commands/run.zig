@@ -12,7 +12,7 @@ pub const RunCommand = struct {
     prod: bool = false,
     dev: bool = true,
     shell: ?[]const u8 = null,
-    runtime: ?[]const u8 = null,
+    interpreter: ?[]const u8 = null,
     target: ?[]const u8 = null,
     json: bool = false,
 
@@ -26,7 +26,7 @@ pub const RunCommand = struct {
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
             \\  --shell <s>      Shell to use for execution
-            \\  --runtime <r>    Override runtime
+            \\  --interpreter <i> Override interpreter
             \\  --target <t>     Override target
             \\  --json           Output results as JSON (bloated protocol)
             \\
@@ -34,16 +34,26 @@ pub const RunCommand = struct {
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
-        _ = args;
+        const current = if (args.len > 0) args[args.len - 1] else "";
+        if (std.mem.startsWith(u8, current, "--")) return &.{};
+        const prefix = if (std.mem.indexOfScalar(u8, current, ':')) |colon| current[0..colon] else current;
         const content = std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024)) catch return &.{};
         defer ctx.allocator.free(content);
         var mt = moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content) catch return &.{};
         defer mt.deinit(ctx.allocator);
 
         var list = std.ArrayList([]const u8).empty;
+        var seen = std.StringHashMap(void).init(ctx.allocator);
+        defer seen.deinit();
         var sit = mt.scripts.iterator();
         while (sit.next()) |entry| {
-            try list.append(ctx.allocator, try ctx.allocator.dupe(u8, entry.key_ptr.*));
+            const script_name = entry.key_ptr.*;
+            const suggestion = if (std.mem.indexOfScalar(u8, script_name, ':')) |colon| script_name[0..colon] else script_name;
+            if (prefix.len > 0 and !std.mem.startsWith(u8, suggestion, prefix)) continue;
+            if (seen.contains(suggestion)) continue;
+            const owned = try ctx.allocator.dupe(u8, suggestion);
+            try seen.put(owned, {});
+            try list.append(ctx.allocator, owned);
         }
         return list.toOwnedSlice(ctx.allocator);
     }

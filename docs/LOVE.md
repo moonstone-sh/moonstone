@@ -70,7 +70,7 @@ my-game/
 The generated manifest includes the imported runtime and a dev script:
 
 ```toml
-[dependencies.runtime]
+[dependencies.dependency]
 "moonstone:moonstone/love" = "11.5"
 
 [scripts]

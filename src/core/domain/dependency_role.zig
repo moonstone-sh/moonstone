@@ -19,10 +19,14 @@ pub const DependencyRole = enum {
     optional,
 
     pub fn toString(self: DependencyRole) []const u8 {
-        return @tagName(self);
+        return switch (self) {
+            .runtime => "dependency",
+            else => @tagName(self),
+        };
     }
 
     pub fn fromString(str: []const u8) ?DependencyRole {
+        if (std.mem.eql(u8, str, "dependency")) return .runtime;
         inline for (std.meta.fields(DependencyRole)) |field| {
             if (std.mem.eql(u8, str, field.name)) {
                 return @enumFromInt(field.value);

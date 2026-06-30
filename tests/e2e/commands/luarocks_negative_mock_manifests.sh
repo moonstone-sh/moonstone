@@ -8,8 +8,8 @@ rm -rf "${WORKDIR}"
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
-moon init . --name rocks-negative-mock-manifests --runtime lua@5.4 --no-sync --no-git
-moon use lua@5.4
+moon init . --name rocks-negative-mock-manifests --interpreter lua@5.4 --no-sync --no-git
+moon interpreter set lua@5.4
 
 cat >> "${MOONSTONE_CONFIG}/config.toml" <<'TOML'
 [network]
@@ -41,7 +41,7 @@ assert_manifest_failure() {
   local output
   output=$(moon add rocks:fakebin --no-sync 2>&1 || true)
   stop_mock
-  assert_contains "${output}" "LuaRocks registry is unreachable" "${mode} plain LuaRocks error"
+  assert_contains "${output}" "no versions of fakebin match" "${mode} plain LuaRocks error"
   assert_file_not_contains "moonstone.toml" 'fakebin'
 }
 
@@ -55,6 +55,6 @@ stop_mock
 assert_json_valid "${json_error}"
 assert_ndjson_terminator "${json_error}"
 assert_last_json_field "${json_error}" "kind" "ERROR"
-assert_last_json_field "${json_error}" "value" "error.RocksVersionDiscoveryFailed"
-assert_last_json_field "${json_error}" "data.error_detail" "LuaRocks registry is unreachable or returned an invalid manifest"
+assert_last_json_field "${json_error}" "value" "error.NoSolution"
+assert_contains "${json_error}" "no versions of fakebin match" "json LuaRocks error detail"
 assert_file_not_contains "moonstone.toml" 'fakebin'

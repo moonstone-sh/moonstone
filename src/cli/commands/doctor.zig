@@ -229,7 +229,7 @@ pub const DoctorCommand = struct {
         try results.append(allocator, .{ .passed = net_ok, .name = .network_connectivity, .message = net_msg, .fixed = false });
         try self.reportCheck(emitter, io, stdout, "network_connectivity", net_ok, net_msg);
 
-        // ── 6. Default runtime ───────────────────────────────────────────
+        // ── 6. Default interpreter ───────────────────────────────────────────
         var rt_ok = true;
         var rt_msg: []const u8 = "";
         const config_toml_path = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
@@ -259,7 +259,7 @@ pub const DoctorCommand = struct {
                                     rt_msg = try std.fmt.allocPrint(allocator, "OK ({s})", .{rt_spec});
                                 } else {
                                     rt_ok = false;
-                                    rt_msg = try std.fmt.allocPrint(allocator, "WARN: Default runtime {s} not found in store. Run 'moon use --global <spec>'", .{rt_spec});
+                                    rt_msg = try std.fmt.allocPrint(allocator, "WARN: Default interpreter {s} not found in store. Run 'moon interpreter set --global <spec>'", .{rt_spec});
                                 }
                             } else {
                                 rt_ok = false;

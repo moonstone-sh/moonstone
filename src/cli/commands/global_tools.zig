@@ -32,7 +32,7 @@ pub fn ensureProject(allocator: std.mem.Allocator, env: *std.process.Environ.Map
             \\version = "0.0.0"
             \\kind = "script"
             \\
-            \\[runtime]
+            \\[interpreter]
             \\name = "lua"
             \\version = "5.4"
             \\abi = "5.4"

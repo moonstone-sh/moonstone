@@ -97,16 +97,16 @@ name = "my-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 EOF
 
 run_cmd "use lua 5.4" \
-    bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon use lua@5.4 --no-sync'
+    bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon interpreter set lua@5.4 --no-sync'
 
 run_cmd "add inspect" \
     bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon add inspect --no-sync'
@@ -130,12 +130,12 @@ name = "my-app"
 version = "0.1.0"
 kind = "script"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 EOF
 
 run_cmd "register my-lib" \

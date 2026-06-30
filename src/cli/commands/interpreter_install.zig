@@ -2,9 +2,9 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
 
-pub const RuntimeInstallCommand = struct {
+pub const InterpreterInstallCommand = struct {
     pub const name = "install";
-    pub const description = "Install a Lua runtime";
+    pub const description = "Install a Lua interpreter";
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
@@ -13,12 +13,12 @@ pub const RuntimeInstallCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon runtime install [flags] <spec>
+            \\Usage: moon interpreter install [flags] <spec>
             \\
-            \\Install a Lua runtime from a registry.
+            \\Installs a Lua interpreter from a registry.
             \\
             \\Arguments:
-            \\  <spec>        Runtime spec (e.g. lua@5.4, luajit@2.1)
+            \\  <spec>        Interpreter spec (e.g. lua@5.4, luajit@2.1)
             \\
             \\Flags:
             \\  --target <t>  Target triple
@@ -28,7 +28,7 @@ pub const RuntimeInstallCommand = struct {
         , .{});
     }
 
-    pub fn run(self: RuntimeInstallCommand, ctx: *router.Context) !void {
+    pub fn run(self: InterpreterInstallCommand, ctx: *router.Context) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -37,17 +37,20 @@ pub const RuntimeInstallCommand = struct {
         if (self.positionals.len == 0) return error.MissingArgument;
         const spec = self.positionals[0];
 
-        try stdout.print("Installing runtime: {s}...\n", .{spec});
+        try stdout.print("Adding interpreter: {s}...\n", .{spec});
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
         defer allocator.free(index_db_path);
         const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
         defer allocator.free(index_db_path_z);
-        
+
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
@@ -59,7 +62,7 @@ pub const RuntimeInstallCommand = struct {
         var pkg_ver: []const u8 = "*";
         if (std.mem.lastIndexOfScalar(u8, spec, '@')) |pos| {
             pkg_name = spec[0..pos];
-            pkg_ver = spec[pos+1..];
+            pkg_ver = spec[pos + 1 ..];
         }
         pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(pkg_name);
 
@@ -94,7 +97,7 @@ pub const RuntimeInstallCommand = struct {
             .on_event_context = &resolve_cb_ctx,
         }, env);
         defer final_res.deinit(allocator);
-        
+
         try stdout.print("Resolved to {s}@{s}\n", .{ final_res.name, final_res.version });
 
         var mat = moonstone.materialization.materializer.Materializer{
@@ -104,7 +107,7 @@ pub const RuntimeInstallCommand = struct {
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
         };
-        
+
         const mat_res = switch (final_res.location) {
             .local_store, .local_path => moonstone.materialization.materializer.MaterializeResult{
                 .path = try allocator.dupe(u8, final_res.local_path.?),
@@ -118,11 +121,11 @@ pub const RuntimeInstallCommand = struct {
                     final_res.remote_desc.?,
                     r.artifact_idx,
                 ),
-                else => return error.UnsupportedOriginForRuntime,
+                else => return error.UnsupportedOriginForInterpreter,
             },
         };
         defer mat_res.deinit(allocator);
 
-        try stdout.print("Runtime installed successfully to {s}\n", .{mat_res.path});
+        try stdout.print("Interpreter installed successfully to {s}\n", .{mat_res.path});
     }
 };

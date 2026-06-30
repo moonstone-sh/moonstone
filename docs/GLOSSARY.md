@@ -14,7 +14,7 @@ Disambiguation of terms introduced by the dependency-role and capability model.
 - `script` — standalone script
 - `runtime` — Lua interpreter (PUC Lua, LuaJIT)
 
-**DependencyRole** (`role = "runtime" | "dev" | "tool" | "helper" | "peer" | "optional"`)  
+**DependencyRole** (`role = "dependency" | "dev" | "tool" | "helper" | "peer" | "optional"`)  
 → How the **project consumes** the package.
 
 - `runtime` — production dependency
@@ -124,7 +124,7 @@ name = "acme/comptime-gen"
 constraint = "^1.0"
 
 [[dependencies]]
-role = "runtime"
+role = "dependency"
 name = "acme/comptime-gen"
 constraint = "^1.0"
 ```

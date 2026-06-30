@@ -75,17 +75,17 @@ name = "registry-consumer"
 version = "0.1.0"
 kind = "lib"
 
-[runtime]
+[interpreter]
 name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.dependency]
 EOF
 moon registry add local "file://${REGISTRY}"
 grep 'local' moonstone.toml
 moon add --no-sync 'local:moonstone/test-local@0.1.0'
-grep 'moonstone/test-local' moonstone.toml
+grep 'name = "moonstone/test-local"' moonstone.toml
 cd "${WORKDIR}"
 
 echo "━━━ moon registry purge ━━━"

@@ -1,6 +1,7 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const progress_runtime = @import("../progress.zig");
 const profiler = moonstone.diagnostics.profiler;
 
 fn packageNamesMatch(left: []const u8, right: []const u8) bool {
@@ -12,6 +13,26 @@ fn solutionContainsPackage(solution: *const std.StringArrayHashMapUnmanaged(moon
         if (packageNamesMatch(candidate_name, name)) return true;
     }
     return false;
+}
+
+/// Command-specific data passed through WorkerContext.cmd_data.
+const AddWorkData = struct {
+    cmd: add_command,
+    ctx: *router.Context,
+    error_detail: ?@import("command.zig").CliErrorDetail = null,
+};
+
+/// Worker entry point: runs the add logic on a background thread,
+/// sending progress events through the queue.
+fn addWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
+    const data: *AddWorkData = @ptrCast(@alignCast(wctx.cmd_data orelse return error.WorkerMissingData));
+    data.cmd.runImpl(data.ctx, .{ .queue = wctx }) catch |err| {
+        if (data.ctx.error_detail) |detail| {
+            data.error_detail = detail;
+            data.ctx.error_detail = null;
+        }
+        return err;
+    };
 }
 
 pub const add_command = struct {
@@ -55,7 +76,7 @@ pub const add_command = struct {
             \\  --dry-run        Show what would be added without modifying files
             \\  --offline        Do not access network
             \\  --prefer-local   Prefer local candidates over remote
-            \\  --no-sync     Do not run sync after adding
+            \\  --no-sync        Do not run sync after adding
             \\  --update         Re-resolve during the follow-up sync
             \\  --global         Add tool dependency to the global tools environment
             \\  --json           Output results as JSON
@@ -70,7 +91,10 @@ pub const add_command = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
 
@@ -111,6 +135,24 @@ pub const add_command = struct {
     }
 
     pub fn run(self: add_command, ctx: *router.Context) !void {
+        if (self.json) {
+            return self.runImpl(ctx, .{ .direct = ctx.stdout });
+        }
+
+        if (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null) {
+            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+        }
+
+        var data = AddWorkData{ .cmd = self, .ctx = ctx };
+        progress_runtime.runWithProgress(ctx.io, ctx.stderr, std.posix.STDERR_FILENO, ctx.allocator, ctx.env, addWorker, &data) catch |err| {
+            if (data.error_detail) |detail| {
+                ctx.error_detail = detail;
+            }
+            return err;
+        };
+    }
+
+    pub fn runImpl(self: add_command, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -127,7 +169,7 @@ pub const add_command = struct {
             defer @import("global_tools.zig").leaveProject(allocator, io, global_project);
 
             if (!self.json) try stdout.print("Using global tools environment: {s}\n", .{global_project.path});
-            return try global_self.run(ctx);
+            return try global_self.runImpl(ctx, backend);
         }
 
         const project_root = try moonstone.project.discovery.enterRoot(allocator, io, ".");
@@ -155,7 +197,7 @@ pub const add_command = struct {
         defer mt.deinit(allocator);
 
         if (mt.runtimeName().len == 0) {
-            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [runtime]. Run `moon use lua@5.4` or `moon use luajit@2.1` to select one." } };
+            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [interpreter]. Run `moon interpreter set lua@5.4` or `moon interpreter set luajit@2.1` to select one." } };
             return error.MissingRuntime;
         }
 
@@ -176,7 +218,10 @@ pub const add_command = struct {
         };
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         const abs_index_dir = try std.fs.path.resolve(allocator, &.{paths.index});
         defer allocator.free(abs_index_dir);
@@ -188,9 +233,12 @@ pub const add_command = struct {
         defer allocator.free(index_db_path_z);
 
         const idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
-        defer { var i = idx; i.deinit(); }
+        defer {
+            var i = idx;
+            i.deinit();
+        }
 
-        if (!self.json) try @import("command.zig").progress(stdout, "Reading registry configuration...\n", .{});
+        if (!self.json) backend.phase("Reading registry configuration...", .{});
         var profile_span = profiler.now();
         const resolved_registries = try moonstone.registry.resolver.resolve(allocator, io, env);
         profiler.span("add.registry.resolve", profile_span);
@@ -202,18 +250,35 @@ pub const add_command = struct {
             .emitter = emitter,
         };
 
+        const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
+            .direct => @import("command.zig").onResolveEvent,
+            .queue => progress_runtime.onResolveEventProgress,
+        };
+        const on_resolve_ctx: ?*anyopaque = switch (backend) {
+            .direct => @ptrCast(&resolve_cb_ctx),
+            .queue => @ptrCast(backend.queue),
+        };
+        const on_solver_cb: ?moonstone.resolution.solver.report.SolverCallback = switch (backend) {
+            .direct => @import("command.zig").onSolverEvent,
+            .queue => progress_runtime.onSolverEventProgress,
+        };
+        const on_solver_ctx: ?*anyopaque = switch (backend) {
+            .direct => @ptrCast(&resolve_cb_ctx),
+            .queue => @ptrCast(backend.queue),
+        };
+
         var resolver = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
 
-        if (!self.json) try @import("command.zig").progress(stdout, "Resolving active runtime...\n", .{});
+        if (!self.json) backend.phase("Resolving active runtime...", .{});
         profile_span = profiler.now();
         const rt_res = resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName()), mt.runtimeConstraint(), idx, resolved_registries, .{
             .offline = self.offline,
             .prefer_local = true,
-            .on_event = @import("command.zig").onResolveEvent,
-            .on_event_context = &resolve_cb_ctx,
+            .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
         }, env) catch |err| {
             if (err == error.NoCompatibleCandidateFound or err == error.PackageNotFound or err == error.FileNotFound) {
-                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon use lua@5.4` or `moon runtime install` first." } };
+                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon interpreter set lua@5.4` or `moon interpreter install` first." } };
                 return error.MissingRuntime;
             }
             return err;
@@ -310,20 +375,27 @@ pub const add_command = struct {
         profile_span = profiler.now();
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
         provider_impl.init(
-            allocator, io, idx, resolved_registries, .{
+            allocator,
+            io,
+            idx,
+            resolved_registries,
+            .{
                 .offline = self.offline,
                 .prefer_local = self.prefer_local or !self.update,
                 .runtime = runtime_abi,
                 .runtime_path = mat.runtime_path,
-            }, env, lua_exe, provider_targets_slice,
+            },
+            env,
+            lua_exe,
+            provider_targets_slice,
         );
         profiler.spanCount("add.provider.plan", profile_span, "targets", targets.items.len);
         // Deinit moved to end of function
 
-        if (!self.json) try @import("command.zig").renderSpinner(&resolve_cb_ctx, "Solving requested dependencies...", .{});
+        if (!self.json) backend.phase("Solving requested dependencies...", .{});
         var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
-            .on_event = @import("command.zig").onSolverEvent,
-            .on_event_context = &resolve_cb_ctx,
+            .on_event = on_solver_cb,
+            .on_event_context = on_solver_ctx,
         });
 
         var solution = std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
@@ -353,7 +425,7 @@ pub const add_command = struct {
             return err;
         };
         profiler.spanCount("add.pubgrub.solve", profile_span, "packages", solution.count());
-        if (!self.json) try @import("command.zig").renderDone(&resolve_cb_ctx, "Resolved {d} dependencies.", .{solution.count()});
+        if (!self.json) backend.phaseDone("Resolved {d} dependencies.", .{solution.count()});
         defer {
             var sit = solution.iterator();
             while (sit.next()) |entry| {
@@ -394,8 +466,8 @@ pub const add_command = struct {
                     .runtime = runtime_abi,
                     .runtime_artifact_hash = mut_rt_res.artifact_hash,
                     .runtime_path = mat.runtime_path,
-                    .on_event = @import("command.zig").onResolveEvent,
-                    .on_event_context = &resolve_cb_ctx,
+                    .on_event = on_resolve_cb,
+                    .on_event_context = on_resolve_ctx,
                 }, kind, env) catch |err| {
                     if (err == error.RocksVersionDiscoveryFailed and parsed.resolver == null) continue;
                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
@@ -412,8 +484,8 @@ pub const add_command = struct {
                             .offline = self.offline,
                             .runtime = runtime_abi,
                             .runtime_path = mat.runtime_path,
-                            .on_event = @import("command.zig").onResolveEvent,
-                            .on_event_context = &resolve_cb_ctx,
+                            .on_event = on_resolve_cb,
+                            .on_event_context = on_resolve_ctx,
                         }, env) catch continue;
                         resolved_direct_opt = .{
                             .name = try allocator.dupe(u8, parsed.name),
@@ -468,7 +540,12 @@ pub const add_command = struct {
             const resolved_art = entry.value_ptr.*;
             const v_str = resolved_art.version;
 
-            if (!self.json) try @import("command.zig").progress(stdout, "Materializing [{d}/{d}] {s}@{s}...\n", .{ materialize_index, materialize_total, pkg_name, v_str });
+            if (!self.json) backend.status("add-materialize", "Materializing [{d}/{d}] {s}@{s}...", .{
+                materialize_index,
+                materialize_total,
+                pkg_name,
+                v_str,
+            });
 
             // Find if this was an explicit positional
             var is_explicit = false;
@@ -543,13 +620,17 @@ pub const add_command = struct {
 
             var resolved_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
             for (order) |kind| {
-                resolved_opt = resolver.resolveWithKind(pkg_name, v_str, idx, resolved_registries, .{
+                const resolve_name = if (kind == .path) switch (resolved_art.origin) {
+                    .path => |p| p,
+                    else => pkg_name,
+                } else pkg_name;
+                resolved_opt = resolver.resolveWithKind(resolve_name, v_str, idx, resolved_registries, .{
                     .prefer_local = self.prefer_local,
                     .offline = self.offline,
                     .runtime = runtime_abi,
                     .runtime_path = mat.runtime_path,
-                    .on_event = @import("command.zig").onResolveEvent,
-                    .on_event_context = &resolve_cb_ctx,
+                    .on_event = on_resolve_cb,
+                    .on_event_context = on_resolve_ctx,
                 }, kind, env) catch |err| {
                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
@@ -558,11 +639,11 @@ pub const add_command = struct {
             }
 
             if (resolved_opt == null) {
-                if (!std.mem.eql(u8, pkg_name, "lua")) { 
+                if (!std.mem.eql(u8, pkg_name, "lua")) {
                     if (emitter) |e| {
                         try e.emit(io, .WARN, pkg_name, "warn.could-not-resolve", .{ .version = v_str });
                     } else {
-                        try stdout.print("Warning: could not resolve details for {s}@{s}\n", .{ pkg_name, v_str });
+                        try stdout.print("Warning: could not resolve details for {s}@{s}", .{ pkg_name, v_str });
                     }
                 }
                 continue;
@@ -590,18 +671,27 @@ pub const add_command = struct {
                     if (self.save_tilde) break :blk "~";
                     break :blk "^";
                 };
-                const final_ver = if (explicit_prefix) |reg|
-                    if (std.mem.eql(u8, reg, "path")) try allocator.dupe(u8, explicit_spec.?) else try std.fmt.allocPrint(allocator, "{s}:{s}@{s}{s}", .{ reg, pkg_name, range_prefix, resolved.version })
-                else
-                    try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved.version });
+                // Store the dependency as a [[dependencies]] entry with explicit
+                // resolver and constraint fields.  The constraint is always just
+                // the version (e.g. "^1.3.2-1"), never the full spec.
+                const final_ver = try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved.version });
                 defer allocator.free(final_ver);
                 const effective_kind = blk: {
                     if (self.bin) break :blk moonstone.domain.manifest.Kind.bin;
                     if (self.lib) break :blk moonstone.domain.manifest.Kind.lib;
                     break :blk resolved.kind;
                 };
-                // target_role already computed above
-                try mt.add_dependency(allocator, pkg_name, final_ver, target_role, self.optional);
+                _ = effective_kind;
+                // For path dependencies, the "version" is the original spec
+                // (e.g. "path:../my-lib") since path deps don't have semver.
+                const dep_resolver: ?[]const u8 = explicit_prefix;
+                const dep_constraint = if (explicit_prefix) |reg|
+                    if (std.mem.eql(u8, reg, "path")) (explicit_spec orelse final_ver) else final_ver
+                else if (resolved.version.len == 0 or std.mem.eql(u8, resolved.version, "0.0.0")) blk: {
+                    if (explicit_spec) |spec| break :blk spec;
+                    break :blk "*";
+                } else final_ver;
+                try mt.add_dependency_with_resolver(allocator, pkg_name, dep_constraint, target_role, self.optional, dep_resolver);
                 _ = effective_kind;
                 try added_list.append(allocator, try allocator.dupe(u8, pkg_name));
             }
@@ -633,19 +723,17 @@ pub const add_command = struct {
                 .version = try allocator.dupe(u8, resolved.version),
                 .kind = resolved.kind,
                 .source_hash = if (store_source_hash.len > 0) try allocator.dupe(u8, store_source_hash) else if (resolved.source_hash.len > 0) try allocator.dupe(u8, resolved.source_hash) else &.{},
-                .recipe_hash = if (store_recipe_hash.len > 0) try allocator.dupe(u8, store_recipe_hash) else if (resolved.recipe_hash.len > 0) try allocator.dupe(u8, resolved.recipe_hash) else if (resolved.remote_desc) |rd| (
-                    if (rd.artifact[resolved.artifact_idx.?].recipe_hash.len > 0) 
-                        try allocator.dupe(u8, rd.artifact[resolved.artifact_idx.?].recipe_hash)
-                    else 
-                        try moonstone.store.facade.computeRecipeHash(allocator, .{
-                            .kind = "prebuilt",
-                            .name = resolved.name,
-                            .version = resolved.version,
-                            .strategy = "registry",
-                            .target = "native",
-                            .lua_abi = runtime_abi,
-                        })
-                ) else try moonstone.store.facade.computeRecipeHash(allocator, .{
+                .recipe_hash = if (store_recipe_hash.len > 0) try allocator.dupe(u8, store_recipe_hash) else if (resolved.recipe_hash.len > 0) try allocator.dupe(u8, resolved.recipe_hash) else if (resolved.remote_desc) |rd| (if (rd.artifact[resolved.artifact_idx.?].recipe_hash.len > 0)
+                    try allocator.dupe(u8, rd.artifact[resolved.artifact_idx.?].recipe_hash)
+                else
+                    try moonstone.store.facade.computeRecipeHash(allocator, .{
+                        .kind = "prebuilt",
+                        .name = resolved.name,
+                        .version = resolved.version,
+                        .strategy = "registry",
+                        .target = "native",
+                        .lua_abi = runtime_abi,
+                    })) else try moonstone.store.facade.computeRecipeHash(allocator, .{
                     .kind = "prebuilt",
                     .name = resolved.name,
                     .version = resolved.version,
@@ -708,9 +796,9 @@ pub const add_command = struct {
                 try e.terminate(io, name, "ok", .{ .added = added_list.items, .dry_run = self.dry_run });
             } else {
                 if (self.dry_run) {
-                    try stdout.print("Dry-run: would have added {d} packages and updated moonstone.lock.\n", .{ added_list.items.len });
+                    try stdout.print("Dry-run: would have added {d} packages and updated moonstone.lock.\n", .{added_list.items.len});
                 } else {
-                    try stdout.print("Added {d} packages and updated moonstone.lock.\n", .{ added_list.items.len });
+                    try stdout.print("Added {d} packages and updated moonstone.lock.\n", .{added_list.items.len});
                 }
             }
         } else if (emitter) |e| {
@@ -718,9 +806,14 @@ pub const add_command = struct {
         }
 
         if (!self.no_sync and !self.dry_run) {
-            if (!self.json) try @import("command.zig").progress(stdout, "Running sync...\n", .{});
-            const sync = @import("sync.zig").sync_command{ .json = self.json, .update = self.update };
-            try sync.run(ctx);
+            if (!self.json) backend.phase("Running sync...", .{});
+
+            const sync = @import("sync.zig").sync_command{
+                .json = self.json,
+                .update = self.update,
+            };
+
+            try sync.runImpl(ctx, backend);
         }
     }
 };

@@ -11,7 +11,7 @@ pub const ExecCommand = struct {
     positionals: []const []const u8 = &.{},
     prod: bool = false,
     dev: bool = false,
-    runtime: ?[]const u8 = null,
+    interpreter: ?[]const u8 = null,
     target: ?[]const u8 = null,
     json: bool = false,
     global: bool = false,
@@ -25,7 +25,7 @@ pub const ExecCommand = struct {
             \\Flags:
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
-            \\  --runtime <r>    Override runtime
+            \\  --interpreter <i> Override interpreter
             \\  --target <t>     Override target
             \\  --json           Output results as JSON (bloated protocol)
             \\  --global         Run command from the global tools environment

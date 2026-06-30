@@ -690,7 +690,7 @@ pub const RemotePackageDescriptor = struct {
             .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
 
-        if (table.get("runtime_bundled")) |rb_val| {
+        if (table.get("interpreter_bundled")) |rb_val| {
             if (rb_val == .table) {
                 const rb_table = rb_val.table;
                 self.runtime_bundled = .{
@@ -746,7 +746,7 @@ pub const RemotePackageDescriptor = struct {
                         art.lua_abi = if (a_table.get("lua_abi")) |abi| try allocator.dupe(u8, abi.string) else try allocator.dupe(u8, "");
                         art.lua_api = if (a_table.get("lua_api")) |la| try allocator.dupe(u8, la.string) else try allocator.dupe(u8, "");
                         art.runtime = if (a_table.get("runtime")) |rt| try parseArtifactRuntimeValue(allocator, rt) else try allocator.dupe(u8, "");
-                        art.runtime_artifact_hash = if (a_table.get("runtime_artifact_hash")) |rh| try allocator.dupe(u8, rh.string) else try allocator.dupe(u8, "");
+                        art.runtime_artifact_hash = if (a_table.get("interpreter_artifact_hash")) |rh| try allocator.dupe(u8, rh.string) else try allocator.dupe(u8, "");
                         art.native_compat_required = if (a_table.get("native_compat_required")) |required| required.boolean else false;
 
                         art.url = try allocator.dupe(u8, a_table.get("url").?.string);
@@ -900,6 +900,9 @@ pub const StoreDependency = struct {
     /// sugar format (constraint may already contain resolver prefix).
     pub fn toSpecString(self: StoreDependency, allocator: std.mem.Allocator) ![]const u8 {
         if (self.resolver) |resolver| {
+            if (self.constraint.len > 0 and std.mem.startsWith(u8, self.constraint, resolver) and self.constraint.len > resolver.len and self.constraint[resolver.len] == ':') {
+                return try allocator.dupe(u8, self.constraint);
+            }
             if (self.constraint.len > 0) {
                 return try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ resolver, self.name, self.constraint });
             } else {
@@ -1008,9 +1011,9 @@ pub const StoreManifest = struct {
         if (self.origin.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{self.origin.rockspec_payload});
 
         try writer.print("\n[compat]\n", .{});
-        try writer.print("runtime_version = \"{s}\"\n", .{self.compat.runtime_version});
+        try writer.print("interpreter_version = \"{s}\"\n", .{self.compat.runtime_version});
         try writer.print("lua_abi = \"{s}\"\n", .{self.compat.lua_abi});
-        try writer.print("runtime_artifact_hash = \"{s}\"\n", .{self.compat.runtime_artifact_hash});
+        try writer.print("interpreter_artifact_hash = \"{s}\"\n", .{self.compat.runtime_artifact_hash});
 
         try writer.print("\n[provides]\n", .{});
         try self.serializeProvides(self.provides, writer);
@@ -1092,7 +1095,7 @@ pub const MoonstoneToml = struct {
         const package_val = table.get("package") orelse return error.MissingPackageSection;
         if (package_val != .table) return error.InvalidPackageSection;
         const p_val = package_val.table;
-        const r_val = if (table.get("runtime")) |runtime_val| blk: {
+        const r_val = if (table.get("interpreter") orelse table.get("runtime")) |runtime_val| blk: {
             if (runtime_val != .table) return error.InvalidRuntimeSection;
             break :blk runtime_val.table;
         } else null;
@@ -1138,7 +1141,7 @@ pub const MoonstoneToml = struct {
             if (deps_val == .array) {
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
-                    const role_str = dep.get("role").?.string;
+                    const role_str = if (dep.get("role")) |r| r.string else "dependency";
                     const role = DependencyRole.fromString(role_str) orelse .runtime;
                     const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
@@ -1154,7 +1157,7 @@ pub const MoonstoneToml = struct {
                 }
             } else if (deps_val == .table) {
                 // Support authoring sugar [dependencies.<role>]
-                inline for (.{ "dev", "tool", "runtime", "helper", "peer", "optional" }) |role_name| {
+                inline for (.{ "dev", "tool", "dependency", "runtime", "helper", "peer", "optional" }) |role_name| {
                     if (deps_val.table.get(role_name)) |v| {
                         if (v == .table) {
                             var it = v.table.iterator();
@@ -1173,6 +1176,7 @@ pub const MoonstoneToml = struct {
                 // Authoring aliases
                 const alias_mappings = .{
                     .{ .field = "vendor-exec", .role = DependencyRole.helper },
+                    .{ .field = "interpreter-exec", .role = DependencyRole.helper },
                     .{ .field = "runtime-exec", .role = DependencyRole.helper },
                 };
                 inline for (alias_mappings) |mapping| {
@@ -1199,7 +1203,7 @@ pub const MoonstoneToml = struct {
                 };
                 inline for (legacy_mappings) |mapping| {
                     if (deps_val.table.get(mapping.field)) |v| {
-                        std.debug.print("WARNING: [dependencies.{s}] is deprecated. Please use [dependencies.{s}] instead.\n", .{ mapping.field, @tagName(mapping.role) });
+                        std.debug.print("WARNING: [dependencies.{s}] is deprecated. Please use [dependencies.{s}] instead.\n", .{ mapping.field, mapping.role.toString() });
                         if (v == .table) {
                             var it = v.table.iterator();
                             while (it.next()) |entry| {
@@ -1302,7 +1306,7 @@ pub const MoonstoneToml = struct {
         }
         try writer.print("\n", .{});
 
-        try writer.print("\n[runtime]\n", .{});
+        try writer.print("\n[interpreter]\n", .{});
         try writer.print("name = ", .{});
         try writeTomlString(writer, self.runtime.name);
         try writer.print("\nversion = ", .{});
@@ -1311,23 +1315,11 @@ pub const MoonstoneToml = struct {
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
 
-        inline for (.{ DependencyRole.runtime, DependencyRole.dev, DependencyRole.tool, DependencyRole.helper, DependencyRole.peer, DependencyRole.optional }) |role| {
-            var wrote_header = false;
-            for (self.dependencies.items) |dep| {
-                if (dep.role != role or dep.resolver != null or dep.optional) continue;
-                if (!wrote_header) {
-                    try writer.print("\n[dependencies.{s}]\n", .{@tagName(role)});
-                    wrote_header = true;
-                }
-                try writeTomlString(writer, dep.name);
-                try writer.print(" = ", .{});
-                try writeTomlString(writer, dep.constraint);
-                try writer.print("\n", .{});
-            }
-        }
-
+        // All dependencies are written as [[dependencies]] entries.
+        // This is the canonical format — no more [dependencies.<role>] table
+        // sections.  The parser still reads the old table format for backward
+        // compatibility, but the serializer always writes the array format.
         for (self.dependencies.items) |dep| {
-            if (dep.resolver == null and !dep.optional) continue;
             try writer.print("\n[[dependencies]]\n", .{});
             try writer.print("name = ", .{});
             try writeTomlString(writer, dep.name);
@@ -1337,7 +1329,7 @@ pub const MoonstoneToml = struct {
                 try writer.print("\nresolver = ", .{});
                 try writeTomlString(writer, r);
             }
-            try writer.print("\nrole = \"{s}\"\n", .{@tagName(dep.role)});
+            try writer.print("\nrole = \"{s}\"\n", .{dep.role.toString()});
             if (dep.optional) try writer.print("optional = true\n", .{});
         }
 
@@ -1390,11 +1382,17 @@ pub const MoonstoneToml = struct {
     }
 
     pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool) !void {
+        try self.add_dependency_with_resolver(allocator, name, spec, role, optional, null);
+    }
+
+    pub fn add_dependency_with_resolver(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool, resolver: ?[]const u8) !void {
         // Check if it already exists, replace it
         for (self.dependencies.items) |*dep| {
             if (std.mem.eql(u8, dep.name, name)) {
                 allocator.free(dep.constraint);
                 dep.constraint = try allocator.dupe(u8, spec);
+                if (dep.resolver) |r| allocator.free(r);
+                dep.resolver = if (resolver) |r| try allocator.dupe(u8, r) else null;
                 dep.role = role;
                 dep.optional = optional;
                 return;
@@ -1404,6 +1402,7 @@ pub const MoonstoneToml = struct {
         try self.dependencies.append(allocator, .{
             .name = try allocator.dupe(u8, name),
             .constraint = try allocator.dupe(u8, spec),
+            .resolver = if (resolver) |r| try allocator.dupe(u8, r) else null,
             .role = role,
             .optional = optional,
         });
@@ -1566,7 +1565,7 @@ pub const Recipe = struct {
     }
 };
 
-test "MoonstoneToml parse allows missing runtime for moon use repair" {
+test "MoonstoneToml parse allows missing runtime for interpreter set repair" {
     const allocator = std.testing.allocator;
     const toml_text =
         \\[package]

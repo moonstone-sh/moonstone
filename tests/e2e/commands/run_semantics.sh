@@ -24,7 +24,7 @@ cd "${WORKDIR}"
 
 echo "━━━ Setup Project ━━━"
 moon init . --name "semantics-test" --no-git
-moon use lua@5.4
+moon interpreter set lua@5.4
 
 # Create a fake project-local Lua that tracks arguments
 mkdir -p .moonstone/env/bin

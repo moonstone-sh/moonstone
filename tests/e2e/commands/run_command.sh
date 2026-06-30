@@ -15,7 +15,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name "run-test"
-moon use lua@5.4
+moon interpreter set lua@5.4
 
 # Add scripts to moonstone.toml
 cat >> moonstone.toml << 'EOF'

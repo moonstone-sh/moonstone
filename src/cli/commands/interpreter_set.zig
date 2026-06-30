@@ -4,9 +4,9 @@ const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
 const command_mod = @import("command.zig");
 
-pub const use_command = struct {
-    pub const name = "use";
-    pub const description = "Select project or global runtime";
+pub const InterpreterSetCommand = struct {
+    pub const name = "set";
+    pub const description = "Select project or global Lua interpreter";
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
@@ -19,15 +19,15 @@ pub const use_command = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon use <spec> [flags]
+            \\Usage: moon interpreter set <spec> [flags]
             \\
-            \\Select project or global runtime.
+            \\Select the project or global Lua interpreter.
             \\
             \\Arguments:
-            \\  <spec>           Runtime spec (e.g. lua@5.4, luajit@2.1)
+            \\  <spec>           Interpreter spec (e.g. lua@5.4, luajit@2.1)
             \\
             \\Flags:
-            \\  --global         Set as the global default runtime
+            \\  --global         Set as the global default interpreter
             \\  --target <t>     Target triple
             \\  --no-sync     Do not run moon sync
             \\  --no-save        Do not update moonstone.toml
@@ -37,16 +37,59 @@ pub const use_command = struct {
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
-        _ = args;
-        const versions = [_][]const u8{ "5.1", "5.2", "5.3", "5.4", "luajit", "luajit-2.1" };
+        const current = if (args.len > 0) args[args.len - 1] else "";
+        if (std.mem.startsWith(u8, current, "--")) return &.{};
+
         var list = std.ArrayList([]const u8).empty;
-        for (versions) |v| {
-            try list.append(ctx.allocator, try ctx.allocator.dupe(u8, v));
-        }
+        var seen = std.StringHashMap(void).init(ctx.allocator);
+        defer seen.deinit();
+
+        try appendInstalledInterpreters(ctx, current, &list, &seen);
+
+        const defaults = [_][]const u8{ "lua@5.1", "lua@5.2", "lua@5.3", "lua@5.4", "luajit@2.1" };
+        for (defaults) |spec| try appendSuggestion(ctx.allocator, &list, &seen, current, spec);
+
         return list.toOwnedSlice(ctx.allocator);
     }
 
-    pub fn run(self: use_command, ctx: *router.Context) !void {
+    fn appendInstalledInterpreters(ctx: *router.Context, prefix: []const u8, list: *std.ArrayList([]const u8), seen: *std.StringHashMap(void)) !void {
+        const paths = moonstone.platform.fs.resolve_moonstone(ctx.allocator, ctx.env, ctx.io) catch return;
+        var mutable_paths = paths;
+        defer mutable_paths.deinit(ctx.allocator);
+
+        const index_db_path = try std.fs.path.join(ctx.allocator, &.{ paths.index, "index.sqlite" });
+        defer ctx.allocator.free(index_db_path);
+        const index_db_path_z = try ctx.allocator.dupeZ(u8, index_db_path);
+        defer ctx.allocator.free(index_db_path_z);
+
+        var idx = moonstone.store.driver.StoreDriver.init(ctx.allocator, index_db_path_z) catch return;
+        defer idx.deinit();
+
+        const c = moonstone.store.driver.c;
+        const sql = "SELECT DISTINCT name, version FROM artifacts WHERE kind = 'runtime' ORDER BY name, version DESC;";
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(idx.db, sql, -1, &stmt, null) != c.SQLITE_OK) return;
+        defer _ = c.sqlite3_finalize(stmt);
+
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            var interpreter_name = std.mem.span(c.sqlite3_column_text(stmt, 0));
+            const version = std.mem.span(c.sqlite3_column_text(stmt, 1));
+            if (std.mem.startsWith(u8, interpreter_name, "moonstone/")) interpreter_name = interpreter_name["moonstone/".len..];
+            const spec = try std.fmt.allocPrint(ctx.allocator, "{s}@{s}", .{ interpreter_name, version });
+            defer ctx.allocator.free(spec);
+            try appendSuggestion(ctx.allocator, list, seen, prefix, spec);
+        }
+    }
+
+    fn appendSuggestion(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), seen: *std.StringHashMap(void), prefix: []const u8, suggestion: []const u8) !void {
+        if (prefix.len > 0 and !std.mem.startsWith(u8, suggestion, prefix)) return;
+        if (seen.contains(suggestion)) return;
+        const owned = try allocator.dupe(u8, suggestion);
+        try seen.put(owned, {});
+        try list.append(allocator, owned);
+    }
+
+    pub fn run(self: InterpreterSetCommand, ctx: *router.Context) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -55,7 +98,7 @@ pub const use_command = struct {
         const emitter = if (emitter_obj) |*e| e else null;
 
         if (self.positionals.len == 0) {
-            ctx.error_detail = .{ .message = .{ .msg = "runtime spec required (e.g. lua@5.4)" } };
+            ctx.error_detail = .{ .message = .{ .msg = "interpreter spec required (e.g. lua@5.4)" } };
             return error.MissingArgument;
         }
         const spec = self.positionals[0];
@@ -64,10 +107,10 @@ pub const use_command = struct {
             try e.emit(io, .START, name, "begin", .{ .spec = spec, .global = self.global });
         }
 
-        var runtime_name: []const u8 = "lua";
+        var interpreter_name: []const u8 = "lua";
         var version = spec;
         if (std.mem.indexOfScalar(u8, spec, '@')) |pos| {
-            runtime_name = spec[0..pos];
+            interpreter_name = spec[0..pos];
             version = spec[pos+1..];
         }
 
@@ -83,7 +126,7 @@ pub const use_command = struct {
         const content = std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 if (emitter == null) {
-                    try stdout.print("Error: moonstone.toml not found. Did you mean `moon use --global`?\n", .{});
+                    try stdout.print("Error: moonstone.toml not found. Did you mean `moon interpreter set --global`?\n", .{});
                 }
                 return error.FileNotFound;
             }
@@ -100,11 +143,11 @@ pub const use_command = struct {
             allocator.free(mt.runtime.version);
             allocator.free(mt.runtime.abi);
 
-            const runtime_abi = try moonstone.domain.manifest.inferRuntimeAbi(allocator, runtime_name, version);
+            const interpreter_abi = try moonstone.domain.manifest.inferRuntimeAbi(allocator, interpreter_name, version);
             
-            mt.runtime.name = try allocator.dupe(u8, runtime_name);
+            mt.runtime.name = try allocator.dupe(u8, interpreter_name);
             mt.runtime.version = try allocator.dupe(u8, version);
-            mt.runtime.abi = runtime_abi;
+            mt.runtime.abi = interpreter_abi;
 
             const toml_file = try std.Io.Dir.cwd().createFile(io, toml_path, .{});
             defer toml_file.close(io);
@@ -115,12 +158,12 @@ pub const use_command = struct {
             try aw.writer.flush();
             try toml_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
 
-            // TODO(runtime-luarc): update .luarc.json workspace targets when the project runtime changes.
+            // TODO(interpreter-luarc): update .luarc.json workspace targets when the project interpreter changes.
 
             if (emitter) |e| {
-                try e.emit(io, .STATUS, "manifest", "written", .{ .runtime = version, .abi = runtime_abi });
+                try e.emit(io, .STATUS, "manifest", "written", .{ .interpreter = version, .abi = interpreter_abi });
             } else {
-                try stdout.print("Project updated to use {s} {s}.\n", .{runtime_name, version});
+                try stdout.print("Project interpreter updated to {s} {s}.\n", .{ interpreter_name, version });
             }
         }
 
@@ -138,7 +181,7 @@ pub const use_command = struct {
         }
     }
 
-    fn runGlobal(self: use_command, ctx: *router.Context, version: []const u8, emitter: ?*ndjson.Emitter) !void {
+    fn runGlobal(self: InterpreterSetCommand, ctx: *router.Context, version: []const u8, emitter: ?*ndjson.Emitter) !void {
         _ = self;
         const allocator = ctx.allocator;
         const io = ctx.io;
@@ -228,7 +271,7 @@ pub const use_command = struct {
         if (emitter) |e| {
             try e.terminate(io, name, "ok", .{ .version = rt_res.version, .global = true });
         } else {
-            try stdout.print("Global default runtime updated to Lua {s}.\n", .{rt_res.version});
+            try stdout.print("Global default interpreter updated to Lua {s}.\n", .{rt_res.version});
         }
     }
 };

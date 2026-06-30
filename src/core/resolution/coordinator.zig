@@ -127,6 +127,8 @@ pub const Coordinator = struct {
 
         var query = driver_mod.ArtifactQuery{
             .name = pkg_name,
+            .case_insensitive_name = kind == .rocks,
+            .resolver = if (kind == .rocks) resolver_str else null,
             .target = options.target,
         };
         var candidates = try index.findCandidates(query);

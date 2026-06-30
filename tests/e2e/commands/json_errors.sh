@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/project"
 cd "${WORKDIR}/project"
 
 moon init . --name json-error-contract --no-git
-moon use lua@5.4 --no-sync
+moon interpreter set lua@5.4 --no-sync
 
 run_error=$(moon run missing --json 2>&1 || true)
 assert_json_valid "${run_error}"
