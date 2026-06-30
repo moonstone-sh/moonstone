@@ -18,9 +18,9 @@ assert_contains "${list_output}" "Project: discovery-test" "list discovers paren
 run_output=$(moon run missing 2>&1 || true)
 assert_contains "${run_output}" "script 'missing' not found" "run discovers parent project"
 
+
 moon add inspect@3.1.3 --no-sync
-assert_file_contains "${WORKDIR}/parent/moonstone.toml" 'name = "inspect"'
-assert_file_contains "${WORKDIR}/parent/moonstone.toml" 'constraint = "^3.1.3"'
+assert_file_contains "${WORKDIR}/parent/moonstone.toml" '"inspect" = "^3.1.3"'
 
 tmp_out=$(mktemp)
 cd /tmp

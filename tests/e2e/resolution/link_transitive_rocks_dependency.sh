@@ -36,7 +36,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 "child" = "rocks:child"
 TOML
 cat > "$WORKDIR/parent/src/hyg_rocks_parent.lua" <<'LUA'

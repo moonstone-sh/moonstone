@@ -1,7 +1,7 @@
 const std = @import("std");
 
 var enabled: bool = false;
-var start_ns: i128 = 0;
+var start_ns: i64 = 0;
 
 pub fn init(env: *std.process.Environ.Map) void {
     enabled = isEnabled(env);
@@ -20,18 +20,18 @@ pub fn active() bool {
     return enabled;
 }
 
-pub fn now() i128 {
+pub fn now() i64 {
     return timestampNs();
 }
 
-fn msSince(from_ns: i128) i128 {
+fn msSince(from_ns: i64) i64 {
     return @divTrunc(timestampNs() - from_ns, 1_000_000);
 }
 
-fn timestampNs() i128 {
+fn timestampNs() i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    return (@as(i128, ts.sec) * 1_000_000_000) + @as(i128, ts.nsec);
+    return (@as(i64, ts.sec) * 1_000_000_000) + @as(i64, ts.nsec);
 }
 
 pub fn mark(comptime label: []const u8) void {
@@ -39,12 +39,12 @@ pub fn mark(comptime label: []const u8) void {
     std.debug.print("[moon profile +{}ms] {s}\n", .{ msSince(start_ns), label });
 }
 
-pub fn span(comptime label: []const u8, span_start_ns: i128) void {
+pub fn span(comptime label: []const u8, span_start_ns: i64) void {
     if (!enabled) return;
     std.debug.print("[moon profile +{}ms] {s} duration_ms={}\n", .{ msSince(start_ns), label, msSince(span_start_ns) });
 }
 
-pub fn spanCount(comptime label: []const u8, span_start_ns: i128, count_name: []const u8, count: usize) void {
+pub fn spanCount(comptime label: []const u8, span_start_ns: i64, count_name: []const u8, count: usize) void {
     if (!enabled) return;
     std.debug.print("[moon profile +{}ms] {s} duration_ms={} {s}={}\n", .{ msSince(start_ns), label, msSince(span_start_ns), count_name, count });
 }

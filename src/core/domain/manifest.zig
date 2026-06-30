@@ -1138,7 +1138,7 @@ pub const MoonstoneToml = struct {
             if (deps_val == .array) {
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
-                    const role_str = dep.get("role").?.string;
+                    const role_str = if (dep.get("role")) |r| r.string else "runtime";
                     const role = DependencyRole.fromString(role_str) orelse .runtime;
                     const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
@@ -1390,11 +1390,17 @@ pub const MoonstoneToml = struct {
     }
 
     pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool) !void {
+        try self.add_dependency_with_resolver(allocator, name, spec, role, optional, null);
+    }
+
+    pub fn add_dependency_with_resolver(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool, resolver: ?[]const u8) !void {
         // Check if it already exists, replace it
         for (self.dependencies.items) |*dep| {
             if (std.mem.eql(u8, dep.name, name)) {
                 allocator.free(dep.constraint);
                 dep.constraint = try allocator.dupe(u8, spec);
+                if (dep.resolver) |r| allocator.free(r);
+                dep.resolver = if (resolver) |r| try allocator.dupe(u8, r) else null;
                 dep.role = role;
                 dep.optional = optional;
                 return;
@@ -1404,6 +1410,7 @@ pub const MoonstoneToml = struct {
         try self.dependencies.append(allocator, .{
             .name = try allocator.dupe(u8, name),
             .constraint = try allocator.dupe(u8, spec),
+            .resolver = if (resolver) |r| try allocator.dupe(u8, r) else null,
             .role = role,
             .optional = optional,
         });

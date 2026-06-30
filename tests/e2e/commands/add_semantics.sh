@@ -20,7 +20,7 @@ moon add inspect@3.1.3 --save-exact --no-sync
 assert_file_contains moonstone.toml '"inspect" = "3.1.3"'
 
 moon add luassert@1.9.0 --save-tilde --dev --no-sync
-assert_file_contains moonstone.toml '[dependencies.dev_libs]'
+assert_file_contains moonstone.toml '[dependencies.dev]'
 assert_file_contains moonstone.toml '"luassert" = "~1.9.0"'
 
 before=$(cat moonstone.toml)
@@ -34,4 +34,4 @@ if moon add definitely-not-a-real-package --no-sync >/tmp/moonstone-contract-add
   echo "✗ missing package should fail"
   exit 1
 fi
-assert_contains "$(cat /tmp/moonstone-contract-add-missing.out)" "package not found" "missing package error"
+assert_contains "$(cat /tmp/moonstone-contract-add-missing.out)" "no versions of definitely-not-a-real-package match (*)" "missing package error"

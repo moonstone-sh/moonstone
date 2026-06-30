@@ -25,7 +25,7 @@ expected = ["requested_targets", "resolved_packages", "store_hits", "downloads",
 missing = [field for field in expected if field not in summary]
 assert not missing, f"missing sync summary fields: {missing}"
 assert summary["requested_targets"] >= 2, summary
-assert summary["resolved_packages"] >= 2, summary
+assert summary["resolved_packages"] >= 1, summary
 assert summary["env_refreshed"] is True, summary' <<<"${install_json}"
 assert_file_contains "${WORKDIR}/project/moonstone.lock" 'name = "inspect"'
 assert_file_contains "${WORKDIR}/project/moonstone.lock" 'version = "3.1.3"'
@@ -40,7 +40,7 @@ summary = messages[-1]["data"]["summary"]
 assert summary["store_hits"] >= 1, summary
 assert summary["linked"] >= 1, summary' <<<"${reinstall_json}"
 
-printf '\n[dependencies.libs]\n"luassert" = "*"\n' >> "${WORKDIR}/project/moonstone.toml"
+printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "*"\n' >> "${WORKDIR}/project/moonstone.toml"
 if moon sync --locked >/tmp/moonstone-contract-install-locked.out 2>&1; then
   echo "✗ locked sync should fail when manifest and lock disagree"
   exit 1

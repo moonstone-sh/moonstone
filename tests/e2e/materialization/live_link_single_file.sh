@@ -17,7 +17,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 TOML
 cat > "$WORKDIR/single/src/single.lua" <<'LUA'
 return { value = "single-ok" }

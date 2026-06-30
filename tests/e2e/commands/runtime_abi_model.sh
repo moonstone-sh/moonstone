@@ -30,7 +30,7 @@ name = "lua"
 version = "5.4.6"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 TOML
 moon use lua@5.3 --no-sync
 assert_file_contains "moonstone.toml" 'name = "lua"'

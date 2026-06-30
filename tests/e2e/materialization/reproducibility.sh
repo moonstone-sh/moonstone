@@ -25,7 +25,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 synthetic-make-module = "*"
 EOF
 
@@ -36,7 +36,7 @@ echo "━━━ locked install (success) ━━━"
 moon sync --locked
 
 echo "━━━ locked install (missing entry error) ━━━"
-echo '[dependencies.libs]' >> moonstone.toml
+echo '[dependencies.runtime]' >> moonstone.toml
 echo 'luassert = "*"' >> moonstone.toml
 ! moon sync --locked
 

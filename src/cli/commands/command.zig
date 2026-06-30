@@ -440,3 +440,4 @@ pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.so
 pub fn moonstone_sqlite_transient() @import("moonstone").store.driver.c.sqlite3_destructor_type {
     return @import("moonstone").store.driver.moonstone_sqlite_transient_ptr;
 }
+

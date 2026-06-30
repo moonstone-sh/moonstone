@@ -18,7 +18,7 @@ name = "lua"
 version = "5.5"
 abi = "5.5"
 
-[dependencies.libs]
+[dependencies.runtime]
 TOML
 cat > "$WORKDIR/linked/src/hyg_mismatch.lua" <<'LUA'
 return true
@@ -43,7 +43,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 "hyg-mismatch" = "link:hyg-mismatch"
 TOML
 if (cd "$WORKDIR/app" && "$MOON_BIN" sync >"$WORKDIR/sync-output" 2>&1); then

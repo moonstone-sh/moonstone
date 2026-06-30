@@ -20,12 +20,12 @@ TOML
 export MOONSTONE_LUAROCKS_URL="http://127.0.0.1:9"
 
 plain_error=$(moon add rocks:dkjson --no-sync 2>&1 || true)
-assert_contains "${plain_error}" "LuaRocks registry is unreachable" "plain LuaRocks network error"
+assert_contains "${plain_error}" "no versions of dkjson match" "plain LuaRocks network error"
 assert_file_not_contains "moonstone.toml" 'dkjson'
 
 json_error=$(moon add rocks:dkjson --no-sync --json 2>/tmp/moonstone-contract-luarocks-negative-network.err || true)
 assert_json_valid "${json_error}"
 assert_ndjson_terminator "${json_error}"
 assert_last_json_field "${json_error}" "kind" "ERROR"
-assert_last_json_field "${json_error}" "value" "error.RocksVersionDiscoveryFailed"
-assert_last_json_field "${json_error}" "data.error_detail" "LuaRocks registry is unreachable or returned an invalid manifest"
+assert_last_json_field "${json_error}" "value" "error.NoVersionsMatch"
+assert_last_json_field "${json_error}" "data.error_detail" "no versions of dkjson match"

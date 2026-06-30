@@ -91,13 +91,11 @@ pub const ListCommand = struct {
 
         // Iterate through all dependencies
         for (mt.dependencies.items) |dep| {
-            const raw_spec = if (dep.resolver) |r|
-                if (std.mem.eql(u8, r, "moonstone"))
-                    try ctx.allocator.dupe(u8, dep.constraint)
-                else
-                    try std.fmt.allocPrint(ctx.allocator, "{s}:{s}@{s}", .{ r, dep.name, dep.constraint })
-            else
-                try std.fmt.allocPrint(ctx.allocator, "{s}@{s}", .{ dep.name, dep.constraint });
+            // Use toSpecString which correctly handles all constraint formats:
+            // - resolver prefix embedded in constraint (e.g. "rocks:luasec@^1.3.2-1")
+            // - separate resolver field
+            // - plain version constraint
+            const raw_spec = try dep.toSpecString(ctx.allocator);
             defer ctx.allocator.free(raw_spec);
 
             try printDep(dep.name, raw_spec, lf_opt, self.json, emitter, ctx, &count);

@@ -13,7 +13,7 @@ moon init . --name link-check-consumer --no-git
 moon use lua@5.4
 
 moon add path:../my-lib --no-sync
-assert_file_contains moonstone.toml '"my-lib" = "path:../my-lib"'
+assert_file_contains moonstone.toml 'path = "../my-lib"'
 
 cd subdir
 moon sync
@@ -33,7 +33,7 @@ if [[ "${after_env}" != "${before_env}" ]]; then
 fi
 
 cd "${WORKDIR}/consumer"
-printf '\n[dependencies.libs]\n"inspect" = "^3.1.3"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "inspect"\nconstraint = "^3.1.3"\n' >> moonstone.toml
 if moon sync --check >/tmp/moonstone-contract-install-check-stale.out 2>&1; then
   echo "✗ install --check should fail for stale lockfile"
   exit 1

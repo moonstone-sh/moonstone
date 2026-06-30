@@ -18,15 +18,23 @@ pub const SolverOptions = struct {
 pub fn explain(writer: anytype, inc: *incompatibility_mod.Incompatibility, allocator: std.mem.Allocator) anyerror!void {
     switch (inc.cause) {
         .root => {
-            try writer.print("the root project depends on {s} ({})", .{ inc.terms[0].name, inc.terms[0].range });
+            try writer.print("the root project depends on {s} (", .{ inc.terms[0].name });
+            try inc.terms[0].range.print(writer);
+            try writer.print(")", .{});
         },
         .dependency => {
             const dep_range = try inc.terms[1].range.complement(allocator);
             defer dep_range.deinit(allocator);
-            try writer.print("{s} ({}) depends on {s} ({})", .{ inc.terms[0].name, inc.terms[0].range, inc.terms[1].name, dep_range });
+            try writer.print("{s} (", .{ inc.terms[0].name });
+            try inc.terms[0].range.print(writer);
+            try writer.print(") depends on {s} (", .{ inc.terms[1].name });
+            try dep_range.print(writer);
+            try writer.print(")", .{});
         },
         .no_versions => {
-            try writer.print("no versions of {s} match ({})", .{ inc.terms[0].name, inc.terms[0].range });
+            try writer.print("no versions of {s} match (", .{ inc.terms[0].name });
+            try inc.terms[0].range.print(writer);
+            try writer.print(")", .{});
         },
         .learned => |l| {
             try writer.print("conflict: ", .{});

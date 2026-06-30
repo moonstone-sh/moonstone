@@ -25,7 +25,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.libs]
+[dependencies.runtime]
 EOF
 
 moon use lua@5.4

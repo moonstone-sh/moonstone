@@ -26,7 +26,7 @@ grep 'abi = "5.4"' moonstone.toml
 
 echo "━━━ add dependency and install env ━━━"
 moon add synthetic:inspect@3.1.3
-grep '"inspect" = "synthetic:inspect@^3.1.3"' moonstone.toml
+grep 'name = "inspect"' moonstone.toml
 grep 'runtime = "5.4"' moonstone.lock
 test -x .moonstone/env/bin/lua
 moon exec -- lua -e 'require("inspect"); print(_VERSION)'

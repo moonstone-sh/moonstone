@@ -2,6 +2,7 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
+const progress_runtime = @import("../progress.zig");
 const profiler = moonstone.diagnostics.profiler;
 
 pub const sync_command = SyncCommand;
@@ -131,6 +132,281 @@ fn elapsedMs(io: std.Io, start_ns: i128) i128 {
     return @divFloor(nowNs(io) - start_ns, std.time.ns_per_ms);
 }
 
+
+/// Command-specific data passed through WorkerContext.cmd_data.
+const SyncWorkData = struct {
+    cmd: SyncCommand,
+    ctx: *router.Context,
+    error_detail: ?@import("command.zig").CliErrorDetail = null,
+};
+
+/// Worker entry point: runs the sync logic on a background thread,
+/// sending progress events through the queue.
+fn syncWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
+    const data: *SyncWorkData = @ptrCast(@alignCast(wctx.cmd_data orelse return error.WorkerMissingData));
+    data.cmd.runImpl(data.ctx, .{ .queue = wctx }) catch |err| {
+        // Stash error_detail for the main thread to pick up.
+        if (data.ctx.error_detail) |detail| {
+            data.error_detail = detail;
+            data.ctx.error_detail = null;
+        }
+        return err;
+    };
+}
+
+
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Download + materialization pool
+// ────────────────────────────────────────────────────────────────────────────
+
+const MatResult = moonstone.materialization.materializer.MaterializeResult;
+
+const DownloadJob = struct {
+    pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
+    result: ?MatResult = null,
+    err: ?anyerror = null,
+};
+
+const MutexAllocator = struct {
+    parent: std.mem.Allocator,
+    mutex: std.Io.Mutex = .init,
+    io: std.Io,
+
+    pub fn allocator(self: *MutexAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *MutexAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.parent.rawAlloc(len, ptr_align, ret_addr);
+    }
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *MutexAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.parent.rawResize(buf, buf_align, new_len, ret_addr);
+    }
+    fn remap(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *MutexAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.parent.rawRemap(buf, buf_align, new_len, ret_addr);
+    }
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
+        const self: *MutexAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.parent.rawFree(buf, buf_align, ret_addr);
+    }
+};
+
+const DownloadPool = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    jobs: []DownloadJob,
+    next: std.atomic.Value(usize) = .init(0),
+    wctx: ?*progress_runtime.WorkerContext,
+    on_resolve_cb: ?moonstone.resolution.options.ResolveCallback,
+    on_resolve_ctx: ?*anyopaque,
+
+    fn run(self: *DownloadPool) void {
+        while (true) {
+            // Cooperative cancellation: stop picking up new jobs.
+            if (self.wctx) |w| {
+                if (w.isCancelled()) return;
+            }
+            const idx = self.next.fetchAdd(1, .monotonic);
+            if (idx >= self.jobs.len) return;
+            self.processJob(idx);
+        }
+    }
+
+    fn processJob(self: *DownloadPool, idx: usize) void {
+        const job = &self.jobs[idx];
+        const pkg = job.pkg.*;
+
+        // Progress: package started
+        if (self.wctx) |w| {
+            var buf: [128]u8 = undefined;
+            const tmp = std.fmt.bufPrint(&buf, "{s}@{s}", .{ pkg.name, pkg.version }) catch pkg.name;
+            const msg = self.allocator.dupe(u8, tmp) catch pkg.name;
+            w.sendPackageStarted(msg);
+        }
+
+        var mat = moonstone.materialization.materializer.Materializer{
+            .allocator = self.allocator,
+            .io = self.io,
+            .environ_map = self.env,
+            .on_event = self.on_resolve_cb,
+            .on_event_context = self.on_resolve_ctx,
+        };
+
+        const reg = pkg.origin.moonstone_registry;
+        const m_res = mat.materialize_remote(
+            reg.url,
+            reg.token,
+            reg.descriptor_path,
+            pkg.remote_desc.?,
+            reg.artifact_idx,
+        ) catch |err| {
+            job.err = err;
+            if (self.wctx) |w| {
+                var buf: [256]u8 = undefined;
+                const tmp = std.fmt.bufPrint(&buf, "Failed to materialize {s}: {s}", .{ pkg.name, @errorName(err) }) catch return;
+                const msg = self.allocator.dupe(u8, tmp) catch return;
+                w.sendWarning(msg);
+            }
+            return;
+        };
+
+        job.result = m_res;
+
+        // Progress: package done
+        if (self.wctx) |w| {
+            var buf: [128]u8 = undefined;
+            const tmp = std.fmt.bufPrint(&buf, "{s}@{s}", .{ pkg.name, pkg.version }) catch pkg.name;
+            const msg = self.allocator.dupe(u8, tmp) catch pkg.name;
+            w.sendPackageDone(msg);
+        }
+    }
+
+    /// Spawn `n` worker threads, then join them all.
+    fn execute(self: *DownloadPool, n: usize) !void {
+        if (n <= 1 or self.jobs.len <= 1) {
+            // Serial fallback
+            self.run();
+            return;
+        }
+        const num = @min(n, self.jobs.len);
+
+        var threads: [8]std.Thread = undefined;
+        var spawned: usize = 0;
+        for (0..num) |i| {
+            threads[i] = std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, run, .{self}) catch |err| {
+                if (err == error.SystemResources or err == error.ResourceLimitReached or err == error.OutOfMemory) {
+                    // Can't spawn more threads; run remaining work on this thread.
+                    break;
+                }
+                return err;
+            };
+            spawned += 1;
+        }
+        // Join all spawned threads.
+        for (0..spawned) |i| {
+            threads[i].join();
+        }
+        // Any jobs not picked up (shouldn't happen, but just in case).
+        // The workers loop until next >= jobs.len, so all jobs are processed.
+    }
+};
+
+// ────────────────────────────────────────────────────────────────────────────
+//  Hash verification pool — parallel Blake3 verification of materialized artifacts
+// ────────────────────────────────────────────────────────────────────────────
+
+const VerifyJob = struct {
+    pkg_name: []const u8,
+    artifact_path: []const u8,    // path in the store
+    expected_hash: []const u8,    // "b3:..." hex string
+    ok: bool = false,
+    err: ?anyerror = null,
+};
+
+const HashVerifyPool = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    jobs: []VerifyJob,
+    next: std.atomic.Value(usize) = .init(0),
+    wctx: ?*progress_runtime.WorkerContext,
+
+    fn run(self: *HashVerifyPool) void {
+        while (true) {
+            // Cooperative cancellation: stop picking up new jobs.
+            if (self.wctx) |w| {
+                if (w.isCancelled()) return;
+            }
+            const idx = self.next.fetchAdd(1, .monotonic);
+            if (idx >= self.jobs.len) return;
+            self.verifyJob(idx);
+        }
+    }
+
+    fn verifyJob(self: *HashVerifyPool, idx: usize) void {
+        const job = &self.jobs[idx];
+
+        // The artifact_path points to the store directory (e.g.
+        // .../store/b3/aa/bb/aabb...-name-version).  We open it and
+        // compute the canonical artifact hash, then compare against
+        // the expected hash from the lockfile / registry.
+        const dir = std.Io.Dir.cwd().openDir(self.io, job.artifact_path, .{ .iterate = true }) catch |err| {
+            job.err = err;
+            return;
+        };
+        defer dir.close(self.io);
+
+        const computed = moonstone.identity.hash.artifact_hash(self.allocator, self.io, dir) catch |err| {
+            job.err = err;
+            return;
+        };
+        defer self.allocator.free(computed);
+
+        // Expected hash is "b3:hex", computed is just hex.
+        const expected_hex = if (std.mem.startsWith(u8, job.expected_hash, "b3:"))
+            job.expected_hash[3..]
+        else
+            job.expected_hash;
+
+        if (std.mem.eql(u8, computed, expected_hex)) {
+            job.ok = true;
+            if (self.wctx) |w| {
+                w.sendPackageDone(job.pkg_name);
+            }
+        } else {
+            job.err = error.HashMismatch;
+            if (self.wctx) |w| {
+                var buf: [256]u8 = undefined;
+                const tmp = std.fmt.bufPrint(&buf, "Hash mismatch for {s}: expected {s}, got {s}", .{ job.pkg_name, expected_hex, computed }) catch return;
+                const msg = self.allocator.dupe(u8, tmp) catch return;
+                w.sendWarning(msg);
+            }
+        }
+    }
+
+    /// Spawn `n` worker threads, then join them all.
+    fn execute(self: *HashVerifyPool, n: usize) !void {
+        if (n <= 1 or self.jobs.len <= 1) {
+            self.run();
+            return;
+        }
+        const num = @min(n, self.jobs.len);
+
+        var threads: [8]std.Thread = undefined;
+        var spawned: usize = 0;
+        for (0..num) |i| {
+            threads[i] = std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, run, .{self}) catch |err| {
+                if (err == error.SystemResources or err == error.ResourceLimitReached or err == error.OutOfMemory) break;
+                return err;
+            };
+            spawned += 1;
+        }
+        for (0..spawned) |i| {
+            threads[i].join();
+        }
+    }
+};
+
 pub const SyncCommand = struct {
     pub const name = "sync";
     pub const description = "Synchronize the current project environment";
@@ -158,6 +434,22 @@ pub const SyncCommand = struct {
     }
 
     pub fn run(self: SyncCommand, ctx: *router.Context) !void {
+        // JSON mode: run synchronously with direct stdout (emitter handles output).
+        // Non-JSON mode: run on a worker thread with the progress UI on the main thread.
+        if (self.json) {
+            return self.runImpl(ctx, .{ .direct = ctx.stdout });
+        }
+
+        var data = SyncWorkData{ .cmd = self, .ctx = ctx };
+        progress_runtime.runWithProgress(ctx.io, ctx.stdout, ctx.allocator, ctx.env, syncWorker, &data) catch |err| {
+            if (data.error_detail) |detail| {
+                ctx.error_detail = detail;
+            }
+            return err;
+        };
+    }
+
+    pub fn runImpl(self: SyncCommand, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -229,7 +521,7 @@ pub const SyncCommand = struct {
             return try self.runCheck(ctx, &mt, &idx);
         }
 
-        if (!self.json) try @import("command.zig").progress(stdout, "Reading registry configuration...\n", .{});
+        if (!self.json) backend.phase("Reading registry configuration...\n", .{});
         var profile_span = profiler.now();
         const registries = try moonstone.registry.resolver.resolve(allocator, io, env);
         profiler.span("sync.registry.resolve", profile_span);
@@ -241,18 +533,44 @@ pub const SyncCommand = struct {
             .emitter = emitter,
         };
 
+        // Callback routing: direct mode uses the existing render callbacks,
+        // queue mode sends events through the WorkerContext.
+        const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
+            .direct => @import("command.zig").onResolveEvent,
+            .queue => progress_runtime.onResolveEventProgress,
+        };
+        const on_resolve_ctx: ?*anyopaque = switch (backend) {
+            .direct => @ptrCast(&resolve_cb_ctx),
+            .queue => @ptrCast(backend.queue),
+        };
+        const on_solver_cb: ?moonstone.resolution.solver.report.SolverCallback = switch (backend) {
+            .direct => @import("command.zig").onSolverEvent,
+            .queue => progress_runtime.onSolverEventProgress,
+        };
+        const on_solver_ctx: ?*anyopaque = switch (backend) {
+            .direct => @ptrCast(&resolve_cb_ctx),
+            .queue => @ptrCast(backend.queue),
+        };
+
+        // Helper to check for user cancellation (Ctrl-C) in queue mode.
+        const cancelled = switch (backend) {
+            .direct => false,
+            .queue => |w| w.isCancelled(),
+        };
+        if (cancelled) return error.Cancelled;
+
         // 1. Determine active runtime
         const resolve_started_ns = nowNs(io);
         const pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName());
         const pkg_ver = mt.runtimeConstraint();
 
-        if (!self.json) try @import("command.zig").progress(stdout, "Resolving runtime {s}@{s}...\n", .{ pkg_name, pkg_ver });
+        if (!self.json) backend.phase("Resolving runtime {s}@{s}...\n", .{ pkg_name, pkg_ver });
 
         var coordinator = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
         profile_span = profiler.now();
         var rt_res = try coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
-            .on_event = @import("command.zig").onResolveEvent,
-            .on_event_context = &resolve_cb_ctx,
+            .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
             .offline = self.offline,
         }, env);
         profiler.span("sync.runtime.resolve", profile_span);
@@ -265,15 +583,15 @@ pub const SyncCommand = struct {
                 .version = rt_res.version,
             });
         } else {
-            try stdout.print("Using runtime: {s}@{s}\n", .{ rt_res.name, rt_res.version });
+            backend.phase("Using runtime: {s}@{s}\n", .{ rt_res.name, rt_res.version });
         }
 
         var mat = moonstone.materialization.materializer.Materializer{
             .allocator = allocator,
             .io = io,
             .environ_map = env,
-            .on_event = @import("command.zig").onResolveEvent,
-            .on_event_context = &resolve_cb_ctx,
+            .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
         };
 
         profile_span = profiler.now();
@@ -320,8 +638,8 @@ pub const SyncCommand = struct {
                     reg.url,
                     reg.token,
                     .{
-                        .on_event = @import("command.zig").onResolveEvent,
-                        .on_event_context = &resolve_cb_ctx,
+                        .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
                         .offline = false,
                     },
                     env,
@@ -341,7 +659,7 @@ pub const SyncCommand = struct {
                         rr.artifact_idx,
                     ) catch |err| {
                         // Best-effort: enrichment failure should not break sync
-                        if (!self.json) try stdout.print("  source provenance enrichment skipped: {s}\n", .{@errorName(err)});
+                        if (!self.json) backend.warning("source provenance enrichment skipped: {s}", .{@errorName(err)});
                     };
                     break;
                 }
@@ -404,8 +722,8 @@ pub const SyncCommand = struct {
         profile_span = profiler.now();
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
         provider_impl.init(allocator, io, idx, registries, .{
-            .on_event = @import("command.zig").onResolveEvent,
-            .on_event_context = &resolve_cb_ctx,
+            .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
             .offline = self.offline,
             .prefer_local = !self.update,
             .runtime = active_lua_abi,
@@ -469,7 +787,7 @@ pub const SyncCommand = struct {
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.locked_replay", .{ .packages = existing_lock.packages.items.len });
             } else {
-                try @import("command.zig").progress(stdout, "Replaying lockfile ({d} package{s})...\n", .{ existing_lock.packages.items.len, if (existing_lock.packages.items.len == 1) "" else "s" });
+                backend.phase("Replaying lockfile ({d} package{s})...\n", .{ existing_lock.packages.items.len, if (existing_lock.packages.items.len == 1) "" else "s" });
             }
 
             profile_span = profiler.now();
@@ -544,14 +862,14 @@ pub const SyncCommand = struct {
             }
         } else {
             if (existing_lock.packages.items.len > 0 and !lock_deps_match and !self.json) {
-                try @import("command.zig").progress(stdout, "moonstone.toml changed; resolving a new lockfile...\n", .{});
+                backend.phase("moonstone.toml changed; resolving a new lockfile...\n", .{});
             } else if (self.update and !self.json) {
-                try @import("command.zig").progress(stdout, "Updating lockfile within declared constraints...\n", .{});
+                backend.phase("Updating lockfile within declared constraints...\n", .{});
             }
             profile_span = profiler.now();
             var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
-                .on_event = @import("command.zig").onSolverEvent,
-                .on_event_context = &resolve_cb_ctx,
+                .on_event = on_solver_cb,
+            .on_event_context = on_solver_ctx,
             });
             defer solver.deinit();
             profiler.span("sync.pubgrub.init", profile_span);
@@ -559,7 +877,7 @@ pub const SyncCommand = struct {
             if (emitter) |e| {
                 try e.emit(io, .STATUS, name, "resolution.begin", .{ .targets = targets.items.len });
             } else {
-                try @import("command.zig").renderSpinner(&resolve_cb_ctx, "Solving dependencies...", .{});
+                backend.phase("Solving dependencies...", .{});
             }
             profile_span = profiler.now();
             solution = solver.solve(targets.items) catch |err| blk: {
@@ -609,7 +927,7 @@ pub const SyncCommand = struct {
                 return err;
             };
             profiler.spanCount("sync.pubgrub.solve", profile_span, "packages", solution.count());
-            if (!self.json) try @import("command.zig").renderDone(&resolve_cb_ctx, "Resolved {d} dependencies.", .{solution.count()});
+            if (!self.json) backend.phaseDone("Resolved {d} dependencies.", .{solution.count()});
             profile_span = profiler.now();
             for (mt.dependencies.items) |dep| {
                 const raw_spec = try dep.toSpecString(allocator);
@@ -649,8 +967,8 @@ pub const SyncCommand = struct {
                         .runtime = active_lua_abi,
                         .runtime_artifact_hash = rt_res.artifact_hash,
                         .runtime_path = rt_mat_res.path,
-                        .on_event = @import("command.zig").onResolveEvent,
-                        .on_event_context = &resolve_cb_ctx,
+                        .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
                     }, kind, env) catch |err| {
                         if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                         return err;
@@ -667,8 +985,8 @@ pub const SyncCommand = struct {
                                 .runtime = active_lua_abi,
                                 .runtime_artifact_hash = rt_res.artifact_hash,
                                 .runtime_path = rt_mat_res.path,
-                                .on_event = @import("command.zig").onResolveEvent,
-                                .on_event_context = &resolve_cb_ctx,
+                                .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
                             }, env) catch continue;
                             resolved_direct_opt = .{
                                 .name = try allocator.dupe(u8, dep_name),
@@ -753,8 +1071,8 @@ pub const SyncCommand = struct {
                                     .runtime = active_lua_abi,
                                     .runtime_artifact_hash = rt_res.artifact_hash,
                                     .runtime_path = rt_mat_res.path,
-                                    .on_event = @import("command.zig").onResolveEvent,
-                                    .on_event_context = &resolve_cb_ctx,
+                                    .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
                                 }, kind, env) catch |err| {
                                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                                     return err;
@@ -975,7 +1293,62 @@ pub const SyncCommand = struct {
         profile_span = profiler.now();
         if (emitter) |e| {
             try e.emit(io, .STATUS, name, "materialization.begin", .{ .packages = report.resolved_packages });
+        } else {
+            backend.phase("Materializing {d} packages...", .{solution.count()});
         }
+
+        // Check for cancellation before starting materialization.
+        if (switch (backend) { .direct => false, .queue => |w| w.isCancelled() }) return error.Cancelled;
+
+        // ── Phase 1: Parallel download + materialize remote packages ───────
+        var download_jobs = std.ArrayList(DownloadJob).empty;
+        defer download_jobs.deinit(allocator);
+        var job_map = std.StringHashMap(usize).init(allocator);
+        defer job_map.deinit();
+
+        {
+            var prescan = solution.iterator();
+            while (prescan.next()) |entry| {
+                const p = entry.value_ptr.*;
+                if (p.location == .remote and p.origin == .moonstone_registry) {
+                    try download_jobs.append(allocator, .{ .pkg = entry.value_ptr });
+                    try job_map.put(try allocator.dupe(u8, entry.key_ptr.*), download_jobs.items.len - 1);
+                }
+            }
+        }
+
+        if (download_jobs.items.len > 0) {
+            var mutex_alloc = MutexAllocator{
+                .parent = allocator,
+                .io = io,
+            };
+            const safe_allocator = mutex_alloc.allocator();
+            var pool = DownloadPool{
+                .allocator = safe_allocator,
+                .io = io,
+                .env = env,
+                .jobs = download_jobs.items,
+                .wctx = switch (backend) {
+                    .direct => null,
+                    .queue => |w| w,
+                },
+                .on_resolve_cb = on_resolve_cb,
+                .on_resolve_ctx = on_resolve_ctx,
+            };
+            try pool.execute(4);
+        }
+
+        // Check for download errors before proceeding to serial phase.
+        for (download_jobs.items) |dj| {
+            if (dj.err) |err| {
+                // Stash error detail for the main thread.
+                if (dj.pkg.name.len > 0) {
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Failed to materialize {s}: {s}", .{ dj.pkg.name, @errorName(err) }) } };
+                }
+                return err;
+            }
+        }
+
         var live_links = std.ArrayList(moonstone.project.linker.LiveLink).empty;
         defer {
             for (live_links.items) |ll| {
@@ -1031,7 +1404,7 @@ pub const SyncCommand = struct {
             const pkg = entry.value_ptr.*;
 
             if (!self.json) {
-                try @import("command.zig").progress(stdout, "Materializing [{d}/{d}] {s}@{s}...\n", .{ materialize_index, materialize_total, pkg.name, pkg.version });
+                backend.phase("Materializing [{d}/{d}] {s}@{s}...\n", .{ materialize_index, materialize_total, pkg.name, pkg.version });
             }
 
             if (pkg.local_path) |lp| {
@@ -1143,21 +1516,18 @@ pub const SyncCommand = struct {
                 .local_store => report.store_hits += 1,
                 .local_path => {},
             }
-            const m_res = switch (pkg.location) {
-                .remote => switch (pkg.origin) {
-                    .moonstone_registry => |r| try mat.materialize_remote(
-                        r.url,
-                        r.token,
-                        r.descriptor_path,
-                        pkg.remote_desc.?,
-                        r.artifact_idx,
-                    ),
-                    else => return error.UnsupportedMaterializationOrigin,
-                },
-                .local_store, .local_path => moonstone.materialization.materializer.MaterializeResult{
+            // Use pre-computed result from the download pool, or handle
+            // local store/path packages inline.
+            const m_res = blk: {
+                if (job_map.get(pkg_name_sol)) |ji| {
+                    if (download_jobs.items[ji].result) |r| break :blk r;
+                    // Should have errored above; defensive fallback.
+                    return error.MaterializerFailed;
+                }
+                break :blk moonstone.materialization.materializer.MaterializeResult{
                     .path = try allocator.dupe(u8, pkg.local_path.?),
                     .artifact_hash = try allocator.dupe(u8, pkg.artifact_hash),
-                },
+                };
             };
             defer m_res.deinit(allocator);
 
@@ -1249,6 +1619,9 @@ pub const SyncCommand = struct {
             self.offline,
             &report,
             emitter,
+            backend,
+            on_resolve_cb,
+            on_resolve_ctx,
         );
 
         report.materialize_ms = elapsedMs(io, materialize_started_ns);
@@ -1273,13 +1646,17 @@ pub const SyncCommand = struct {
             try lock_file.writeStreamingAll(io, aw.written());
         }
 
+        // ── Phase 3: Link environment (serial/finalized) ─────────────────────
+        // Linking is inherently serial: it writes symlinks and projection
+        // metadata into a single project environment directory.  All
+        // downloads, hash verification, and store commits are complete.
         // 5. Link environment
         const link_started_ns = nowNs(io);
         profile_span = profiler.now();
         if (emitter) |e| {
             try e.emit(io, .STATUS, name, "env.link.begin", .{ .artifacts = projected_artifacts.items.len, .links = live_links.items.len });
         } else {
-            try @import("command.zig").progress(stdout, "Linking project environment...\n", .{});
+            backend.phase("Linking project environment...\n", .{});
         }
         try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env, rt_res.name);
         report.linked = projected_artifacts.items.len + live_links.items.len;
@@ -1293,7 +1670,7 @@ pub const SyncCommand = struct {
                 .summary = report,
             });
         } else {
-            try stdout.print("Project environment synchronized.\n", .{});
+            backend.phaseDone("Project environment synchronized.", .{});
         }
     }
 
@@ -1686,9 +2063,12 @@ fn resolveAndMaterializeRuntime(
     offline: bool,
     report: *SyncReport,
     emitter: ?*ndjson.Emitter,
-    resolve_cb_ctx: *@import("command.zig").ResolveCallbackContext,
+    backend: progress_runtime.ProgressBackend,
+    on_resolve_cb: ?moonstone.resolution.options.ResolveCallback,
+    on_resolve_ctx: ?*anyopaque,
     fail_hard: bool,
 ) !void {
+    _ = stdout;
     var spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, rt_spec);
     defer spec.deinit(allocator);
 
@@ -1702,15 +2082,15 @@ fn resolveAndMaterializeRuntime(
     if (emitter) |e| {
         try e.emit(io, .STATUS, pkg_name, "isolated_runtime.resolve", .{ .runtime = rt_spec });
     } else {
-        try @import("command.zig").progress(stdout, "Resolving isolated runtime {s} for {s}@{s}...\n", .{ rt_spec, pkg_name, pkg_version });
+        backend.phase("Resolving isolated runtime {s} for {s}@{s}...\n", .{ rt_spec, pkg_name, pkg_version });
     }
 
     const rt_res_iso = coordinator.resolve(runtime_name, runtime_constraint, index, registries, .{
         .offline = offline,
         .prefer_local = true,
         .runtime = target_abi,
-        .on_event = @import("command.zig").onResolveEvent,
-        .on_event_context = resolve_cb_ctx,
+        .on_event = on_resolve_cb,
+        .on_event_context = on_resolve_ctx,
     }, ctx.env) catch |err| {
         if (fail_hard) {
             if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
@@ -1760,6 +2140,9 @@ fn ensureIsolatedRuntimes(
     offline: bool,
     report: *SyncReport,
     emitter: ?*ndjson.Emitter,
+    backend: progress_runtime.ProgressBackend,
+    on_resolve_cb: ?moonstone.resolution.options.ResolveCallback,
+    on_resolve_ctx: ?*anyopaque,
 ) !void {
     var seen = std.StringArrayHashMapUnmanaged(void).empty;
     defer {
@@ -1767,12 +2150,6 @@ fn ensureIsolatedRuntimes(
         while (sit.next()) |entry| allocator.free(entry.key_ptr.*);
         seen.deinit(allocator);
     }
-
-    var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
-        .io = io,
-        .stdout = stdout,
-        .emitter = emitter,
-    };
 
     var it = solution.iterator();
     while (it.next()) |entry| {
@@ -1823,7 +2200,9 @@ fn ensureIsolatedRuntimes(
             offline,
             report,
             emitter,
-            &resolve_cb_ctx,
+            backend,
+            on_resolve_cb,
+            on_resolve_ctx,
             !is_link_or_path,
         );
     }
