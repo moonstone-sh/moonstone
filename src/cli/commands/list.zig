@@ -76,7 +76,7 @@ pub const ListCommand = struct {
                 const kind = if (entry) |ent| @tagName(ent.kind) else "unknown";
 
                 if (is_json) {
-                    try e.?.emit(c_ctx.io, .STATUS, pkg_name, "dependency", .{
+                    try e.?.emit(c_ctx.io, .STATUS, pkg_name, "entry", .{
                         .name = pkg_name,
                         .version = version,
                         .kind = kind,

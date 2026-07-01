@@ -15,6 +15,109 @@ fn solutionContainsPackage(solution: *const std.StringArrayHashMapUnmanaged(moon
     return false;
 }
 
+fn appendCompletionUnique(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), value: []const u8) !void {
+    for (list.items) |existing| {
+        if (std.mem.eql(u8, existing, value)) return;
+    }
+    try list.append(allocator, try allocator.dupe(u8, value));
+}
+
+fn appendCompletionIfMatches(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), value: []const u8, prefix: []const u8) !void {
+    if (prefix.len > 0 and !std.mem.startsWith(u8, value, prefix)) return;
+    try appendCompletionUnique(allocator, list, value);
+}
+
+fn appendCachedManifestCompletions(allocator: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, list: *std.ArrayList([]const u8), prefix: []const u8) void {
+    const paths = moonstone.platform.fs.resolve_moonstone(allocator, env, io) catch return;
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
+    const cfg = moonstone.cache.manifest.getConfig(allocator, env, io);
+    var cache = moonstone.cache.manifest.ManifestCache.init(allocator, io, paths, cfg) catch return;
+    defer cache.deinit();
+    const entries = cache.list() catch return;
+    defer {
+        for (entries) |*entry| entry.deinit(allocator);
+        allocator.free(entries);
+    }
+
+    for (entries) |entry| {
+        if (!entry.fresh) continue;
+        const payload = std.Io.Dir.cwd().readFileAlloc(io, entry.metadata.payload_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch continue;
+        defer allocator.free(payload);
+        switch (entry.metadata.source) {
+            .luarocks => if (std.mem.startsWith(u8, prefix, "rocks:") or prefix.len == 0) appendLuaRocksCompletions(allocator, payload, list, prefix) catch {},
+            .registry => if (!std.mem.startsWith(u8, prefix, "rocks:")) appendRegistryCompletions(allocator, payload, list, prefix) catch {},
+        }
+    }
+}
+
+fn appendLuaRocksCompletions(allocator: std.mem.Allocator, payload: []const u8, list: *std.ArrayList([]const u8), prefix: []const u8) !void {
+    const repo_key = std.mem.indexOf(u8, payload, "\"repository\"") orelse return;
+    const open_rel = std.mem.indexOfScalar(u8, payload[repo_key..], '{') orelse return;
+    var index = repo_key + open_rel + 1;
+    var depth: usize = 1;
+    while (index < payload.len and depth > 0) {
+        const byte = payload[index];
+        if (byte == '"' and depth == 1) {
+            const start = index + 1;
+            var end = start;
+            var escaped = false;
+            while (end < payload.len) : (end += 1) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (payload[end] == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (payload[end] == '"') break;
+            }
+            if (end >= payload.len) return;
+            var colon = end + 1;
+            while (colon < payload.len and std.ascii.isWhitespace(payload[colon])) : (colon += 1) {}
+            if (colon < payload.len and payload[colon] == ':') {
+                const package_name = payload[start..end];
+                const suggestion = try std.fmt.allocPrint(allocator, "rocks:{s}", .{package_name});
+                defer allocator.free(suggestion);
+                try appendCompletionIfMatches(allocator, list, suggestion, prefix);
+            }
+            index = end + 1;
+            continue;
+        }
+        if (byte == '"') {
+            index += 1;
+            var escaped = false;
+            while (index < payload.len) : (index += 1) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (payload[index] == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (payload[index] == '"') break;
+            }
+        } else if (byte == '{') {
+            depth += 1;
+        } else if (byte == '}') {
+            depth -= 1;
+        }
+        index += 1;
+    }
+}
+
+fn appendRegistryCompletions(allocator: std.mem.Allocator, payload: []const u8, list: *std.ArrayList([]const u8), prefix: []const u8) !void {
+    var idx = moonstone.domain.manifest.RemotePackageStoreIndex.parse(allocator, payload) catch return;
+    defer idx.deinit(allocator);
+    for (idx.package) |pkg| {
+        try appendCompletionIfMatches(allocator, list, pkg.name, prefix);
+    }
+}
+
 /// Command-specific data passed through WorkerContext.cmd_data.
 const AddWorkData = struct {
     cmd: add_command,
@@ -47,6 +150,8 @@ pub const add_command = struct {
     role: ?[]const u8 = null,
     dev: bool = false,
     tool: bool = false,
+    helper: bool = false,
+    external: bool = false,
     optional: bool = false,
     bin: bool = false,
     lib: bool = false,
@@ -64,9 +169,11 @@ pub const add_command = struct {
             \\Add a dependency to the project.
             \\
             \\Flags:
-            \\  --role <role>    Set dependency role (dev, tool, runtime, helper, peer, optional)
+            \\  --role <role>    Set dependency role (dev, tool, runtime, helper, external, optional)
+            \\  --external       Mark as host-provided external dependency
             \\  --dev            Alias for --role dev
             \\  --tool           Alias for --role tool
+            \\  --helper         Alias for --role helper
             \\  --optional       Mark dependency as optional
             \\  --bin            Treat as a binary dependency
             \\  --lib            Treat as a library dependency
@@ -85,10 +192,17 @@ pub const add_command = struct {
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
-        _ = args;
         const allocator = ctx.allocator;
         const io = ctx.io;
         const env = ctx.env;
+        const prefix = if (args.len > 0) args[args.len - 1] else "";
+
+        var list = std.ArrayList([]const u8).empty;
+
+        if (std.mem.startsWith(u8, prefix, "rocks:")) {
+            appendCachedManifestCompletions(allocator, io, env, &list, prefix);
+            return list.toOwnedSlice(allocator);
+        }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
         defer {
@@ -106,8 +220,6 @@ pub const add_command = struct {
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
-        var list = std.ArrayList([]const u8).empty;
-
         // 1. Suggest links
         const lr = moonstone.store.links.LinkStore.init(&idx);
         const entries = try lr.list();
@@ -116,7 +228,9 @@ pub const add_command = struct {
             allocator.free(entries);
         }
         for (entries) |entry| {
-            try list.append(allocator, try std.fmt.allocPrint(allocator, "link:{s}", .{entry.name}));
+            const suggestion = try std.fmt.allocPrint(allocator, "link:{s}", .{entry.name});
+            defer allocator.free(suggestion);
+            try appendCompletionIfMatches(allocator, &list, suggestion, prefix);
         }
 
         // 2. Suggest known packages in artifacts
@@ -127,9 +241,12 @@ pub const add_command = struct {
             defer _ = c.sqlite3_finalize(stmt);
             while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
                 const name_val = std.mem.span(c.sqlite3_column_text(stmt, 0));
-                try list.append(allocator, try allocator.dupe(u8, name_val));
+                try appendCompletionIfMatches(allocator, &list, name_val, prefix);
             }
         }
+
+        // 3. Suggest fresh cached remote metadata. This must never hit network.
+        appendCachedManifestCompletions(allocator, io, env, &list, prefix);
 
         return list.toOwnedSlice(allocator);
     }
@@ -324,13 +441,20 @@ pub const add_command = struct {
 
         const target_role: moonstone.domain.manifest.DependencyRole = blk: {
             if (self.role) |r| {
+                if (std.mem.eql(u8, r, "dependency")) {
+                    ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "Role 'dependency' is no longer supported; use 'runtime'.") } };
+                    return error.InvalidArgument;
+                }
                 break :blk moonstone.domain.manifest.DependencyRole.fromString(r) orelse {
-                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Unknown role '{s}'. Valid roles: dev, tool, runtime, helper, peer, optional.", .{r}) } };
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Unknown role '{s}'. Valid roles: dev, tool, runtime, helper, external, optional.", .{r}) } };
                     return error.InvalidArgument;
                 };
             }
             if (self.dev) break :blk .dev;
             if (self.tool) break :blk .tool;
+            if (self.helper) break :blk .helper;
+            if (self.external) break :blk .external;
+            if (self.optional) break :blk .optional;
             break :blk .runtime;
         };
 
@@ -384,6 +508,8 @@ pub const add_command = struct {
                 .prefer_local = self.prefer_local or !self.update,
                 .runtime = runtime_abi,
                 .runtime_path = mat.runtime_path,
+                .on_event = on_resolve_cb,
+                .on_event_context = on_resolve_ctx,
             },
             env,
             lua_exe,
@@ -425,7 +551,6 @@ pub const add_command = struct {
             return err;
         };
         profiler.spanCount("add.pubgrub.solve", profile_span, "packages", solution.count());
-        if (!self.json) backend.phaseDone("Resolved {d} dependencies.", .{solution.count()});
         defer {
             var sit = solution.iterator();
             while (sit.next()) |entry| {
@@ -470,7 +595,7 @@ pub const add_command = struct {
                     .on_event_context = on_resolve_ctx,
                 }, kind, env) catch |err| {
                     if (err == error.RocksVersionDiscoveryFailed and parsed.resolver == null) continue;
-                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                    if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
                 };
                 if (resolved_direct_opt != null) break;
@@ -523,6 +648,7 @@ pub const add_command = struct {
         }
         if (missing_explicit) return error.PackageNotFound;
         if (self.positionals.len > 0 and solution.count() == 0) return error.PackageNotFound;
+        if (!self.json) backend.phaseDone("Resolved {d} dependencies.", .{solution.count()});
         var added_list = std.ArrayList([]const u8).empty;
         defer {
             for (added_list.items) |a| allocator.free(a);
@@ -632,7 +758,7 @@ pub const add_command = struct {
                     .on_event = on_resolve_cb,
                     .on_event_context = on_resolve_ctx,
                 }, kind, env) catch |err| {
-                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                    if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
                 };
                 if (resolved_opt != null) break;

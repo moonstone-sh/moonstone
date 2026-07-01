@@ -102,7 +102,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 EOF
 
 run_cmd "use lua 5.4" \
@@ -135,7 +135,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 EOF
 
 run_cmd "register my-lib" \

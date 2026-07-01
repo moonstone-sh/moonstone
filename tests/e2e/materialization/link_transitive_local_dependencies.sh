@@ -18,7 +18,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 TOML
 cat > "$WORKDIR/child-link/src/hyg_child_link.lua" <<'LUA'
 return { value = "linked-child" }
@@ -35,7 +35,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 TOML
 cat > "$WORKDIR/child-path/src/hyg_child_path.lua" <<'LUA'
 return { value = "path-child" }
@@ -52,7 +52,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 "hyg-child-link" = "link:hyg-child-link"
 "hyg-child-path" = "path:../child-path"
 TOML

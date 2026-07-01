@@ -32,6 +32,8 @@ pub const ResolveEvent = union(enum) {
         downloaded_bytes: usize,
         total_bytes: ?usize,
     },
+    metadata_sync_started: []const u8,
+    metadata_sync_done: []const u8,
 };
 
 pub const ResolveCallback = *const fn (ctx: ?*anyopaque, event: ResolveEvent) void;

@@ -5,6 +5,7 @@ const fs = @import("../platform/fs.zig");
 const http = @import("../platform/http.zig");
 const driver_mod = @import("../store/driver.zig");
 const profiler = @import("../diagnostics/profiler.zig");
+const manifest_cache_mod = @import("../cache/manifest_cache.zig");
 
 var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 
@@ -86,7 +87,17 @@ pub const RegistryClient = struct {
     pub fn fetch_index(self: *RegistryClient) !manifest.RemotePackageStoreIndex {
         try self.ensure_meta();
         const index_sub_path = self.meta.?.index.url;
-        const content = try self.read_file_from_registry(index_sub_path);
+        const content = blk: {
+            if (try self.read_cached_manifest_index(index_sub_path, false)) |cached| {
+                if (try self.index_hash_matches(cached)) break :blk cached;
+                self.allocator.free(cached);
+            }
+            self.emit_metadata_sync_started("Syncing Moonstone registry");
+            const fetched = try self.read_file_from_registry(index_sub_path);
+            self.write_cached_manifest_index(index_sub_path, false, fetched);
+            self.emit_metadata_sync_done("Moonstone registry synced");
+            break :blk fetched;
+        };
         defer self.allocator.free(content);
 
         // Verify index hash for v0
@@ -106,9 +117,82 @@ pub const RegistryClient = struct {
 
     pub fn fetch_private_index(self: *RegistryClient) !?manifest.RemotePackageStoreIndex {
         if (self.token == null or !self.is_remote) return null;
-        const content = self.read_file_from_registry("private/index.toml") catch return null;
+        const content = blk: {
+            if (try self.read_cached_manifest_index("private/index.toml", true)) |cached| break :blk cached;
+            self.emit_metadata_sync_started("Syncing Moonstone registry");
+            const fetched = self.read_file_from_registry("private/index.toml") catch return null;
+            self.write_cached_manifest_index("private/index.toml", true, fetched);
+            self.emit_metadata_sync_done("Moonstone registry synced");
+            break :blk fetched;
+        };
         defer self.allocator.free(content);
         return try manifest.RemotePackageStoreIndex.parse(self.allocator, content);
+    }
+
+    fn index_hash_matches(self: *RegistryClient, content: []const u8) !bool {
+        var hash_buf: [32]u8 = undefined;
+        std.crypto.hash.Blake3.hash(content, &hash_buf, .{});
+        const actual_hex = std.fmt.bytesToHex(hash_buf, .lower);
+        const actual_hash = try std.fmt.allocPrint(self.allocator, "b3:{s}", .{&actual_hex});
+        defer self.allocator.free(actual_hash);
+        return std.mem.eql(u8, actual_hash, self.meta.?.index.hash);
+    }
+
+    fn emit_metadata_sync_started(self: *RegistryClient, label: []const u8) void {
+        if (self.on_event) |cb| cb(self.on_event_context, .{ .metadata_sync_started = label });
+    }
+
+    fn emit_metadata_sync_done(self: *RegistryClient, label: []const u8) void {
+        if (self.on_event) |cb| cb(self.on_event_context, .{ .metadata_sync_done = label });
+    }
+
+    fn registry_cache_key(self: *RegistryClient, sub_path: []const u8, private: bool) !manifest_cache_mod.CacheKey {
+        const name = if (private) blk: {
+            const token = self.token orelse "";
+            var hash_buf: [32]u8 = undefined;
+            std.crypto.hash.Blake3.hash(token, &hash_buf, .{});
+            const actual_hex = std.fmt.bytesToHex(hash_buf, .lower);
+            break :blk try std.fmt.allocPrint(self.allocator, "private-{s}", .{actual_hex[0..16]});
+        } else try self.allocator.dupe(u8, sub_path);
+        return .{ .source = .registry, .scope = self.registry_root, .name = name, .extension = "toml" };
+    }
+
+    fn read_cached_manifest_index(self: *RegistryClient, sub_path: []const u8, private: bool) !?[]u8 {
+        if (!self.is_remote) return null;
+        var temp_env = std.process.Environ.Map.init(self.allocator);
+        defer temp_env.deinit();
+        const env_to_use = self.env orelse &temp_env;
+        const paths = try fs.resolve_moonstone(self.allocator, env_to_use, self.io);
+        defer {
+            var p = paths;
+            p.deinit(self.allocator);
+        }
+        const cfg = manifest_cache_mod.getConfig(self.allocator, env_to_use, self.io);
+        var cache = try manifest_cache_mod.ManifestCache.init(self.allocator, self.io, paths, cfg);
+        defer cache.deinit();
+        const key = try self.registry_cache_key(sub_path, private);
+        defer self.allocator.free(key.name);
+        return try cache.readFresh(key);
+    }
+
+    fn write_cached_manifest_index(self: *RegistryClient, sub_path: []const u8, private: bool, content: []const u8) void {
+        if (!self.is_remote) return;
+        var temp_env = std.process.Environ.Map.init(self.allocator);
+        defer temp_env.deinit();
+        const env_to_use = self.env orelse &temp_env;
+        const paths = fs.resolve_moonstone(self.allocator, env_to_use, self.io) catch return;
+        defer {
+            var p = paths;
+            p.deinit(self.allocator);
+        }
+        const cfg = manifest_cache_mod.getConfig(self.allocator, env_to_use, self.io);
+        var cache = manifest_cache_mod.ManifestCache.init(self.allocator, self.io, paths, cfg) catch return;
+        defer cache.deinit();
+        const key = self.registry_cache_key(sub_path, private) catch return;
+        defer self.allocator.free(key.name);
+        const url = if (std.mem.startsWith(u8, sub_path, "http")) sub_path else std.fs.path.join(self.allocator, &.{ self.registry_root, sub_path }) catch sub_path;
+        defer if (url.ptr != sub_path.ptr) self.allocator.free(url);
+        cache.write(key, url, content) catch {};
     }
 
 

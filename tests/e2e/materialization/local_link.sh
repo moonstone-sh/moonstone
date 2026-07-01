@@ -33,7 +33,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 EOF
 
 moon add link:my-lib --no-sync

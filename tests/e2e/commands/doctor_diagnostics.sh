@@ -18,7 +18,7 @@ assert_contains "${doctor_ok}" "project_root" "doctor discovers parent project"
 assert_contains "${doctor_ok}" "lockfile_sync" "doctor reports lockfile sync check"
 
 cd "${WORKDIR}/project"
-printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "dependency"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "runtime"\n' >> moonstone.toml
 doctor_stale=$(moon doctor 2>&1 || true)
 assert_contains "${doctor_stale}" "moonstone.lock is missing 1 manifest dependency" "doctor detects stale lockfile"
 

@@ -34,7 +34,7 @@ pub const CompletionsCommand = struct {
         const shell_name = blk: {
             if (self.shell) |s| break :blk s;
             if (self.positionals.len > 0) break :blk self.positionals[0];
-            
+
             // Try to infer from $SHELL
             if (ctx.env.get("SHELL")) |shell_path| {
                 const base = std.fs.path.basename(shell_path);
@@ -109,7 +109,7 @@ pub const CompletionsCommand = struct {
             \\    local -a comps
             \\    comps=($($cmd completions --complete "$BUFFER"))
             \\    if (( ${{#comps}} > 0 )); then
-            \\        _values 'completions' $comps
+            \\        compadd -a comps
             \\    fi
             \\  fi
             \\}}
@@ -139,7 +139,7 @@ pub const CompletionsCommand = struct {
 
         for (ctx.root.?.subcommands) |sub| {
             try ctx.stdout.print("complete -c moon -n \"__fish_use_subcommand\" -a {s} -d \"{s}\"\n", .{ sub.name, sub.description });
-            
+
             if (sub.subcommands.len > 0) {
                 for (sub.subcommands) |nested| {
                     try ctx.stdout.print("complete -c moon -n \"__fish_seen_subcommand_from {s}\" -a {s} -d \"{s}\"\n", .{ sub.name, nested.name, nested.description });

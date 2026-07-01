@@ -15,18 +15,17 @@ pub const DependencyRole = enum {
     dev,
     tool,
     helper,
-    peer,
+    external,
     optional,
 
     pub fn toString(self: DependencyRole) []const u8 {
-        return switch (self) {
-            .runtime => "dependency",
-            else => @tagName(self),
-        };
+        return @tagName(self);
     }
 
     pub fn fromString(str: []const u8) ?DependencyRole {
-        if (std.mem.eql(u8, str, "dependency")) return .runtime;
+        if (std.mem.eql(u8, str, "dependency")) return null;
+        // TODO: remove legacy support as we consolidize towards v1.
+        if (std.mem.eql(u8, str, "peer")) return .external;
         inline for (std.meta.fields(DependencyRole)) |field| {
             if (std.mem.eql(u8, str, field.name)) {
                 return @enumFromInt(field.value);
@@ -73,7 +72,7 @@ pub const DependencyRole = enum {
                 .metadata_only = false,
                 .export_default = true,
             },
-            .peer => .{
+            .external => .{
                 .link_lua_modules_to_root = false,
                 .link_cmodules_to_root = false,
                 .expose_public_bins = false,

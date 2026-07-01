@@ -73,6 +73,15 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/registry_file.zig").RegistryPurgeCommand),
         }),
 
+        router.CommandNode.group("cache", "Manage Moonstone caches", &.{
+            router.CommandNode.group("manifest", "Manage cached package manifests and indexes", &.{
+                router.CommandNode.from(command_mod.cache.manifest.list),
+                router.CommandNode.from(command_mod.cache.manifest.refresh),
+                router.CommandNode.from(command_mod.cache.manifest.path),
+                router.CommandNode.from(command_mod.cache.manifest.clear),
+            }),
+        }),
+
         router.CommandNode.group("interpreter", "Manage Lua interpreters", &.{
             router.CommandNode.from(command_mod.interpreter.set),
             router.CommandNode.from(@import("commands/interpreter_install.zig").InterpreterInstallCommand),

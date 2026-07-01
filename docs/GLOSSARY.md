@@ -14,14 +14,14 @@ Disambiguation of terms introduced by the dependency-role and capability model.
 - `script` — standalone script
 - `runtime` — Lua interpreter (PUC Lua, LuaJIT)
 
-**DependencyRole** (`role = "dependency" | "dev" | "tool" | "helper" | "peer" | "optional"`)  
+**DependencyRole** (`role = "runtime" | "dev" | "tool" | "helper" | "external" | "optional"`)  
 → How the **project consumes** the package.
 
 - `runtime` — production dependency
 - `dev` — development-only dependency
 - `tool` — build/export/test executable
 - `helper` — runtime executable dependency used internally by the package
-- `peer` — external runtime dependency provided by the host environment
+- `external` — external runtime dependency provided by the host environment
 - `optional` — optional external runtime integration
 
 **Rule of thumb:** `Kind` is on the package descriptor (`package.toml`). `DependencyRole` is on the project manifest (`moonstone.toml`).
@@ -66,9 +66,9 @@ Rules:
 
 ---
 
-## peer
+## external
 
-A **peer** dependency is a runtime dependency expected to be provided externally (by the host environment or a plugin manager).
+An **external** dependency is a runtime dependency expected to be provided externally (by the host environment or a plugin manager).
 
 Examples:
 - Neovim plugin depending on `plenary.nvim`
@@ -124,7 +124,7 @@ name = "acme/comptime-gen"
 constraint = "^1.0"
 
 [[dependencies]]
-role = "dependency"
+role = "runtime"
 name = "acme/comptime-gen"
 constraint = "^1.0"
 ```

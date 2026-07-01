@@ -41,6 +41,15 @@ pub const registry = struct {
     pub const remove = @import("registry_remove.zig").RegistryRemoveCommand;
 };
 
+pub const cache = struct {
+    pub const manifest = struct {
+        pub const list = @import("cache_manifest.zig").CacheManifestListCommand;
+        pub const refresh = @import("cache_manifest.zig").CacheManifestRefreshCommand;
+        pub const path = @import("cache_manifest.zig").CacheManifestPathCommand;
+        pub const clear = @import("cache_manifest.zig").CacheManifestClearCommand;
+    };
+};
+
 // Interpreter group
 pub const interpreter = struct {
     pub const set = @import("interpreter_set.zig").InterpreterSetCommand;
@@ -174,6 +183,8 @@ fn manifestErrorDetail(err: anyerror) ?[]const u8 {
         error.InvalidRuntimeName => "moonstone.toml [interpreter].name must be a string.",
         error.InvalidRuntimeVersion => "moonstone.toml [interpreter].version must be a string.",
         error.InvalidRuntimeAbi => "moonstone.toml [interpreter].abi must be a string.",
+        error.LegacyDependencyRole => "dependency role 'dependency' is no longer supported; use 'runtime' or [dependencies.runtime].",
+        error.InvalidDependencyRole => "dependency role must be one of: runtime, dev, tool, helper, external, optional.",
         else => null,
     };
 }
@@ -188,6 +199,8 @@ pub fn reportError(
     detail: ?CliErrorDetail,
 ) !void {
     if (err == error.AlreadyReported or err == error.HealthCheckFailed) return;
+    const contextual_detail = if (detail == null) @import("moonstone").diagnostics.error_context.take(allocator) else null;
+    defer if (contextual_detail) |msg| allocator.free(msg);
 
     if (json) {
         var emitter = @import("ndjson.zig").Emitter.init(allocator, stdout, "command");
@@ -223,11 +236,15 @@ pub fn reportError(
                     .artifact_hash = lam.artifact_hash,
                 }),
             }
+        } else if (contextual_detail) |msg| {
+            try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = msg });
         } else {
             if (err == error.RocksVersionDiscoveryFailed) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks registry is unreachable or returned an invalid manifest" });
             } else if (err == error.RockspecNotFound) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks package metadata was found, but no usable rockspec was available" });
+            } else if (err == error.CompilerNotFound) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Building native LuaRocks modules requires `zig` on PATH" });
             } else if (err == error.SQLiteCantOpen) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone could not open its SQLite index. Check that the Moonstone data directory exists and is writable, or set MOONSTONE_HOME to a writable directory." });
             } else if (err == error.SQLiteReadOnly) {
@@ -275,6 +292,8 @@ pub fn reportError(
                     try stdout.print("artifact into the local store.\n", .{});
                 },
             }
+        } else if (contextual_detail) |msg| {
+            try stdout.print("Error: {s}\n", .{msg});
         } else {
             if (err == error.NotInsideMoonstoneProject or err == error.MissingMoonstoneToml or err == error.NoProjectFound) {
                 try stdout.print("Error: not inside a Moonstone project. Run 'moon init' first, or retry from a directory containing moonstone.toml.\n", .{});
@@ -282,6 +301,8 @@ pub fn reportError(
                 try stdout.print("Error: LuaRocks registry is unreachable or returned an invalid manifest. Check network connectivity, MOONSTONE_LUAROCKS_URL, or retry with --offline if the package is already cached.\n", .{});
             } else if (err == error.RockspecNotFound) {
                 try stdout.print("Error: LuaRocks package metadata was found, but no usable rockspec was available for the selected version.\n", .{});
+            } else if (err == error.CompilerNotFound) {
+                try stdout.print("Error: building native LuaRocks modules requires `zig` on PATH. Install Zig or expose it in PATH, then retry.\n", .{});
             } else if (err == error.PackageNotFound) {
                 try stdout.print("Error: package not found or no compatible version was available.\n", .{});
             } else if (err == error.LockfileOutOfSync) {
@@ -397,6 +418,20 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
                 } else {
                     renderSpinner(context, "{s} downloading... {d} bytes", .{ dp.pkg_name orelse dp.url, dp.downloaded_bytes }) catch {};
                 }
+            }
+        },
+        .metadata_sync_started => |label| {
+            if (context.emitter) |e| {
+                e.emit(context.io, .INFO, label, "syncing", .{}) catch {};
+            } else {
+                renderSpinner(context, "{s}", .{label}) catch {};
+            }
+        },
+        .metadata_sync_done => |label| {
+            if (context.emitter) |e| {
+                e.emit(context.io, .STATUS, label, "synced", .{}) catch {};
+            } else {
+                renderDone(context, "{s}", .{label}) catch {};
             }
         },
     }

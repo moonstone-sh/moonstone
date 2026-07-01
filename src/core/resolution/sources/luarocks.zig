@@ -5,6 +5,7 @@ const http = @import("../../platform/http.zig");
 const store = @import("../../store.zig");
 const hash = @import("../../identity/hash.zig");
 const luarocks = @import("../../luarocks/rockspec.zig");
+const manifest_cache_mod = @import("../../cache/manifest_cache.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
 
@@ -22,20 +23,19 @@ fn get_luarocks_base(env_map: *std.process.Environ.Map) []const u8 {
 
 const ProgressAdapterCtx = struct {
     url: []const u8,
+    label: ?[]const u8 = null,
     on_event: options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
 };
 
 fn progress_adapter(ctx_ptr: ?*anyopaque, downloaded: usize, total: ?usize) void {
     const ctx: *ProgressAdapterCtx = @ptrCast(@alignCast(ctx_ptr orelse return));
-    ctx.on_event(ctx.on_event_context, .{
-        .download_progress = .{
-            .url = ctx.url,
-            .pkg_name = null,
-            .downloaded_bytes = downloaded,
-            .total_bytes = total,
-        }
-    });
+    ctx.on_event(ctx.on_event_context, .{ .download_progress = .{
+        .url = ctx.url,
+        .pkg_name = ctx.label,
+        .downloaded_bytes = downloaded,
+        .total_bytes = total,
+    } });
 }
 
 fn http_get_single(
@@ -45,18 +45,20 @@ fn http_get_single(
     timeout_ms: u32,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
+    progress_label: ?[]const u8,
 ) ![]u8 {
     var pctx: ?ProgressAdapterCtx = null;
     var pcb: ?http.ProgressCallback = null;
     if (on_event) |cb| {
         pctx = .{
             .url = url,
+            .label = progress_label,
             .on_event = cb,
             .on_event_context = on_event_context,
         };
         pcb = progress_adapter;
     }
-    
+
     const resp = try http.fetchGetWithProgress(allocator, io, url, null, timeout_ms, pcb, if (pctx) |*p| p else null);
     if (resp.status == .not_found) {
         allocator.free(resp.body);
@@ -76,6 +78,7 @@ fn http_get(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
+    progress_label: ?[]const u8,
 ) ![]u8 {
     const net_cfg = fs.get_network_config(allocator, env_map, io);
     const http_cfg = http.get_http_config(allocator, env_map, io);
@@ -85,7 +88,7 @@ fn http_get(
 
     var attempt: u32 = 0;
     while (true) {
-        if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context)) |data| {
+        if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context, progress_label)) |data| {
             return data;
         } else |err| {
             if (err == error.FileNotFound) return err;
@@ -146,6 +149,11 @@ const FetchedSource = struct {
     }
 };
 
+const SourceFetch = struct {
+    url: []const u8,
+    data: []u8,
+};
+
 fn runtime_to_manifest_url(allocator: std.mem.Allocator, base: []const u8, runtime: ?[]const u8) ![]const u8 {
     const version = blk: {
         if (runtime) |rt| {
@@ -171,6 +179,54 @@ fn runtime_to_manifest_url(allocator: std.mem.Allocator, base: []const u8, runti
     return try std.fmt.allocPrint(allocator, "{s}/manifest-{s}.json", .{ base, version });
 }
 
+fn manifest_cache_key(url: []const u8) manifest_cache_mod.CacheKey {
+    const slash = std.mem.lastIndexOfScalar(u8, url, '/') orelse url.len;
+    return .{
+        .source = .luarocks,
+        .scope = url[0..slash],
+        .name = if (slash < url.len) url[slash + 1 ..] else url,
+        .extension = "json",
+    };
+}
+
+fn read_persistent_manifest_cache(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *std.process.Environ.Map,
+    url: []const u8,
+    allow_stale: bool,
+) !?[]u8 {
+    const paths = try fs.resolve_moonstone(allocator, env_map, io);
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
+    const cfg = manifest_cache_mod.getConfig(allocator, env_map, io);
+    var cache = try manifest_cache_mod.ManifestCache.init(allocator, io, paths, cfg);
+    defer cache.deinit();
+    const key = manifest_cache_key(url);
+    if (allow_stale) return try cache.readAny(key);
+    return try cache.readFresh(key);
+}
+
+fn write_persistent_manifest_cache(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *std.process.Environ.Map,
+    url: []const u8,
+    body: []const u8,
+) void {
+    const paths = fs.resolve_moonstone(allocator, env_map, io) catch return;
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
+    const cfg = manifest_cache_mod.getConfig(allocator, env_map, io);
+    var cache = manifest_cache_mod.ManifestCache.init(allocator, io, paths, cfg) catch return;
+    defer cache.deinit();
+    cache.write(manifest_cache_key(url), url, body) catch {};
+}
+
 /// Fetch the LuaRocks manifest and return the parsed JSON value.
 /// Caller must call .deinit() on the result.
 fn fetch_manifest(
@@ -181,6 +237,7 @@ fn fetch_manifest(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
+    allow_stale_cache: bool,
 ) !std.json.Parsed(std.json.Value) {
     const url = try runtime_to_manifest_url(allocator, base, runtime);
     defer allocator.free(url);
@@ -189,14 +246,23 @@ fn fetch_manifest(
             profiler.mark("luarocks.manifest.cache_hit");
             break :blk cached;
         }
+        if (try read_persistent_manifest_cache(allocator, io, env_map, url, allow_stale_cache)) |cached| {
+            profiler.mark("luarocks.manifest.disk_cache_hit");
+            errdefer allocator.free(cached);
+            try manifest_cache.put(allocator, try allocator.dupe(u8, url), cached);
+            break :blk cached;
+        }
         const span = profiler.now();
-        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| {
+        if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_started = "Syncing LuaRocks manifest" });
+        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest") catch |err| {
             // TODO: handle err
             std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
             return error.RocksVersionDiscoveryFailed;
         };
+        if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_done = "LuaRocks manifest synced" });
         profiler.span("luarocks.manifest.fetch", span);
         errdefer allocator.free(fetched);
+        write_persistent_manifest_cache(allocator, io, env_map, url, fetched);
         try manifest_cache.put(allocator, try allocator.dupe(u8, url), fetched);
         break :blk fetched;
     };
@@ -235,6 +301,13 @@ fn has_luarocks_revision(version: []const u8) bool {
         return true;
     }
     return false;
+}
+
+fn normalize_luarocks_version(allocator: std.mem.Allocator, version: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, version, '+')) |plus| {
+        return try std.fmt.allocPrint(allocator, "{s}-{s}", .{ version[0..plus], version[plus + 1 ..] });
+    }
+    return try allocator.dupe(u8, version);
 }
 
 const TranslatedModule = struct {
@@ -405,7 +478,87 @@ fn translateBuiltinBuild(
     return try list.toOwnedSlice(allocator);
 }
 
-/// Pick the newest version that has a source rockspec.
+fn find_manifest_package(repository: std.json.Value, pkg_name: []const u8) ?std.json.Value {
+    if (repository.object.get(pkg_name)) |pkg_entry| return pkg_entry;
+    var it = repository.object.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, pkg_name)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+fn manifest_version_has_installable_entry(version_entry: std.json.Value, host_arch: ?[]const u8) bool {
+    if (version_entry != .array) return false;
+    for (version_entry.array.items) |arch_entry| {
+        if (arch_entry != .object) continue;
+        const arch_val = arch_entry.object.get("arch") orelse continue;
+        if (arch_val != .string) continue;
+        if (std.mem.eql(u8, arch_val.string, "rockspec")) return true;
+        if (std.mem.eql(u8, arch_val.string, "src")) return true;
+        if (host_arch) |arch| {
+            if (std.mem.eql(u8, arch_val.string, arch)) return true;
+        }
+    }
+    return false;
+}
+
+pub fn discoverVersions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    pkg_name: []const u8,
+    options: options_mod.ResolveOptions,
+    env_map: *std.process.Environ.Map,
+) ![]@import("../../domain/semver.zig").Version {
+    const semver = @import("../../domain/semver.zig");
+    const base = get_luarocks_base(env_map);
+    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
+    defer manifest_parsed.deinit();
+    const repository = manifest_parsed.value.object.get("repository") orelse return error.RocksVersionDiscoveryFailed;
+    const pkg_entry = find_manifest_package(repository, pkg_name) orelse return error.PackageNotFound;
+    const host_arch = try host_to_luarocks_arch(allocator);
+    defer if (host_arch) |arch| allocator.free(arch);
+
+    var versions = std.ArrayList(semver.Version).empty;
+    errdefer {
+        for (versions.items) |version| version.deinit(allocator);
+        versions.deinit(allocator);
+    }
+
+    var it = pkg_entry.object.iterator();
+    while (it.next()) |entry| {
+        if (!manifest_version_has_installable_entry(entry.value_ptr.*, host_arch)) continue;
+        const version = semver.Version.parseCloned(allocator, entry.key_ptr.*) catch continue;
+        var already_present = false;
+        for (versions.items) |existing| {
+            if (existing.compare(version) == 0 and std.mem.eql(u8, existing.build, version.build)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (already_present) {
+            version.deinit(allocator);
+            continue;
+        }
+        try versions.append(allocator, version);
+    }
+
+    return try versions.toOwnedSlice(allocator);
+}
+
+pub fn refreshManifest(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    runtime: ?[]const u8,
+    env_map: *std.process.Environ.Map,
+    on_event: ?options_mod.ResolveCallback,
+    on_event_context: ?*anyopaque,
+) !void {
+    const base = get_luarocks_base(env_map);
+    const parsed = try fetch_manifest(allocator, io, base, runtime, env_map, on_event, on_event_context, false);
+    parsed.deinit();
+}
+
+/// Pick the newest version that has an installable rock entry.
 fn select_version(allocator: std.mem.Allocator, manifest_json: std.json.Value, pkg_name: []const u8, version_range: []const u8) ![]const u8 {
     // If user gave an exact version (or constraint prefix), strip it and trust it exists.
     if (!std.mem.eql(u8, version_range, "*") and !std.mem.eql(u8, version_range, "")) {
@@ -413,30 +566,23 @@ fn select_version(allocator: std.mem.Allocator, manifest_json: std.json.Value, p
             version_range[1..]
         else
             version_range;
-        return try allocator.dupe(u8, ver);
+        return try normalize_luarocks_version(allocator, ver);
     }
 
     const repository = manifest_json.object.get("repository") orelse {
         return error.RocksVersionDiscoveryFailed;
     };
-    const pkg_entry = repository.object.get(pkg_name) orelse {
+    const pkg_entry = find_manifest_package(repository, pkg_name) orelse {
         return error.PackageNotFound;
     };
+    const host_arch = try host_to_luarocks_arch(allocator);
+    defer if (host_arch) |arch| allocator.free(arch);
 
     var best_version: ?[]const u8 = null;
     var it = pkg_entry.object.iterator();
     while (it.next()) |entry| {
         const version_key = entry.key_ptr.*;
-        const arch_list = entry.value_ptr.array;
-        var has_rockspec = false;
-        for (arch_list.items) |arch_entry| {
-            const arch_val = arch_entry.object.get("arch") orelse continue;
-            if (std.mem.eql(u8, arch_val.string, "rockspec")) {
-                has_rockspec = true;
-                break;
-            }
-        }
-        if (!has_rockspec) continue;
+        if (!manifest_version_has_installable_entry(entry.value_ptr.*, host_arch)) continue;
 
         if (best_version) |bv| {
             if (std.mem.order(u8, version_key, bv) == .gt) {
@@ -493,7 +639,7 @@ fn resolve_binary_rock(
     const url = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}.rock", .{ base, pkg_name, version, arch_str });
     defer allocator.free(url);
 
-    const rock_data = try http_get(allocator, io, url, env_map, on_event, on_event_context);
+    const rock_data = try http_get(allocator, io, url, env_map, on_event, on_event_context, null);
     defer allocator.free(rock_data);
     const source_hash = try blake3_prefixed(allocator, rock_data);
     defer allocator.free(source_hash);
@@ -522,7 +668,7 @@ fn resolve_binary_rock(
     defer allocator.free(unpack_dir);
     try std.Io.Dir.cwd().createDirPath(io, unpack_dir);
 
-    try unpack_archive(allocator, io, archive_path, unpack_dir);
+    try unpack_archive(allocator, io, pkg_name, version, url, archive_path, unpack_dir);
 
     const commit_res = try commit_synthetic_artifact(
         allocator,
@@ -577,7 +723,7 @@ fn fetch_rockspec(
             base, pkg_name, version,
         });
         defer allocator.free(url);
-        const content = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| blk: {
+        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null) catch |err| blk: {
             if (err == error.HttpError or err == error.FileNotFound) break :blk null;
             return err;
         };
@@ -600,7 +746,7 @@ fn fetch_rockspec(
             base, pkg_name, version, rev,
         });
         defer allocator.free(url);
-        const content = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| {
+        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null) catch |err| {
             if (err == error.HttpError or err == error.FileNotFound) continue;
             return err;
         };
@@ -673,13 +819,20 @@ fn classify_rock(rock: *const luarocks.Rockspec) RockClass {
 // Phase 5 — Source fetch
 // ---------------------------------------------------------------------------
 
-fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, archive_path: []const u8, out_dir: []const u8) !void {
+fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []const u8, package_version: []const u8, archive_url: []const u8, archive_path: []const u8, out_dir: []const u8) !void {
     const is_zip = std.mem.endsWith(u8, archive_path, ".zip") or
         std.mem.endsWith(u8, archive_path, ".src.rock") or
         std.mem.endsWith(u8, archive_path, ".rock");
     const is_tar_gz = std.mem.endsWith(u8, archive_path, ".tar.gz") or
         std.mem.endsWith(u8, archive_path, ".tgz") or
         std.mem.endsWith(u8, archive_path, ".gz");
+    const is_tar_bz2 = std.mem.endsWith(u8, archive_path, ".tar.bz2") or
+        std.mem.endsWith(u8, archive_path, ".tbz2") or
+        std.mem.endsWith(u8, archive_path, ".tbz") or
+        std.mem.endsWith(u8, archive_path, ".bz2");
+    const is_tar_xz = std.mem.endsWith(u8, archive_path, ".tar.xz") or
+        std.mem.endsWith(u8, archive_path, ".txz") or
+        std.mem.endsWith(u8, archive_path, ".xz");
     const is_tar = std.mem.endsWith(u8, archive_path, ".tar");
 
     if (is_zip) {
@@ -697,6 +850,22 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, archive_path: []cons
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+    } else if (is_tar_bz2) {
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
+        const res = try std.process.run(allocator, io, .{
+            .argv = &.{ "tar", "-xjf", archive_path, "-C", out_dir },
+        });
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+    } else if (is_tar_xz) {
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
+        const res = try std.process.run(allocator, io, .{
+            .argv = &.{ "tar", "-xJf", archive_path, "-C", out_dir },
+        });
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else if (is_tar) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
         const res = try std.process.run(allocator, io, .{
@@ -706,8 +875,17 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, archive_path: []cons
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else {
+        const ext = std.fs.path.extension(archive_url);
+        @import("../../diagnostics/error_context.zig").setFmt(allocator, "unsupported archive format while unpacking LuaRocks package {s}@{s}\narchive: {s}\ndetected extension: {s}", .{ package_name, package_version, archive_url, if (ext.len > 0) ext else "<none>" });
         return error.UnsupportedArchiveFormat;
     }
+}
+
+fn archive_suffix(url: []const u8) []const u8 {
+    inline for (.{ ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz", ".tar.xz", ".txz", ".zip", ".tar", ".gz", ".bz2", ".xz" }) |suffix| {
+        if (std.mem.endsWith(u8, url, suffix)) return suffix;
+    }
+    return std.fs.path.extension(url);
 }
 
 fn compute_dir_hash(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) ![]const u8 {
@@ -786,20 +964,23 @@ fn fetch_and_unpack_source(
     const guessed_src_rock = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.src.rock", .{ base, pkg_name, version });
     defer allocator.free(guessed_src_rock);
 
-    const url = blk: {
-        const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context) catch |err| {
+    const source_fetch: SourceFetch = blk: {
+        const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null) catch |err| {
             if (err != error.HttpError and err != error.FileNotFound and err != error.UnsupportedUriScheme) return err;
-            break :blk if (rock.source.url.len > 0) try allocator.dupe(u8, rock.source.url) else return error.SourceRockNotFound;
+            if (rock.source.url.len == 0) return error.SourceRockNotFound;
+            const fallback_url = try allocator.dupe(u8, rock.source.url);
+            errdefer allocator.free(fallback_url);
+            const fallback_data = http_get(allocator, io, fallback_url, env_map, on_event, on_event_context, null) catch |fallback_err| {
+                if (fallback_err == error.HttpError) return error.SourceRockNotFound;
+                return fallback_err;
+            };
+            break :blk SourceFetch{ .url = fallback_url, .data = fallback_data };
         };
-        allocator.free(src_rock_data);
-        break :blk try allocator.dupe(u8, guessed_src_rock);
+        break :blk SourceFetch{ .url = try allocator.dupe(u8, guessed_src_rock), .data = src_rock_data };
     };
+    const url = source_fetch.url;
     defer allocator.free(url);
-
-    const source_data = http_get(allocator, io, url, env_map, on_event, on_event_context) catch |err| {
-        if (err == error.HttpError and rock.source.url.len == 0) return error.SourceRockNotFound;
-        return err;
-    };
+    const source_data = source_fetch.data;
     defer allocator.free(source_data);
     const source_hash = try blake3_prefixed(allocator, source_data);
     errdefer allocator.free(source_hash);
@@ -824,7 +1005,7 @@ fn fetch_and_unpack_source(
         defer allocator.free(unpack_dir);
         try std.Io.Dir.cwd().createDirPath(io, unpack_dir);
 
-        try unpack_archive(allocator, io, archive_path, unpack_dir);
+        try unpack_archive(allocator, io, pkg_name, version, url, archive_path, unpack_dir);
 
         // Find the actual source tarball inside the src.rock
         var up_dir = try std.Io.Dir.cwd().openDir(io, unpack_dir, .{ .iterate = true });
@@ -834,7 +1015,7 @@ fn fetch_and_unpack_source(
         while (try up_it.next(io)) |entry| {
             if (entry.kind == .file) {
                 const name = entry.name;
-                if (std.mem.endsWith(u8, name, ".tar.gz") or std.mem.endsWith(u8, name, ".tgz") or std.mem.endsWith(u8, name, ".zip") or std.mem.endsWith(u8, name, ".tar")) {
+                if (std.mem.endsWith(u8, name, ".tar.gz") or std.mem.endsWith(u8, name, ".tgz") or std.mem.endsWith(u8, name, ".tar.bz2") or std.mem.endsWith(u8, name, ".tbz2") or std.mem.endsWith(u8, name, ".tbz") or std.mem.endsWith(u8, name, ".tar.xz") or std.mem.endsWith(u8, name, ".txz") or std.mem.endsWith(u8, name, ".zip") or std.mem.endsWith(u8, name, ".tar")) {
                     source_tarball_path = try std.fs.path.join(allocator, &.{ unpack_dir, name });
                     break;
                 }
@@ -851,7 +1032,7 @@ fn fetch_and_unpack_source(
         };
 
         try std.Io.Dir.cwd().createDirPath(io, source_dir);
-        try unpack_archive(allocator, io, tarball, source_dir);
+        try unpack_archive(allocator, io, pkg_name, version, tarball, tarball, source_dir);
         return .{
             .path = try find_source_root(allocator, io, source_dir),
             .url = source_url,
@@ -861,15 +1042,15 @@ fn fetch_and_unpack_source(
         };
     } else {
         // Direct archive download
-        const ext = std.fs.path.extension(url);
-        const archive_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}{s}", .{ tmp_dir, pkg_name, version, ext });
+        const suffix = archive_suffix(url);
+        const archive_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}{s}", .{ tmp_dir, pkg_name, version, suffix });
         defer allocator.free(archive_path);
         const f = try std.Io.Dir.cwd().createFile(io, archive_path, .{});
         try f.writeStreamingAll(io, source_data);
         f.close(io);
 
         try std.Io.Dir.cwd().createDirPath(io, source_dir);
-        try unpack_archive(allocator, io, archive_path, source_dir);
+        try unpack_archive(allocator, io, pkg_name, version, url, archive_path, source_dir);
         return .{
             .path = try find_source_root(allocator, io, source_dir),
             .url = source_url,
@@ -1166,7 +1347,7 @@ pub fn resolve(
     const base = get_luarocks_base(env_map);
 
     // Phase 1: Candidate discovery
-    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context);
+    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
     defer manifest_parsed.deinit();
     const manifest_json = manifest_parsed.value;
 
@@ -1300,7 +1481,10 @@ pub fn resolve(
 
     for (translated) |mod| {
         if (mod.kind == .c) {
-            try native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, mod.config.?);
+            native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, mod.config.?) catch |err| {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "native module compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
+                return err;
+            };
         } else {
             // Copy pure Lua file
             const fallback_src_rel = if (mod.source_path == null) try std.fmt.allocPrint(allocator, "{s}.lua", .{mod.name}) else null;

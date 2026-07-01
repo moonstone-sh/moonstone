@@ -31,6 +31,14 @@ fn packageKindFromString(s: []const u8) !Kind {
 pub const dependency_role = @import("dependency_role.zig");
 pub const DependencyRole = dependency_role.DependencyRole;
 
+pub fn parseDependencyRole(role_str: []const u8) !DependencyRole {
+    if (std.mem.eql(u8, role_str, "dependency")) {
+        // TODO: remove legacy support as we consolidize towards v1.
+        return error.LegacyDependencyRole;
+    }
+    return DependencyRole.fromString(role_str) orelse error.InvalidDependencyRole;
+}
+
 pub const RuntimeProvision = struct {
     name: []const u8,
     version: []const u8,
@@ -711,7 +719,7 @@ pub const RemotePackageDescriptor = struct {
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
                     const role_str = dep.get("role").?.string;
-                    const role = DependencyRole.fromString(role_str) orelse .runtime;
+                    const role = try parseDependencyRole(role_str);
                     const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
                     const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
@@ -1141,8 +1149,8 @@ pub const MoonstoneToml = struct {
             if (deps_val == .array) {
                 for (deps_val.array.items) |dep_val| {
                     const dep = dep_val.table;
-                    const role_str = if (dep.get("role")) |r| r.string else "dependency";
-                    const role = DependencyRole.fromString(role_str) orelse .runtime;
+                    const role_str = if (dep.get("role")) |r| r.string else "runtime";
+                    const role = try parseDependencyRole(role_str);
                     const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
                     const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
@@ -1157,12 +1165,13 @@ pub const MoonstoneToml = struct {
                 }
             } else if (deps_val == .table) {
                 // Support authoring sugar [dependencies.<role>]
-                inline for (.{ "dev", "tool", "dependency", "runtime", "helper", "peer", "optional" }) |role_name| {
+                if (deps_val.table.get("dependency") != null) return error.LegacyDependencyRole;
+                inline for (.{ "dev", "tool", "runtime", "helper", "external", "peer", "optional" }) |role_name| {
                     if (deps_val.table.get(role_name)) |v| {
                         if (v == .table) {
                             var it = v.table.iterator();
                             while (it.next()) |entry| {
-                                const role = DependencyRole.fromString(role_name) orelse unreachable;
+                                const role = try parseDependencyRole(role_name);
                                 try self.dependencies.append(allocator, .{
                                     .name = try allocator.dupe(u8, entry.key_ptr.*),
                                     .constraint = try allocator.dupe(u8, entry.value_ptr.string),
@@ -1618,7 +1627,7 @@ test "MoonstoneToml parse rejects package kind tool" {
     try std.testing.expectError(error.InvalidPackageKind, MoonstoneToml.parse(allocator, toml_text));
 }
 
-test "MoonstoneToml serializes simple dependencies as role tables" {
+test "MoonstoneToml serializes simple dependencies as flat runtime roles" {
     const allocator = std.testing.allocator;
     const toml_text =
         \\[package]
@@ -1626,8 +1635,8 @@ test "MoonstoneToml serializes simple dependencies as role tables" {
         \\version = "0.1.0"
         \\kind = "script"
         \\
-        \\[dependencies.tool]
-        \\"moonstone/ballad" = "^0.2"
+        \\[dependencies.runtime]
+        \\inspect = "^3.1.3"
     ;
 
     var manifest = try MoonstoneToml.parse(allocator, toml_text);
@@ -1638,8 +1647,76 @@ test "MoonstoneToml serializes simple dependencies as role tables" {
     try manifest.serialize(allocator, &out.writer);
     try out.writer.flush();
 
-    try std.testing.expect(std.mem.indexOf(u8, out.writer.buffer[0..out.writer.end], "[dependencies.tool]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.writer.buffer[0..out.writer.end], "\"moonstone/ballad\" = \"^0.2\"") != null);
+    const serialized = out.writer.buffer[0..out.writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "[[dependencies]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "name = \"inspect\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"dependency\"") == null);
+}
+
+test "MoonstoneToml rejects legacy dependency role" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "legacy-role"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[[dependencies]]
+        \\name = "inspect"
+        \\constraint = "^3.1.3"
+        \\role = "dependency"
+    ;
+
+    try std.testing.expectError(error.LegacyDependencyRole, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml rejects legacy dependency table role" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "legacy-role-table"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[dependencies.dependency]
+        \\inspect = "^3.1.3"
+    ;
+
+    try std.testing.expectError(error.LegacyDependencyRole, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml canonicalizes external and peer roles" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "external-role"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[[dependencies]]
+        \\name = "host-one"
+        \\constraint = "*"
+        \\role = "external"
+        \\
+        \\[[dependencies]]
+        \\name = "host-two"
+        \\constraint = "*"
+        \\role = "peer"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+    try std.testing.expectEqual(DependencyRole.external, manifest.dependencies.items[0].role);
+    try std.testing.expectEqual(DependencyRole.external, manifest.dependencies.items[1].role);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+    const serialized = out.writer.buffer[0..out.writer.end];
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"external\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"peer\"") == null);
 }
 
 test "MoonstoneToml parse migrates legacy commands to scripts" {

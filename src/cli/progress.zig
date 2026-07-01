@@ -742,6 +742,9 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
                 dp.total_bytes,
             );
         },
+
+        .metadata_sync_started => |label| wctx.sendPhase(label),
+        .metadata_sync_done => |label| wctx.sendPhaseDone(label),
     }
 }
 

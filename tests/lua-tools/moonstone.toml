@@ -8,7 +8,7 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 "luasocket" = "rocks:luasocket@^3.1.0-1"
 "luafilesystem" = "rocks:luafilesystem@^1.9.0-1"
 "dkjson" = "rocks:dkjson@^2.9-1"

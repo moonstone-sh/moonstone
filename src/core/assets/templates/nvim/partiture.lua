@@ -20,7 +20,7 @@ return ballad.partiture(function(p)
     lua_abi = "5.1",
     dependencies = ballad.plugins.nvim.extern({
       -- Examples:
-      -- "plenary", -- built-in suggestion: nvim-lua/plenary.nvim as peer
+      -- "plenary", -- built-in suggestion: nvim-lua/plenary.nvim as external
       -- telescope = { package = "nvim-telescope/telescope.nvim", optional = true },
     }),
   })

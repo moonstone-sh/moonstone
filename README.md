@@ -107,33 +107,6 @@ Moonstone v0 uses a content-addressed storage (CAS) model:
 Apache 2.0
 © 2026 Maximo Angel Verzini Davico
 
-## 📦 Publishing CLI Releases
-
-`zig build` compiles versioned binaries into `zig-out/bin/`. Release packaging and
-publishing are separate so builds do not mutate checksums or deployment state.
-
-Set the release version in `build.zig.zon`, prepare the Python environment once,
-then publish from the repository root:
-
-```bash
-./release-tools/setup-venv.sh
-./release-tools/publish-release.sh
-```
-
-The publish script rebuilds the matrix, creates deterministic `.tar.gz` archives,
-generates `release-manifest.json`, `SHA256SUMS`, and `B3SUMS`, uploads the immutable
-version directory, and atomically advances the VPS `latest` pointer. It refuses to
-publish a version that is not newer than the remote pointer.
-
-The default destination is `vps:/home/moonstone/moonstone.sh/public/releases`.
-Override it when needed:
-
-```bash
-MOONSTONE_RELEASE_HOST=my-vps \
-MOONSTONE_RELEASES_PATH=/srv/moonstone/releases \
-./release-tools/publish-release.sh
-```
-
 ## 🌌 About
 
 Moonstone is an experimental Lua ecosystem manager aiming to bring deterministic builds, version pinning, and global-store efficiency to Lua and LuaJIT — powered entirely by Zig.

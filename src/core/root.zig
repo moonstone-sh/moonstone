@@ -13,6 +13,11 @@ pub const identity = struct {
 
 pub const diagnostics = struct {
     pub const profiler = @import("diagnostics/profiler.zig");
+    pub const error_context = @import("diagnostics/error_context.zig");
+};
+
+pub const cache = struct {
+    pub const manifest = @import("cache/manifest_cache.zig");
 };
 
 pub const platform = struct {
@@ -61,7 +66,7 @@ pub const project = struct {
 
 pub const assets = struct {
     pub const bridge_lua = @embedFile("luarocks/bridge.lua");
-    
+
     pub const raw = struct {
         pub const gitignore = @embedFile("assets/gitignore.template");
 

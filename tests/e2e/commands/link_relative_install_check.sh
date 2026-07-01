@@ -33,7 +33,7 @@ if [[ "${after_env}" != "${before_env}" ]]; then
 fi
 
 cd "${WORKDIR}/consumer"
-printf '\n[[dependencies]]\nname = "inspect"\nconstraint = "^3.1.3"\nrole = "dependency"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "inspect"\nconstraint = "^3.1.3"\nrole = "runtime"\n' >> moonstone.toml
 if moon sync --check >/tmp/moonstone-contract-install-check-stale.out 2>&1; then
   echo "✗ install --check should fail for stale lockfile"
   exit 1

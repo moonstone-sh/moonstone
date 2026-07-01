@@ -107,7 +107,7 @@ pub fn build(
         .cwd = .{ .path = source_dir_path },
     }) catch |err| {
         if (err == error.FileNotFound) {
-
+            return error.CompilerNotFound;
         }
         return err;
     };

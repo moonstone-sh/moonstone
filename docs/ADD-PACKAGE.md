@@ -79,7 +79,7 @@ Before publishing, test your package locally:
    moon add mypackage --dev
    moon add mypackage --tool
    moon add mypackage --helper
-   moon add mypackage --peer
+   moon add mypackage --external
    moon add mypackage --optional
    ```
 

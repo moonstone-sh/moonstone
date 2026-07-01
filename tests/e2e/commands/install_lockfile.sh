@@ -43,7 +43,7 @@ assert summary["linked"] >= 1, summary' <<<"${reinstall_json}"
 # Add a dependency to moonstone.toml that is NOT in the lockfile.
 # Now that all deps use [[dependencies]] format, we can safely append
 # another [[dependencies]] entry without TOML format conflicts.
-printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "dependency"\n' >> "${WORKDIR}/project/moonstone.toml"
+printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "runtime"\n' >> "${WORKDIR}/project/moonstone.toml"
 if moon sync --locked >/tmp/moonstone-contract-install-locked.out 2>&1; then
   echo "✗ locked sync should fail when manifest and lock disagree"
   cat /tmp/moonstone-contract-install-locked.out

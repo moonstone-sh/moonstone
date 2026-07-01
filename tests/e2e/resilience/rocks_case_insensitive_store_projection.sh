@@ -58,7 +58,7 @@ cat >> moonstone.toml <<'TOML'
 name = "FakeBin"
 constraint = "^1.0-1"
 resolver = "rocks"
-role = "dependency"
+role = "runtime"
 TOML
 
 moon sync

@@ -40,7 +40,7 @@ moon sync --locked
 
 echo "━━━ locked install (missing entry error) ━━━"
 # Add a dependency that is NOT in the lockfile, using [[dependencies]] format
-printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "dependency"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "runtime"\n' >> moonstone.toml
 ! moon sync --locked
 
 echo "━━━ sync lockfile ━━━"

@@ -30,7 +30,7 @@ name = "lua"
 version = "5.4.6"
 abi = "5.4"
 
-[dependencies.dependency]
+[dependencies.runtime]
 TOML
 moon interpreter set lua@5.3 --no-sync
 assert_file_contains "moonstone.toml" 'name = "lua"'
@@ -53,4 +53,4 @@ text = text.replace('abi = "5.4"', 'abi = "5.1"')
 path.write_text(text)
 PY
 moon add inspect@3.1.3 --no-sync >/tmp/moonstone-runtime-abi-negative.out 2>&1
-assert_file_contains moonstone.toml 'role = "dependency"'
+assert_file_contains moonstone.toml 'role = "runtime"'

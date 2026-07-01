@@ -532,28 +532,22 @@ pub const RegistryProvider = struct {
 
         // 3. Resolve LuaRocks packages online
         if (!self.options.offline and res_constraint != null and res_constraint.? == .rocks and self.env != null) {
-            var already_present = false;
-            for (versions.items) |_| {
-                already_present = true;
-                break;
-            }
-
-            if (!already_present) {
+            if (versions.items.len == 0) {
                 var opts = self.options;
                 opts.lua_exe = self.lua_exe;
-                const cand_opt: ?candidate_mod.Candidate = rocks_resolver.resolve(self.allocator, self.io, name, "*", opts, self.env.?) catch |err| blk: {
-                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
-                        break :blk null;
+                const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?) catch |err| blk: {
+                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
+                        break :blk @as([]semver.Version, &.{});
                     }
                     return err;
                 };
-                var cand = cand_opt orelse return try versions.toOwnedSlice(self.allocator);
-                defer cand.deinit(self.allocator);
-
-                cand.location = .local_store;
-                const version = try semver.Version.parseCloned(arena, cand.version);
-                try self.artifacts.append(arena, try cand.clone(arena));
-                try versions.append(self.allocator, version);
+                defer {
+                    for (discovered_versions) |version| version.deinit(self.allocator);
+                    self.allocator.free(discovered_versions);
+                }
+                for (discovered_versions) |version| {
+                    try versions.append(self.allocator, try version.clone(self.allocator));
+                }
             }
         }
 

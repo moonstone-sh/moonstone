@@ -971,7 +971,7 @@ pub const SyncCommand = struct {
                         .on_event = on_resolve_cb,
                         .on_event_context = on_resolve_ctx,
                     }, kind, env) catch |err| {
-                        if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                        if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                         return err;
                     };
                     if (resolved_direct_opt != null) break;
@@ -1075,7 +1075,7 @@ pub const SyncCommand = struct {
                                     .on_event = on_resolve_cb,
                                     .on_event_context = on_resolve_ctx,
                                 }, kind, env) catch |err| {
-                                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                                    if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                                     return err;
                                 };
                                 if (resolved_child_opt != null) break;
@@ -1497,7 +1497,7 @@ pub const SyncCommand = struct {
                     }
                     if (package_roles.get(pkg.name)) |glist| {
                         for (glist.items) |g| {
-                            const role = moonstone.domain.manifest.DependencyRole.fromString(g) orelse .runtime;
+                            const role = moonstone.domain.manifest.parseDependencyRole(g) catch return error.InvalidDependencyRole;
                             try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, pkg.local_path, pkg.artifact_hash, role));
                         }
                     } else {
@@ -1600,7 +1600,7 @@ pub const SyncCommand = struct {
             if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
                 if (package_roles.get(pkg.name)) |glist| {
                     for (glist.items) |g| {
-                        const role = moonstone.domain.manifest.DependencyRole.fromString(g) orelse .runtime;
+                        const role = moonstone.domain.manifest.parseDependencyRole(g) catch return error.InvalidDependencyRole;
                         try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &pkg, m_res.path, m_res.artifact_hash, role));
                     }
                 } else {

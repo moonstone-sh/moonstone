@@ -28,6 +28,11 @@ verify_tls = true
 retries = 3
 retry_delay = 1
 
+[cache]
+# Persistent metadata caches used by resolution and shell completions
+manifest_cache = true
+manifest_ttl = "24h"
+
 [telemetry]
 # Opt-in analytics or usage metrics (false by default)
 enabled = false
