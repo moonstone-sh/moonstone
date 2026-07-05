@@ -90,6 +90,11 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/interpreter_current.zig").InterpreterCurrentCommand),
             router.CommandNode.from(@import("commands/interpreter_path.zig").InterpreterPathCommand),
         }),
+
+        router.CommandNode.group("orbit", "Manage nested orbit projects", &.{
+            router.CommandNode.from(@import("commands/orbit_list.zig").OrbitListCommand),
+            router.CommandNode.from(@import("commands/orbit_sync.zig").OrbitSyncCommand),
+        }),
     });
 
     ctx.root = &App;

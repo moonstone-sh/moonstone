@@ -62,6 +62,7 @@ pub const project = struct {
     pub const run_env = @import("project/run_env.zig");
     pub const tool_lua = @import("project/tool_lua.zig");
     pub const discovery = @import("project/discovery.zig");
+    pub const orbits = @import("project/orbits.zig");
 };
 
 pub const assets = struct {

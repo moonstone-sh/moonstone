@@ -133,6 +133,9 @@ pub const CliErrorDetail = union(enum) {
         resolver: ?[]const u8,
         artifact_hash: []const u8,
     },
+    orbit_not_found: struct {
+        orbit: []const u8,
+    },
 
     pub fn deinit(self: *CliErrorDetail, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -160,6 +163,7 @@ pub const CliErrorDetail = union(enum) {
                 if (lam.resolver) |r| allocator.free(r);
                 allocator.free(lam.artifact_hash);
             },
+            .orbit_not_found => |onf| allocator.free(onf.orbit),
         }
     }
 };
@@ -235,6 +239,7 @@ pub fn reportError(
                     .resolver = lam.resolver,
                     .artifact_hash = lam.artifact_hash,
                 }),
+                .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit }),
             }
         } else if (contextual_detail) |msg| {
             try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = msg });
@@ -291,6 +296,9 @@ pub fn reportError(
                     try stdout.print("Run without --locked to resolve/rebuild, or restore the\n", .{});
                     try stdout.print("artifact into the local store.\n", .{});
                 },
+                .orbit_not_found => |onf| {
+                    try stdout.print("Error: orbit '{s}' not found.\n", .{onf.orbit});
+                },
             }
         } else if (contextual_detail) |msg| {
             try stdout.print("Error: {s}\n", .{msg});
@@ -315,6 +323,8 @@ pub fn reportError(
                 try stdout.print("Error: Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes.\n", .{});
             } else if (err == error.SQLiteCorrupt) {
                 try stdout.print("Error: Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it.\n", .{});
+            } else if (err == error.OrbitMissingInterpreter) {
+                try stdout.print("Error: orbit is missing an [interpreter] block in its moonstone.toml.\n", .{});
             } else if (manifestErrorDetail(err)) |error_detail| {
                 try stdout.print("Error: {s}\n", .{error_detail});
             } else {

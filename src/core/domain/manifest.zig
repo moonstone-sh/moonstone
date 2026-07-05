@@ -1083,6 +1083,7 @@ pub const MoonstoneToml = struct {
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
+    orbits: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) MoonstoneToml {
         _ = allocator;
@@ -1256,6 +1257,19 @@ pub const MoonstoneToml = struct {
             }
         }
 
+        self.orbits = .empty;
+        if (table.get("orbits")) |orbits_val| {
+            if (orbits_val == .table) {
+                if (orbits_val.table.get("members")) |members_val| {
+                    if (members_val == .array) {
+                        for (members_val.array.items) |m| {
+                            try self.orbits.append(allocator, try allocator.dupe(u8, m.string));
+                        }
+                    }
+                }
+            }
+        }
+
         return self;
     }
 
@@ -1293,6 +1307,8 @@ pub const MoonstoneToml = struct {
             for (res.default_order) |o| allocator.free(o);
             allocator.free(res.default_order);
         }
+        for (self.orbits.items) |o| allocator.free(o);
+        self.orbits.deinit(allocator);
     }
 
     /// Serializes to TOML.
