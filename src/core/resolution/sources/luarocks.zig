@@ -1360,6 +1360,7 @@ pub fn resolve(
         if (has_binary_rock(manifest_json, pkg_name, version, arch_str)) {
             const bin_res = blk: {
                 break :blk resolve_binary_rock(allocator, io, pkg_name, version, runtime_spec, options.runtime_artifact_hash orelse "", options.target orelse "native", env_map, options.on_event, options.on_event_context) catch |err| {
+                    if (err == error.FileNotFound or err == error.HttpError) break :blk null;
                     if (err != error.BinaryRockNotImplemented) return err;
                     break :blk null;
                 };

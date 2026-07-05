@@ -87,7 +87,20 @@ pub const Version = struct {
         if (self.precision >= 2) try writer.print(".{d}", .{self.minor});
         if (self.precision >= 3) try writer.print(".{d}", .{self.patch});
         if (self.pre.len > 0) try writer.print("-{s}", .{self.pre});
-        if (self.build.len > 0) try writer.print("+{s}", .{self.build});
+        if (self.build.len > 0) {
+            var is_numeric_build = true;
+            for (self.build) |c| {
+                if (c < '0' or c > '9') {
+                    is_numeric_build = false;
+                    break;
+                }
+            }
+            if (is_numeric_build) {
+                try writer.print("-{s}", .{self.build});
+            } else {
+                try writer.print("+{s}", .{self.build});
+            }
+        }
     }
 
     pub fn clone(self: Version, allocator: std.mem.Allocator) !Version {
@@ -107,23 +120,35 @@ pub const Version = struct {
     }
 
     pub fn toString(self: Version, allocator: std.mem.Allocator) ![]const u8 {
+        var is_numeric_build = false;
+        if (self.build.len > 0) {
+            is_numeric_build = true;
+            for (self.build) |c| {
+                if (c < '0' or c > '9') {
+                    is_numeric_build = false;
+                    break;
+                }
+            }
+        }
+        const build_prefix = if (self.build.len > 0) (if (is_numeric_build) "-" else "+") else "";
+
         if (self.precision == 1) {
             return std.fmt.allocPrint(allocator, "{d}{s}{s}{s}{s}", .{
                 self.major,
                 if (self.pre.len > 0) "-" else "", self.pre,
-                if (self.build.len > 0) "+" else "", self.build,
+                build_prefix, self.build,
             });
         } else if (self.precision == 2) {
             return std.fmt.allocPrint(allocator, "{d}.{d}{s}{s}{s}{s}", .{
                 self.major, self.minor,
                 if (self.pre.len > 0) "-" else "", self.pre,
-                if (self.build.len > 0) "+" else "", self.build,
+                build_prefix, self.build,
             });
         } else {
             return std.fmt.allocPrint(allocator, "{d}.{d}.{d}{s}{s}{s}{s}", .{
                 self.major, self.minor, self.patch,
                 if (self.pre.len > 0) "-" else "", self.pre,
-                if (self.build.len > 0) "+" else "", self.build,
+                build_prefix, self.build,
             });
         }
     }
