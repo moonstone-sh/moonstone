@@ -15,8 +15,8 @@ pub fn build(b: *std.Build) void {
         "x86_64-linux-gnu", // Intel Linux (Standard glibc)
         "x86_64-linux-musl", // Intel Linux (Static musl binary)
         "aarch64-linux-musl", // ARM Linux (Static musl binary)
+        "arm-linux-gnueabihf", // 32-bit ARM Linux
         "riscv64-linux-gnu", // RISC-V Linux
-        // "riscv64-freestanding-none", // Bare metal RISC-V
     };
 
     // Optimization is usually shared across all targets
@@ -166,6 +166,31 @@ pub fn build(b: *std.Build) void {
         .file = b.path("src/core/platform/sqlite_helper.c"),
         .flags = &.{},
     });
+
+    const native_cli_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = native_target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "moonstone", .module = native_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "toml", .module = native_toml.module("toml") },
+            },
+        }),
+    });
+    native_cli_tests.root_module.addCSourceFile(.{
+        .file = b.path("vendor/sqlite/sqlite3.c"),
+        .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_ENABLE_JSON1" },
+    });
+    native_cli_tests.root_module.addIncludePath(b.path("vendor/sqlite"));
+    native_cli_tests.root_module.addCSourceFile(.{
+        .file = b.path("src/core/platform/sqlite_helper.c"),
+        .flags = &.{},
+    });
+    const run_native_cli_tests = b.addRunArtifact(native_cli_tests);
+    test_step.dependOn(&run_native_cli_tests.step);
 
     // Install the native 'moon' binary to zig-out/bin/
     const install_native = b.addInstallArtifact(native_exe, .{});

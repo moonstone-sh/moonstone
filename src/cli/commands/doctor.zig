@@ -408,7 +408,7 @@ pub const DoctorCommand = struct {
                 defer env_dir.close(io);
                 const env_abs = std.Io.Dir.cwd().realPathFileAlloc(io, ".moonstone/env", allocator) catch try allocator.dupe(u8, ".moonstone/env");
                 defer allocator.free(env_abs);
-                const broken_links = try countBrokenSymlinks(allocator, io, env_dir, env_abs);
+                const broken_links = try countBrokenSymlinks(allocator, io, env_abs);
                 if (broken_links > 0) {
                     env_ok = false;
                     env_msg = try std.fmt.allocPrint(allocator, "WARN: {d} broken symlink(s) in .moonstone/env. Run 'moon sync'.", .{broken_links});
@@ -440,33 +440,59 @@ pub const DoctorCommand = struct {
         // ── 9. System tools ───────────────────────────────────────────────
         var tools_ok = true;
         var tools_msg: []const u8 = "";
-        const sys_tools = [_][]const u8{ "gcc", "make", "tar", "zig", "zstd" };
-        var missing_tools = std.ArrayList([]const u8).empty;
-        defer missing_tools.deinit(allocator);
+        const sys_tools = [_][]const u8{ "gcc", "make", "tar", "zig", "zstd", "cmake", "unzip", "git" };
+        var missing_critical = std.ArrayList([]const u8).empty;
+        defer missing_critical.deinit(allocator);
+        var missing_warn = std.ArrayList([]const u8).empty;
+        defer missing_warn.deinit(allocator);
 
         for (sys_tools) |tool| {
+            var missing = false;
             const res = std.process.run(allocator, io, .{
                 .argv = &.{ "which", tool },
-            }) catch |err| {
+            }) catch |err| blk: {
                 if (err == error.FileNotFound) {
-                    try missing_tools.append(allocator, tool);
-                    continue;
+                    missing = true;
+                    break :blk std.process.RunResult{ .term = .{ .exited = 1 }, .stdout = "", .stderr = "" };
                 }
                 return err;
             };
-            if (res.term != .exited or res.term.exited != 0) {
-                try missing_tools.append(allocator, tool);
+            
+            if (!missing and (res.term != .exited or res.term.exited != 0)) {
+                missing = true;
+            }
+
+            if (missing) {
+                if (std.mem.eql(u8, tool, "zig") or std.mem.eql(u8, tool, "cmake")) {
+                    try missing_critical.append(allocator, tool);
+                } else {
+                    try missing_warn.append(allocator, tool);
+                }
             }
         }
 
-        if (missing_tools.items.len > 0) {
-            tools_ok = false;
+        if (missing_critical.items.len > 0 or missing_warn.items.len > 0) {
+            tools_ok = (missing_critical.items.len == 0);
             var msg_buf = std.ArrayList(u8).empty;
             defer msg_buf.deinit(allocator);
-            try msg_buf.appendSlice(allocator, "WARN: Missing tools:");
-            for (missing_tools.items) |t| {
-                try msg_buf.appendSlice(allocator, " ");
-                try msg_buf.appendSlice(allocator, t);
+            
+            if (missing_critical.items.len > 0) {
+                try msg_buf.appendSlice(allocator, "FAIL: Missing critical tools:");
+                for (missing_critical.items) |t| {
+                    try msg_buf.appendSlice(allocator, " ");
+                    try msg_buf.appendSlice(allocator, t);
+                }
+                if (missing_warn.items.len > 0) try msg_buf.appendSlice(allocator, ". ");
+            }
+            if (missing_warn.items.len > 0) {
+                try msg_buf.appendSlice(allocator, "WARN: Missing tools:");
+                for (missing_warn.items) |t| {
+                    try msg_buf.appendSlice(allocator, " ");
+                    try msg_buf.appendSlice(allocator, t);
+                    if (std.mem.eql(u8, t, "unzip") or std.mem.eql(u8, t, "tar") or std.mem.eql(u8, t, "git")) {
+                        try msg_buf.appendSlice(allocator, " [Needed for LuaRocks]");
+                    }
+                }
             }
             tools_msg = try allocator.dupe(u8, msg_buf.items);
         } else {
@@ -524,20 +550,19 @@ pub const DoctorCommand = struct {
         return missing;
     }
 
-    fn countBrokenSymlinks(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, abs_dir_path: []const u8) !usize {
+    fn countBrokenSymlinks(allocator: std.mem.Allocator, io: std.Io, abs_dir_path: []const u8) !usize {
         var broken: usize = 0;
-        var iterable_dir = dir;
-        var it = iterable_dir.iterate();
+        var dir = std.Io.Dir.cwd().openDir(io, abs_dir_path, .{ .iterate = true }) catch return 0;
+        defer dir.close(io);
+        var it = dir.iterate();
         while (try it.next(io)) |entry| {
             if (entry.kind == .directory) {
-                var child_dir = try iterable_dir.openDir(io, entry.name, .{ .iterate = true });
-                defer child_dir.close(io);
                 const child_abs = try std.fs.path.join(allocator, &.{ abs_dir_path, entry.name });
                 defer allocator.free(child_abs);
-                broken += try countBrokenSymlinks(allocator, io, child_dir, child_abs);
+                broken += try countBrokenSymlinks(allocator, io, child_abs);
             } else if (entry.kind == .sym_link) {
                 var buf: [std.fs.max_path_bytes]u8 = undefined;
-                const len = iterable_dir.readLink(io, entry.name, &buf) catch {
+                const len = dir.readLink(io, entry.name, &buf) catch {
                     broken += 1;
                     continue;
                 };

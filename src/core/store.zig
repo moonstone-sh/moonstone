@@ -13,7 +13,7 @@ pub const RecipeOptions = struct {
     strategy: []const u8 = "registry",
     zig_version: []const u8 = "",
     cmake_version: []const u8 = "",
-    cmake_args: []const []const u8 = &.{},
+    ldflags: []const []const u8 = &.{},
     runtime_hash: []const u8 = "",
     lua_abi: []const u8 = "",
     target: []const u8 = "native",
@@ -42,8 +42,8 @@ pub fn computeRecipeHash(
 
     const sources_str = try std.mem.join(allocator, ",", options.sources);
     defer allocator.free(sources_str);
-    const cmake_args_str = try std.mem.join(allocator, ",", options.cmake_args);
-    defer allocator.free(cmake_args_str);
+    const ldflags_str = try std.mem.join(allocator, ",", options.ldflags);
+    defer allocator.free(ldflags_str);
 
     var collect_str = std.ArrayList(u8).empty;
     defer collect_str.deinit(allocator);
@@ -83,7 +83,7 @@ pub fn computeRecipeHash(
         \\strategy={s}
         \\zig_version={s}
         \\cmake_version={s}
-        \\cmake_args={s}
+        \\ldflags={s}
         \\runtime_hash={s}
         \\lua_abi={s}
         \\target={s}
@@ -101,7 +101,7 @@ pub fn computeRecipeHash(
         options.strategy,
         options.zig_version,
         options.cmake_version,
-        cmake_args_str,
+        ldflags_str,
         options.runtime_hash,
         options.lua_abi,
         options.target,
@@ -368,10 +368,17 @@ pub fn commit_to_store_with_sources(
     defer if (stored_source_payload.len > 0) allocator.free(stored_source_payload);
     defer if (stored_rockspec_payload.len > 0) allocator.free(stored_rockspec_payload);
 
-    // We need to move the unpacked contents into 'files'
-    _ = try std.process.run(allocator, io, .{
-        .argv = &.{ "mv", unpacked_path, files_path },
-    });
+    // We need to move the unpacked contents into 'files' atomically
+    std.Io.Dir.renameAbsolute(unpacked_path, files_path, io) catch |err| {
+        // Fallback if renaming across mount points fails, though in cache it should be on the same volume
+        if (err == error.RenameAcrossMountPoints) {
+            _ = try std.process.run(allocator, io, .{
+                .argv = &.{ "mv", unpacked_path, files_path },
+            });
+        } else {
+            return err;
+        }
+    };
 
     // 2. Generate store manifest.toml
     const source_hash = if (remote_art.source_hash.len > 0) remote_art.source_hash else remote_art.hash;

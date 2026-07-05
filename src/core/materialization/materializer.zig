@@ -214,7 +214,7 @@ pub const Materializer = struct {
             if (std.mem.eql(u8, m.kind, "native_cmodule")) {
                 if (self.runtime_path) |rt_path| {
                     const native_cmodule = @import("materializers/native_cmodule.zig");
-                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, m);
+                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, m, art.target);
 
                     const zig_version_res = try std.process.run(self.allocator, self.io, .{ .argv = &.{ "zig", "version" } });
                     defer self.allocator.free(zig_version_res.stdout);
@@ -290,7 +290,7 @@ pub const Materializer = struct {
                         .source_hash = art.hash,
                         .materializer = m.kind,
                         .cmake_version = cmake_version,
-                        .cmake_args = m.cmake_args,
+                        .ldflags = m.ldflags,
                         .runtime_hash = runtime_hash,
                         .lua_abi = art.lua_abi,
                         .target = host_target,

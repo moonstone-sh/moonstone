@@ -738,8 +738,8 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
         .download_progress => |dp| {
             wctx.sendBytesOwned(
                 dp.pkg_name orelse dp.url,
-                dp.downloaded_bytes,
-                dp.total_bytes,
+                @as(u64, @intCast(dp.downloaded_bytes)),
+                if (dp.total_bytes) |t| @as(u64, @intCast(t)) else null,
             );
         },
 

@@ -61,6 +61,13 @@ pub const Version = struct {
         if (v.build.len > 0) v.build = try allocator.dupe(u8, v.build);
         return v;
     }
+    fn isNumeric(s: []const u8) bool {
+        if (s.len == 0) return false;
+        for (s) |c| {
+            if (c < '0' or c > '9') return false;
+        }
+        return true;
+    }
 
     pub fn compare(self: Version, other: Version) i8 {
         if (self.major != other.major) return if (self.major > other.major) 1 else -1;
@@ -71,12 +78,34 @@ pub const Version = struct {
         if (self.pre.len == 0 and other.pre.len > 0) return 1;
         if (self.pre.len > 0 and other.pre.len == 0) return -1;
         if (self.pre.len > 0 and other.pre.len > 0) {
-            // Very simplified pre-release comparison (lexicographical)
-            return switch (std.mem.order(u8, self.pre, other.pre)) {
-                .lt => -1,
-                .eq => 0,
-                .gt => 1,
-            };
+            var it1 = std.mem.splitScalar(u8, self.pre, '.');
+            var it2 = std.mem.splitScalar(u8, other.pre, '.');
+
+            while (true) {
+                const part1 = it1.next();
+                const part2 = it2.next();
+
+                if (part1 == null and part2 == null) return 0;
+                if (part1 == null) return -1;
+                if (part2 == null) return 1;
+
+                const is_num1 = isNumeric(part1.?);
+                const is_num2 = isNumeric(part2.?);
+
+                if (is_num1 and !is_num2) return -1;
+                if (!is_num1 and is_num2) return 1;
+
+                if (is_num1 and is_num2) {
+                    const n1 = std.fmt.parseInt(u64, part1.?, 10) catch 0;
+                    const n2 = std.fmt.parseInt(u64, part2.?, 10) catch 0;
+                    if (n1 < n2) return -1;
+                    if (n1 > n2) return 1;
+                } else {
+                    const cmp = std.mem.order(u8, part1.?, part2.?);
+                    if (cmp == .lt) return -1;
+                    if (cmp == .gt) return 1;
+                }
+            }
         }
 
         return 0;
@@ -265,14 +294,6 @@ pub const Interval = struct {
 
     /// Returns the intersection of two intervals (cloned).
     pub fn intersectClone(self: Interval, other: Interval, allocator: std.mem.Allocator) !?Interval {
-        var res = try self.clone(allocator);
-        errdefer res.deinit(allocator);
-        
-        const other_clone = try other.clone(allocator);
-        defer { var mut_o = other_clone; mut_o.deinit(allocator); }
-        
-        // This is inefficient but safe for now.
-        // Better: implement cloning directly in intersection logic.
         const shallow = self.intersect(other) orelse return null;
         return try shallow.clone(allocator);
     }
@@ -450,16 +471,81 @@ pub const Interval = struct {
         return self.intervals.len == 0;
     }
 
+    fn compareIntervals(context: void, a: Interval, b: Interval) bool {
+        _ = context;
+        if (a.min == null and b.min != null) return true;
+        if (a.min != null and b.min == null) return false;
+        if (a.min != null and b.min != null) {
+            const cmp = a.min.?.compare(b.min.?);
+            if (cmp < 0) return true;
+            if (cmp > 0) return false;
+            // same min, inclusive comes before exclusive
+            if (a.include_min and !b.include_min) return true;
+            if (!a.include_min and b.include_min) return false;
+        }
+        return false;
+    }
+
     pub fn unionRanges(self: VersionRange, other: VersionRange, allocator: std.mem.Allocator) !VersionRange {
         var list = std.ArrayList(Interval).empty;
         errdefer list.deinit(allocator);
 
         try list.appendSlice(allocator, self.intervals);
         try list.appendSlice(allocator, other.intervals);
+        if (list.items.len <= 1) {
+            return VersionRange{ .intervals = try list.toOwnedSlice(allocator) };
+        }
 
-        // This is a naive union (just concatenates).
-        // Ideally we would merge overlapping intervals.
-        return VersionRange{ .intervals = try list.toOwnedSlice(allocator) };
+        std.mem.sort(Interval, list.items, {}, compareIntervals);
+
+        var merged = std.ArrayList(Interval).empty;
+        errdefer merged.deinit(allocator);
+
+        var current = try list.items[0].clone(allocator);
+        for (list.items[1..]) |interval| {
+            // Check if interval overlaps or is contiguous with current
+            var overlaps = false;
+            if (current.max == null) {
+                overlaps = true;
+            } else if (interval.min == null) {
+                overlaps = true;
+            } else {
+                const cmp = current.max.?.compare(interval.min.?);
+                if (cmp > 0) {
+                    overlaps = true;
+                } else if (cmp == 0) {
+                    if (current.include_max or interval.include_min) {
+                        overlaps = true;
+                    }
+                }
+            }
+
+            if (overlaps) {
+                // Merge interval into current
+                if (current.max != null) {
+                    if (interval.max == null) {
+                        current.max.?.deinit(allocator);
+                        current.max = null;
+                        current.include_max = interval.include_max;
+                    } else {
+                        const cmp = current.max.?.compare(interval.max.?);
+                        if (cmp < 0) {
+                            current.max.?.deinit(allocator);
+                            current.max = try interval.max.?.clone(allocator);
+                            current.include_max = interval.include_max;
+                        } else if (cmp == 0) {
+                            current.include_max = current.include_max or interval.include_max;
+                        }
+                    }
+                }
+            } else {
+                try merged.append(allocator, current);
+                current = try interval.clone(allocator);
+            }
+        }
+        try merged.append(allocator, current);
+        list.deinit(allocator);
+        return VersionRange{ .intervals = try merged.toOwnedSlice(allocator) };
     }
 
     pub fn complement(self: VersionRange, allocator: std.mem.Allocator) !VersionRange {
@@ -573,3 +659,27 @@ test "range parsing and contains" {
     try std.testing.expect(r2.contains(try Version.parse("1.5.0")));
     try std.testing.expect(!r2.contains(try Version.parse("2.0.0")));
 }
+
+test "range union merging" {
+    const allocator = std.testing.allocator;
+
+    const r1 = try VersionRange.parse(allocator, ">= 1.0.0, < 2.0.0");
+    defer r1.deinit(allocator);
+
+    const r2 = try VersionRange.parse(allocator, ">= 1.5.0, < 3.0.0");
+    defer r2.deinit(allocator);
+
+    const merged = try r1.unionRanges(r2, allocator);
+    defer merged.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), merged.intervals.len);
+    
+    const min_str = try merged.intervals[0].min.?.toString(allocator);
+    defer allocator.free(min_str);
+    try std.testing.expectEqualStrings("1.0.0", min_str);
+    
+    const max_str = try merged.intervals[0].max.?.toString(allocator);
+    defer allocator.free(max_str);
+    try std.testing.expectEqualStrings("3.0.0", max_str);
+}
+

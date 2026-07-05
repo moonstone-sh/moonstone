@@ -340,8 +340,8 @@ fn translateBuiltinBuild(
                 }
                 for (c.args) |a| allocator.free(a);
                 allocator.free(c.args);
-                for (c.cmake_args) |a| allocator.free(a);
-                allocator.free(c.cmake_args);
+                for (c.ldflags) |a| allocator.free(a);
+                allocator.free(c.ldflags);
             }
         }
         list.deinit(allocator);
@@ -463,7 +463,7 @@ fn translateBuiltinBuild(
                         .path = try allocator.dupe(u8, dest_path),
                     },
                     .args = try cflags.toOwnedSlice(allocator),
-                    .cmake_args = try ldflags.toOwnedSlice(allocator),
+                    .ldflags = try ldflags.toOwnedSlice(allocator),
                 };
                 try list.append(allocator, .{
                     .name = try allocator.dupe(u8, mod_name),
@@ -836,41 +836,72 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
     const is_tar = std.mem.endsWith(u8, archive_path, ".tar");
 
     if (is_zip) {
-        const res = try std.process.run(allocator, io, .{
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
+        const res = std.process.run(allocator, io, .{
             .argv = &.{ "unzip", "-q", archive_path, "-d", out_dir },
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'unzip' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else if (is_tar_gz) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = try std.process.run(allocator, io, .{
+        const res = std.process.run(allocator, io, .{
             .argv = &.{ "tar", "-xzf", archive_path, "-C", out_dir },
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else if (is_tar_bz2) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = try std.process.run(allocator, io, .{
+        const res = std.process.run(allocator, io, .{
             .argv = &.{ "tar", "-xjf", archive_path, "-C", out_dir },
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else if (is_tar_xz) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = try std.process.run(allocator, io, .{
+        const res = std.process.run(allocator, io, .{
             .argv = &.{ "tar", "-xJf", archive_path, "-C", out_dir },
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
     } else if (is_tar) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = try std.process.run(allocator, io, .{
+        const res = std.process.run(allocator, io, .{
             .argv = &.{ "tar", "-xf", archive_path, "-C", out_dir },
-        });
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
         if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
@@ -1470,8 +1501,8 @@ pub fn resolve(
                 }
                 for (c.args) |a| allocator.free(a);
                 allocator.free(c.args);
-                for (c.cmake_args) |a| allocator.free(a);
-                allocator.free(c.cmake_args);
+                for (c.ldflags) |a| allocator.free(a);
+                allocator.free(c.ldflags);
             }
         }
         allocator.free(translated);
@@ -1482,7 +1513,7 @@ pub fn resolve(
 
     for (translated) |mod| {
         if (mod.kind == .c) {
-            native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, mod.config.?) catch |err| {
+            native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, mod.config.?, options.target orelse "native") catch |err| {
                 @import("../../diagnostics/error_context.zig").setFmt(allocator, "native module compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
                 return err;
             };

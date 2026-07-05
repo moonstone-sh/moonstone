@@ -68,6 +68,7 @@ pub fn build_internal(
     
     // Add default build env
     try final_env.put("CC", "zig cc");
+    try final_env.put("CXX", "zig c++");
     try final_env.put("AR", "zig ar");
     try final_env.put("LUA_INCDIR", lua_include);
     try final_env.put("LUA_LIBDIR", lua_lib);

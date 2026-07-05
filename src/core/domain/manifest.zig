@@ -248,7 +248,7 @@ pub const MaterializeConfig = struct {
     steps: []const CommandStep = &.{},
     env: []const EnvPair = &.{},
     collect: CollectConfig = .{},
-    cmake_args: []const []const u8 = &.{},
+    ldflags: []const []const u8 = &.{},
 
     pub fn parse(allocator: std.mem.Allocator, table: toml.Table) !MaterializeConfig {
         var self = MaterializeConfig{
@@ -362,7 +362,7 @@ pub const MaterializeConfig = struct {
             .steps = &.{},
             .env = &.{},
             .collect = try self.collect.clone(allocator),
-            .cmake_args = &.{},
+            .ldflags = &.{},
         };
 
         if (self.input) |i| {
@@ -391,10 +391,10 @@ pub const MaterializeConfig = struct {
             for (self.env) |e| try elist.append(allocator, .{ .key = try allocator.dupe(u8, e.key), .value = try allocator.dupe(u8, e.value) });
             res.env = try elist.toOwnedSlice(allocator);
         }
-        if (self.cmake_args.len > 0) {
-            var clist = std.ArrayList([]const u8).empty;
-            for (self.cmake_args) |c| try clist.append(allocator, try allocator.dupe(u8, c));
-            res.cmake_args = try clist.toOwnedSlice(allocator);
+        if (self.ldflags.len > 0) {
+            var ldlist = std.ArrayList([]const u8).empty;
+            for (self.ldflags) |c| try ldlist.append(allocator, try allocator.dupe(u8, c));
+            res.ldflags = try ldlist.toOwnedSlice(allocator);
         }
         return res;
     }
@@ -438,8 +438,8 @@ pub const MaterializeConfig = struct {
         for (self.collect.native_lib) |p| p.deinit(allocator);
         allocator.free(self.collect.native_lib);
 
-        for (self.cmake_args) |ca| allocator.free(ca);
-        allocator.free(self.cmake_args);
+        for (self.ldflags) |ca| allocator.free(ca);
+        allocator.free(self.ldflags);
     }
 };
 

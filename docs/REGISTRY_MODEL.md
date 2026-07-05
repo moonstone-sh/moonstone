@@ -96,6 +96,12 @@ hash = "b3:abc123..."
 bytes = 1048576
 revision = 42
 
+[index.compact]
+url = "index.sqlite.zst"
+compressed_hash = "b3:..."
+content_hash = "b3:..."
+bytes = 54321
+
 [blobs]
 algorithm = "blake3"
 layout = "shard"
@@ -132,6 +138,41 @@ runtimes = ["lua54"]
 
 The client downloads the entire index, then resolves dependencies locally against
 this list.  No server-side query engine is required.
+
+### `index.sqlite.zst` (Compact Index)
+
+To accelerate PubGrub resolution, a mature registry provides a pre-computed SQLite database containing `index.toml` data compressed via Zstandard. If `[index.compact]` is present in `registry.toml`, the resolver downloads and queries this SQLite index natively instead of parsing TOML.
+
+The SQLite database must conform to this exact schema:
+```sql
+CREATE TABLE packages (
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  descriptor TEXT NOT NULL,
+  descriptor_hash TEXT NOT NULL,
+  yanked INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (name, version)
+);
+CREATE TABLE artifacts (
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  target TEXT,
+  lua_abi TEXT,
+  url TEXT NOT NULL,
+  bytes INTEGER,
+  format TEXT NOT NULL,
+  PRIMARY KEY (name, version, artifact_hash)
+);
+CREATE TABLE provides_lua (
+  artifact_hash TEXT NOT NULL,
+  module TEXT NOT NULL,
+  path TEXT NOT NULL,
+  lua_abi TEXT,
+  PRIMARY KEY (artifact_hash, module)
+);
+```
 
 ### `packages/{name}/{version}/package.toml`
 

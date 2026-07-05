@@ -111,7 +111,8 @@ fn doFetch(
         try out_list.appendSlice(allocator, chunk_buf[0..n]);
         downloaded += n;
         if (on_progress) |cb| {
-            cb(progress_ctx, downloaded, resp.head.content_length);
+            const total = if (resp.head.content_length) |l| @as(usize, @intCast(l)) else null;
+            cb(progress_ctx, downloaded, total);
         }
     }
     const body = try out_list.toOwnedSlice(allocator);

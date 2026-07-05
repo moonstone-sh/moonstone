@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: '0.13.0' # Matches release.yml
+
+      - name: Check Formatting
+        run: zig fmt --check src/ build.zig
+
+      - name: Build All Targets
+        # We ensure that changes don't break the cross-compilation matrix
+        run: zig build
+
+      - name: Run Native Tests
+        # We run the internal test suite
+        run: zig build test

@@ -61,8 +61,8 @@ pub fn build(
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIRS={s}", .{lua_include}));
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_INCLUDE_DIR={s}", .{lua_include}));
     
-    // Append user cmake_args
-    for (config.cmake_args) |arg| {
+    // Append user ldflags (formerly cmake_args)
+    for (config.ldflags) |arg| {
         try conf_args.append(allocator, try allocator.dupe(u8, arg));
     }
 

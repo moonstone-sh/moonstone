@@ -141,8 +141,7 @@ pub const StoreDriver = struct {
             .allocator = allocator,
         };
 
-        try self.init_schema();
-        try self.migrate_schema();
+        try self.run_migrations();
         try self.exec("PRAGMA journal_mode=WAL;", .{});
         try self.exec("PRAGMA synchronous=NORMAL;", .{});
         try self.exec("PRAGMA busy_timeout=5000;", .{});
@@ -150,14 +149,37 @@ pub const StoreDriver = struct {
         return self;
     }
 
-    fn migrate_schema(self: StoreDriver) !void {
-        _ = self.exec("ALTER TABLE provides_bin ADD COLUMN entry_point TEXT;", .{}) catch {};
-        _ = self.exec("ALTER TABLE artifacts ADD COLUMN description TEXT;", .{}) catch {};
-        _ = self.exec("CREATE TABLE IF NOT EXISTS artifact_name_trigrams (artifact_hash TEXT NOT NULL, trigram TEXT NOT NULL, PRIMARY KEY (artifact_hash, trigram), FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash));", .{}) catch {};
-        try self.backfillArtifactNameTrigrams();
-        try self.ensure_indexes();
-    }
+    fn run_migrations(self: StoreDriver) !void {
+        // Create schema_migrations table if it doesn't exist
+        try self.exec(
+            \\CREATE TABLE IF NOT EXISTS schema_migrations (
+            \\  version INTEGER PRIMARY KEY,
+            \\  applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\);
+        , .{});
 
+        var current_version: i64 = 0;
+        const query = "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;";
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.db, query, -1, &stmt, null) == c.SQLITE_OK) {
+            defer _ = c.sqlite3_finalize(stmt);
+            if (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                current_version = c.sqlite3_column_int64(stmt, 0);
+            }
+        }
+
+        // Apply migrations
+        if (current_version < 1) {
+            const schema_v1 = @embedFile("migrations/0001_initial.sql");
+            const rc = c.sqlite3_exec(self.db, schema_v1, null, null, null);
+            if (rc != c.SQLITE_OK) return sqliteError(rc);
+
+            try self.exec("INSERT INTO schema_migrations (version) VALUES (1);", .{});
+
+            try self.backfillArtifactNameTrigrams();
+            try self.ensure_indexes();
+        }
+    }
     pub fn deinit(self: *StoreDriver) void {
         if (self.db) |db| {
             _ = c.sqlite3_close(db);
@@ -191,112 +213,6 @@ pub const StoreDriver = struct {
             const rc = c.sqlite3_exec(self.db, sql_z, null, null, null);
             if (rc != c.SQLITE_OK) return sqliteError(rc);
         }
-    }
-
-    fn init_schema(self: StoreDriver) !void {
-        const schema =
-            \\CREATE TABLE IF NOT EXISTS artifacts (
-            \\  artifact_hash TEXT PRIMARY KEY,
-            \\  name TEXT NOT NULL,
-            \\  version TEXT NOT NULL,
-            \\  kind TEXT NOT NULL,
-            \\  target TEXT NOT NULL,
-            \\  lua_abi TEXT,
-            \\  runtime TEXT,
-            \\  path TEXT NOT NULL,
-            \\  manifest_path TEXT NOT NULL,
-            \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\);
-            \\CREATE TABLE IF NOT EXISTS artifact_name_trigrams (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  trigram TEXT NOT NULL,
-            \\  PRIMARY KEY (artifact_hash, trigram),
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_runtime (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  version TEXT NOT NULL,
-            \\  abi TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_bin (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  entry_point TEXT,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_bin_lua (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  entry_point TEXT,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_headers (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_native_lib (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_lua_module (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_lua_cmodule (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_script (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  entry_point TEXT,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_asset (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS provides_ballad_plugin (
-            \\  artifact_hash TEXT NOT NULL,
-            \\  name TEXT NOT NULL,
-            \\  path TEXT NOT NULL,
-            \\  entry_point TEXT,
-            \\  module TEXT,
-            \\  FOREIGN KEY(artifact_hash) REFERENCES artifacts(artifact_hash)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS links (
-            \\  name TEXT PRIMARY KEY,
-            \\  path TEXT NOT NULL,
-            \\  version TEXT NOT NULL,
-            \\  kind TEXT NOT NULL,
-            \\  mode TEXT NOT NULL,
-            \\  registered_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\);
-        ;
-        const rc = c.sqlite3_exec(self.db, schema, null, null, null);
-        if (rc != c.SQLITE_OK) return sqliteError(rc);
-        // Migration: add new columns if they don't exist (ignored if already present)
-        _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN lua_api TEXT;", null, null, null);
-        _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN runtime_artifact_hash TEXT;", null, null, null);
-        _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN resolver TEXT;", null, null, null);
-        _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN source TEXT;", null, null, null);
-        _ = c.sqlite3_exec(self.db, "ALTER TABLE artifacts ADD COLUMN native_compat_required INTEGER DEFAULT 0;", null, null, null);
-        try self.ensure_indexes();
     }
 
     fn ensure_indexes(self: StoreDriver) !void {
@@ -402,6 +318,9 @@ pub const StoreDriver = struct {
 
     pub fn register_artifact(self: StoreDriver, allocator: std.mem.Allocator, sm: manifest.StoreManifest, path: []const u8, manifest_path: []const u8) !void {
         _ = allocator;
+        try self.begin();
+        errdefer self.rollback() catch {};
+
         const sql =
             \\INSERT OR REPLACE INTO artifacts
             \\  (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required)
@@ -474,6 +393,8 @@ pub const StoreDriver = struct {
         for (sm.provides.ballad_plugin) |b| {
             try self.exec("INSERT INTO provides_ballad_plugin (artifact_hash, name, path, entry_point, module) VALUES (?, ?, ?, ?, ?);", .{ sm.artifact.artifact_hash, b.name, b.path, b.entry_point, b.module });
         }
+
+        try self.commit();
     }
 
     pub fn exec(self: StoreDriver, comptime sql: [:0]const u8, args: anytype) !void {

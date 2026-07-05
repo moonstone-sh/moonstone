@@ -39,6 +39,7 @@ pub fn build(
     out_dir_path: []const u8,
     runtime_path: []const u8,
     config: manifest.MaterializeConfig,
+    target: []const u8,
 ) !void {
     const builtin = @import("builtin");
     const is_macos = builtin.os.tag == .macos;
@@ -53,6 +54,11 @@ pub fn build(
 
     try argv.append(allocator, "zig");
     try argv.append(allocator, "cc");
+
+    if (target.len > 0) {
+        try argv.append(allocator, "-target");
+        try argv.append(allocator, target);
+    }
 
     try argv.append(allocator, "-shared");
     try argv.append(allocator, "-fPIC");
@@ -82,8 +88,8 @@ pub fn build(
     try argv.append(allocator, "-o");
     try argv.append(allocator, output_abs_path);
 
-    // Apply custom LDFLAGS (stored in .cmake_args)
-    for (config.cmake_args) |flag| {
+    // Apply custom LDFLAGS
+    for (config.ldflags) |flag| {
         try argv.append(allocator, flag);
     }
 

@@ -1,0 +1,46 @@
+name: Moonstone CI Example
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Setup Moonstone using our official GitHub Action (or downloading the binary directly)
+      - name: Install Moonstone
+        run: curl -fsSL https://moonstone.sh/install.sh | sh
+
+      # 2. CACHE MOUNTING PATTERNS:
+      # We only need to cache the exact two-tiered b3/ path, as it holds the immutable content-addressed cache.
+      # By hashing the `moonstone.lock` file, CI restores the cache precisely when dependencies remain identical!
+      - name: Cache Moonstone Store
+        uses: actions/cache@v4
+        with:
+          path: ~/.moonstone/store/b3
+          key: ${{ runner.os }}-moonstone-${{ hashFiles('moonstone.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-moonstone-
+
+      # 3. PRIVATE REGISTRY TOKEN HANDLING:
+      # Tokens are injected as standard environment variables so they never leak into the codebase or lockfiles.
+      - name: Authenticate Moonstone
+        env:
+          MOONSTONE_AUTH_TOKEN: ${{ secrets.MOONSTONE_AUTH_TOKEN }}
+        run: moon auth --token $MOONSTONE_AUTH_TOKEN
+
+      # 4. LOCKED / OFFLINE INSTALL EXAMPLES:
+      # With --frozen-lockfile, Moonstone will fail immediately if `moonstone.lock` is out of sync, ensuring CI determinism.
+      # Because of our offline-first architecture, if the cache was restored successfully, this will resolve entirely offline!
+      - name: Install Dependencies
+        run: moon install --frozen-lockfile
+
+      # 5. Run tests or build using Moonstone's isolated environment
+      - name: Run Tests
+        run: moon run test

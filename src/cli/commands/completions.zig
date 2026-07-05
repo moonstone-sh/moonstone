@@ -108,6 +108,9 @@ pub const CompletionsCommand = struct {
             \\  else
             \\    local -a comps
             \\    comps=($($cmd completions --complete "$BUFFER"))
+            \\    if compset -P '*:'; then
+            \\        comps=(${{comps#*:}})
+            \\    fi
             \\    if (( ${{#comps}} > 0 )); then
             \\        compadd -a comps
             \\    fi
@@ -122,11 +125,19 @@ pub const CompletionsCommand = struct {
         _ = self;
         try ctx.stdout.print(
             \\_moon_completions() {{
-            \\  local cur="${{COMP_WORDS[COMP_CWORD]}}"
+            \\  local cur prev words cword
+            \\  if type _get_comp_words_by_ref &>/dev/null; then
+            \\      _get_comp_words_by_ref -n : cur prev words cword
+            \\  else
+            \\      cur="${{COMP_WORDS[COMP_CWORD]}}"
+            \\  fi
             \\  local cmd="${{COMP_WORDS[0]}}"
             \\  local completions
             \\  completions="$($cmd completions --complete "$COMP_LINE" 2>/dev/null)"
             \\  COMPREPLY=( $(compgen -W "$completions" -- "$cur") )
+            \\  if type __ltrim_colon_completions &>/dev/null; then
+            \\      __ltrim_colon_completions "$cur"
+            \\  fi
             \\}}
             \\complete -F _moon_completions moon
             \\

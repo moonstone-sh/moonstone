@@ -391,8 +391,29 @@ fn writeLiveLinkScriptShim(
         \\TOOL_ROOT="{s}"
         \\LUA_BIN="$TOOL_ROOT/.moonstone/env/bin/lua"
         \\if [ ! -x "$LUA_BIN" ]; then LUA_BIN="lua"; fi
-        \\export LUA_PATH="$TOOL_ROOT/src/?.lua;$TOOL_ROOT/src/?/init.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.1/?.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.1/?/init.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.4/?.lua;$TOOL_ROOT/.moonstone/env/share/lua/5.4/?/init.lua;${{LUA_PATH:-}};;"
-        \\export LUA_CPATH="$TOOL_ROOT/.moonstone/env/lib/lua/5.1/?.so;$TOOL_ROOT/.moonstone/env/lib/lua/5.1/?.dylib;$TOOL_ROOT/.moonstone/env/lib/lua/5.4/?.so;$TOOL_ROOT/.moonstone/env/lib/lua/5.4/?.dylib;${{LUA_CPATH:-}};;"
+        \\
+        \\LUA_PATH_STR="$TOOL_ROOT/src/?.lua;$TOOL_ROOT/src/?/init.lua"
+        \\if [ -d "$TOOL_ROOT/.moonstone/env/share/lua" ]; then
+        \\  for d in "$TOOL_ROOT/.moonstone/env/share/lua/"*; do
+        \\    if [ -d "$d" ]; then
+        \\      V=$(basename "$d")
+        \\      LUA_PATH_STR="$LUA_PATH_STR;$TOOL_ROOT/.moonstone/env/share/lua/$V/?.lua;$TOOL_ROOT/.moonstone/env/share/lua/$V/?/init.lua"
+        \\    fi
+        \\  done
+        \\fi
+        \\export LUA_PATH="$LUA_PATH_STR;${{LUA_PATH:-}};;"
+        \\
+        \\LUA_CPATH_STR=""
+        \\if [ -d "$TOOL_ROOT/.moonstone/env/lib/lua" ]; then
+        \\  for d in "$TOOL_ROOT/.moonstone/env/lib/lua/"*; do
+        \\    if [ -d "$d" ]; then
+        \\      V=$(basename "$d")
+        \\      LUA_CPATH_STR="$LUA_CPATH_STR;$TOOL_ROOT/.moonstone/env/lib/lua/$V/?.so;$TOOL_ROOT/.moonstone/env/lib/lua/$V/?.dylib"
+        \\    fi
+        \\  done
+        \\fi
+        \\export LUA_CPATH="${{LUA_CPATH_STR#;}};${{LUA_CPATH:-}};;"
+        \\
         \\exec "$LUA_BIN" "$TOOL_ROOT/{s}" "$@"
         \\
     , .{ source_path, entry });
@@ -616,7 +637,15 @@ pub fn link_project_env_at(
             const abs_bin_path = try std.fs.path.join(allocator, &.{ art_path, "files", b.path });
             if (policy.expose_public_bins) {
                 if (public_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (public_bin_map.contains(namespaced)) return error.BinConflict;
+                        try public_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try public_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -626,7 +655,15 @@ pub fn link_project_env_at(
                 }
             } else if (policy.expose_tool_scope) {
                 if (tool_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (tool_bin_map.contains(namespaced)) return error.BinConflict;
+                        try tool_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try tool_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -636,7 +673,15 @@ pub fn link_project_env_at(
                 }
             } else if (policy.expose_helper_scope) {
                 if (helper_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (helper_bin_map.contains(namespaced)) return error.BinConflict;
+                        try helper_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try helper_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -651,7 +696,15 @@ pub fn link_project_env_at(
             const abs_bin_path = try std.fs.path.join(allocator, &.{ art_path, "files", b.path });
             if (policy.expose_public_bins) {
                 if (public_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (public_bin_map.contains(namespaced)) return error.BinConflict;
+                        try public_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try public_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -661,7 +714,15 @@ pub fn link_project_env_at(
                 }
             } else if (policy.expose_tool_scope) {
                 if (tool_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (tool_bin_map.contains(namespaced)) return error.BinConflict;
+                        try tool_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try tool_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -671,7 +732,15 @@ pub fn link_project_env_at(
                 }
             } else if (policy.expose_helper_scope) {
                 if (helper_bin_map.get(b.name)) |existing| {
-                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.BinConflict;
+                    if (!std.mem.eql(u8, existing.artifact_hash, hash)) {
+                        const namespaced = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ pa.name, b.name });
+                        if (helper_bin_map.contains(namespaced)) return error.BinConflict;
+                        try helper_bin_map.put(allocator, namespaced, .{
+                            .path = abs_bin_path,
+                            .artifact_hash = try allocator.dupe(u8, hash),
+                            .role = pa.role,
+                        });
+                    }
                 } else {
                     try helper_bin_map.put(allocator, try allocator.dupe(u8, b.name), .{
                         .path = abs_bin_path,
@@ -1356,4 +1425,31 @@ test "link_project_env basic" {
     // This is an integration test that requires filesystem setup.
     // We verify the struct compiles correctly.
     _ = LiveLink{ .name = "test", .source_path = "/tmp", .mode = "live", .pkg_name = "test", .pkg_version = "0.1.0", .pkg_kind = .lib };
+}
+
+test "shim generation does not hardcode lua versions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.default;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try liveLinkScriptCommand(
+        allocator,
+        io,
+        tmp.dir,
+        "dummy_bin",
+        "/fake/source",
+        "dummy_cmd"
+    );
+
+    const content = try tmp.dir.readFileAlloc(io, "dummy_bin", allocator, 4096);
+    defer allocator.free(content);
+
+    // Should contain the dynamic loop
+    try std.testing.expect(std.mem.indexOf(u8, content, "for d in \"$TOOL_ROOT/.moonstone/env/share/lua/\"*; do") != null);
+    
+    // Should NOT contain the old hardcoded versions
+    try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.1/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.4/") == null);
 }

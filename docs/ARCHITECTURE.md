@@ -65,3 +65,20 @@ The lifecycle of a mutating command (like `moon sync` or `moon add`) is strictly
 - **Symlink Generation:** It iterates over the materialized hashes and projects exact symlinks from the CAS store into standard UNIX paths inside the environment (`env/bin`, `env/share/lua/5.4`, `env/lib/lua/5.4`).
 - **Live Link Injection:** If a package originated from a live link (e.g., `path:` or `link:`), the linker skips the immutable store and symlinks the source code directly into the environment, enabling immediate local development feedback.
 - **Lockfile Synchronization:** Finally, the exact resolved graph, including artifact hashes and ABI configurations, is serialized into `moonstone.lock` to guarantee future reproducibility.
+
+## 8. Cross-Compilation Mastery
+Moonstone seamlessly targets any architecture supported by Zig natively:
+- **`zig cc` Integration:** Moonstone's global configuration injects target flags (`-target`, `-mcpu`) directly into the native C-module materializer.
+- **CMake Bridging:** When cross-compiling, Moonstone forcefully injects `CMAKE_SYSTEM_NAME` and `CMAKE_C_COMPILER` (pointing to `zig cc`), coercing external CMake scripts to adopt the target architecture cleanly.
+- **ABI Verification:** Moonstone handles cross-ABI boundaries, ensuring headers from a cross-compiled Lua runtime match the target module architecture to avoid mixed-architecture linking errors.
+
+## 9. The Concurrency Model (Registry vs. LuaRocks)
+Moonstone features a highly optimized concurrency engine, but behavior splits depending on the package ecosystem due to fundamentally different data distributions.
+
+### Moonstone Registry (Highly Concurrent)
+- **Offline Resolution:** The registry provides a complete SQLite/JSON index locally. PubGrub resolves the entire graph offline instantly.
+- **Parallel Materialization:** Found in `src/cli/commands/sync.zig`, the `DownloadPool` spawns OS-level worker threads that consume download jobs atomically, aggressively saturating network bandwidth and CPU cores to extract tarballs.
+
+### LuaRocks Ecosystem (Sequential Discovery)
+- **On-the-fly Resolution:** Because LuaRocks lacks a holistic graph index, Moonstone must fetch individual `.rockspec` files over the network mid-resolution to discover a package's dependencies.
+- **Inline Materialization:** If Moonstone encounters a LuaRocks package, it fetches and evaluates it sequentially *during* the solving phase. By the time PubGrub finishes, the LuaRocks artifacts are already cached locally, skipping the parallel `DownloadPool` phase entirely.
