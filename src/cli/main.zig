@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .stderr = stderr,
         .env = init.environ_map,
         .root = null,
+        .all_args = all_args,
     };
 
     const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management", &.{
@@ -94,6 +95,8 @@ pub fn main(init: std.process.Init) !void {
         router.CommandNode.group("orbit", "Manage nested orbit projects", &.{
             router.CommandNode.from(@import("commands/orbit_list.zig").OrbitListCommand),
             router.CommandNode.from(@import("commands/orbit_sync.zig").OrbitSyncCommand),
+            router.CommandNode.from(@import("commands/orbit_exec.zig").OrbitExecCommand),
+            router.CommandNode.from(@import("commands/orbit_run.zig").OrbitRunCommand),
         }),
     });
 

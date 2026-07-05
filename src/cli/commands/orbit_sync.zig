@@ -71,13 +71,14 @@ pub const OrbitSyncCommand = struct {
 
         if (self.positionals.len > 0) {
             const target = self.positionals[0];
+            const target_abs = try std.fs.path.resolve(ctx.allocator, &.{ project_root.path, target });
+            defer ctx.allocator.free(target_abs);
+            
             for (orbits) |orbit| {
-                const display_path = try std.fs.path.relative(ctx.allocator, project_root.path, null, project_root.path, orbit.path);
-                defer ctx.allocator.free(display_path);
-
                 if (std.mem.eql(u8, orbit.name, target) or 
                     std.mem.eql(u8, orbit.package_name, target) or 
-                    std.mem.eql(u8, display_path, target)) {
+                    std.mem.eql(u8, orbit.path, target_abs)) {
+                    
                     try target_orbits.append(ctx.allocator, orbit);
                 }
             }

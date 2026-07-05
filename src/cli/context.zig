@@ -8,4 +8,5 @@ pub const Context = struct {
     env: *std.process.Environ.Map,
     root: ?*const @import("router.zig").CommandNode = null,
     error_detail: ?@import("commands/command.zig").CliErrorDetail = null,
+    all_args: []const []const u8 = &.{},
 };
