@@ -31,9 +31,9 @@ pub fn resolveOrbits(allocator: std.mem.Allocator, io: std.Io, root_path: []cons
         resolved.deinit(allocator);
     }
 
-    for (root_manifest.orbits.items) |member_path| {
+    for (root_manifest.orbits.items) |orbit_cfg| {
         // Resolve orbit path relative to root
-        const orbit_abs_path = try std.fs.path.join(allocator, &.{ root_path, member_path });
+        const orbit_abs_path = try std.fs.path.join(allocator, &.{ root_path, orbit_cfg.path });
         defer allocator.free(orbit_abs_path);
 
         const manifest_path = try std.fs.path.join(allocator, &.{ orbit_abs_path, "moonstone.toml" });
@@ -55,7 +55,7 @@ pub fn resolveOrbits(allocator: std.mem.Allocator, io: std.Io, root_path: []cons
             return error.OrbitMissingInterpreter;
         }
 
-        const name = try allocator.dupe(u8, orbit_mt.package.name); // Default to package name
+        const name = try allocator.dupe(u8, orbit_cfg.name);
         const pkg_name = try allocator.dupe(u8, orbit_mt.package.name);
         const int_name = try allocator.dupe(u8, orbit_mt.runtime.name);
         const int_version = try allocator.dupe(u8, orbit_mt.runtime.version);

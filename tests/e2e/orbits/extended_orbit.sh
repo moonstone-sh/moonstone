@@ -22,10 +22,9 @@ version = "0.1.0"
 name = "lua"
 version = "5.4.7"
 
-[orbits]
-members = [
-  { path = "deep/nested/child" }
-]
+[[orbits.member]]
+name = "child"
+path = "deep/nested/child"
 EOF
 
 cat <<EOF > deep/nested/child/moonstone.toml

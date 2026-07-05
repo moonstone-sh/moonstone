@@ -1083,7 +1083,12 @@ pub const MoonstoneToml = struct {
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
-    orbits: std.ArrayListUnmanaged([]const u8) = .empty,
+    orbits: std.ArrayListUnmanaged(OrbitConfig) = .empty,
+
+    pub const OrbitConfig = struct {
+        name: []const u8,
+        path: []const u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) MoonstoneToml {
         _ = allocator;
@@ -1260,17 +1265,19 @@ pub const MoonstoneToml = struct {
         self.orbits = .empty;
         if (table.get("orbits")) |orbits_val| {
             if (orbits_val == .table) {
-                if (orbits_val.table.get("members")) |members_val| {
+                if (orbits_val.table.get("member")) |members_val| {
                     if (members_val == .array) {
-                        for (members_val.array.items) |m| {
-                            if (m == .string) {
-                                try self.orbits.append(allocator, try allocator.dupe(u8, m.string));
-                            } else if (m == .table) {
-                                if (m.table.get("path")) |path_val| {
-                                    if (path_val == .string) {
-                                        try self.orbits.append(allocator, try allocator.dupe(u8, path_val.string));
-                                    }
-                                }
+                        for (members_val.array.items) |member_val| {
+                            if (member_val == .table) {
+                                const name_val = member_val.table.get("name") orelse return error.OrbitMissingName;
+                                if (name_val != .string) return error.OrbitInvalidName;
+                                const path_val = member_val.table.get("path") orelse return error.OrbitMissingPath;
+                                if (path_val != .string) return error.OrbitInvalidPath;
+                                
+                                try self.orbits.append(allocator, .{
+                                    .name = try allocator.dupe(u8, name_val.string),
+                                    .path = try allocator.dupe(u8, path_val.string),
+                                });
                             }
                         }
                     }
@@ -1315,7 +1322,10 @@ pub const MoonstoneToml = struct {
             for (res.default_order) |o| allocator.free(o);
             allocator.free(res.default_order);
         }
-        for (self.orbits.items) |o| allocator.free(o);
+        for (self.orbits.items) |o| {
+            allocator.free(o.name);
+            allocator.free(o.path);
+        }
         self.orbits.deinit(allocator);
     }
 

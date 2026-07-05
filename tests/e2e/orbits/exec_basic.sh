@@ -22,8 +22,9 @@ version = "0.1.0"
 name = "lua"
 version = "5.4.7"
 
-[orbits]
-members = ["child"]
+[[orbits.member]]
+name = "child"
+path = "child"
 EOF
 
 cat <<EOF > child/moonstone.toml
