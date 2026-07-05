@@ -1263,7 +1263,15 @@ pub const MoonstoneToml = struct {
                 if (orbits_val.table.get("members")) |members_val| {
                     if (members_val == .array) {
                         for (members_val.array.items) |m| {
-                            try self.orbits.append(allocator, try allocator.dupe(u8, m.string));
+                            if (m == .string) {
+                                try self.orbits.append(allocator, try allocator.dupe(u8, m.string));
+                            } else if (m == .table) {
+                                if (m.table.get("path")) |path_val| {
+                                    if (path_val == .string) {
+                                        try self.orbits.append(allocator, try allocator.dupe(u8, path_val.string));
+                                    }
+                                }
+                            }
                         }
                     }
                 }

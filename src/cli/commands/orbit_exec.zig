@@ -24,6 +24,28 @@ pub const OrbitExecCommand = struct {
         , .{});
     }
 
+    pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
+        _ = args;
+        const project_root = moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".") catch return &.{};
+        defer project_root.deinit(ctx.allocator);
+        const content = std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024)) catch return &.{};
+        defer ctx.allocator.free(content);
+        var mt = moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content) catch return &.{};
+        defer mt.deinit(ctx.allocator);
+
+        const orbits = moonstone.project.orbits.resolveOrbits(ctx.allocator, ctx.io, project_root.path, &mt) catch return &.{};
+        defer {
+            for (orbits) |*o| o.deinit(ctx.allocator);
+            ctx.allocator.free(orbits);
+        }
+
+        var list = std.ArrayList([]const u8).empty;
+        for (orbits) |orbit| {
+            try list.append(ctx.allocator, try ctx.allocator.dupe(u8, orbit.name));
+        }
+        return list.toOwnedSlice(ctx.allocator);
+    }
+
     pub fn run(self: OrbitExecCommand, ctx: *router.Context) !void {
         // Enforce presence of `--`
         var has_dash_dash = false;
