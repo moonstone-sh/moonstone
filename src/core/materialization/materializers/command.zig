@@ -10,8 +10,11 @@ pub fn build(
     runtime_path: []const u8,
     lua_abi: []const u8,
     config: manifest.MaterializeConfig,
+    log_file_name: []const u8,
+    on_event: ?@import("../../resolution/options.zig").ResolveCallback,
+    on_event_context: ?*anyopaque,
 ) !void {
-    try build_internal(allocator, io, env_map, source_dir_path, out_dir_path, runtime_path, lua_abi, config, null);
+    try build_internal(allocator, io, env_map, source_dir_path, out_dir_path, runtime_path, lua_abi, config, null, log_file_name, on_event, on_event_context);
 }
 
 pub fn build_internal(
@@ -24,6 +27,9 @@ pub fn build_internal(
     lua_abi: []const u8,
     config: manifest.MaterializeConfig,
     build_dir: ?[]const u8,
+    log_file_name: []const u8,
+    on_event: ?@import("../../resolution/options.zig").ResolveCallback,
+    on_event_context: ?*anyopaque,
 ) !void {
     const src_abs = source_dir_path;
     const out_abs = out_dir_path;
@@ -67,9 +73,10 @@ pub fn build_internal(
     defer final_env.deinit();
     
     // Add default build env
-    try final_env.put("CC", "zig cc");
-    try final_env.put("CXX", "zig c++");
-    try final_env.put("AR", "zig ar");
+    // Let the system use default CC/CXX unless cross-compiling
+    // try final_env.put("CC", "zig cc");
+    // try final_env.put("CXX", "zig c++");
+    // try final_env.put("AR", "zig ar");
     try final_env.put("LUA_INCDIR", lua_include);
     try final_env.put("LUA_LIBDIR", lua_lib);
     try final_env.put("LUA_BINDIR", lua_bin_dir);
@@ -95,9 +102,52 @@ pub fn build_internal(
             .cwd = .{ .path = src_abs },
         });
 
+        std.debug.print("\n=== DEBUG COMMAND ===\n", .{});
+        for (argv.items) |a| {
+            std.debug.print("arg: {s}\n", .{a});
+        }
+        var it = final_env.iterator();
+        while (it.next()) |entry| {
+            std.debug.print("env: {s} = {s}\n", .{entry.key_ptr.*, entry.value_ptr.*});
+        }
+        std.debug.print("=====================\n\n", .{});
+
         if (res.term != .exited or res.term.exited != 0) {
+            var log_path: ?[]const u8 = null;
+            if (std.Io.Dir.cwd().openDir(io, ".moonstone", .{})) |moon_dir| {
+                if (moon_dir.createDirPath(io, "logs/build")) |_| {
+                    const log_full_path = try std.fs.path.join(allocator, &.{ ".moonstone", "logs", "build", log_file_name });
+                    if (std.Io.Dir.cwd().createFile(io, log_full_path, .{})) |log_file| {
+                        log_file.writeStreamingAll(io, "=== STDOUT ===\n") catch {};
+                        log_file.writeStreamingAll(io, res.stdout) catch {};
+                        log_file.writeStreamingAll(io, "\n=== STDERR ===\n") catch {};
+                        log_file.writeStreamingAll(io, res.stderr) catch {};
+                        log_file.close(io);
+                        log_path = log_full_path;
+                    } else |_| {
+                        allocator.free(log_full_path);
+                    }
+                } else |_| {}
+                moon_dir.close(io);
+            } else |_| {}
 
-
+            if (on_event) |cb| {
+                const tail_len = @min(res.stderr.len, 2048);
+                const tail = res.stderr[res.stderr.len - tail_len ..];
+                cb(on_event_context, .{ .build_failed = .{
+                    .pkg_name = std.fs.path.basename(out_abs),
+                    .command = step.cmd,
+                    .stderr_tail = tail,
+                    .log_path = log_path,
+                }});
+            } else {
+                const tail_len = @min(res.stderr.len, 2048);
+                const tail = res.stderr[res.stderr.len - tail_len ..];
+                std.debug.print("\nCommand failed: {s}\n", .{step.cmd});
+                if (log_path) |lp| std.debug.print("Full log written to: {s}\n", .{lp});
+                std.debug.print("Tail of stderr:\n{s}\n", .{tail});
+            }
+            if (log_path) |lp| allocator.free(lp);
             return error.CommandFailed;
         }
     }

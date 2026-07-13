@@ -211,11 +211,20 @@ pub const Materializer = struct {
             const host_target = try self.get_host_target();
             defer self.allocator.free(host_target);
 
+            var build_env_items = std.ArrayList([]const u8).empty;
+            defer {
+                for (build_env_items.items) |b| self.allocator.free(b);
+                build_env_items.deinit(self.allocator);
+            }
+            if (m.env.len > 0) {
+                for (m.env) |pair| {
+                    const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ pair.key, pair.value });
+                    try build_env_items.append(self.allocator, env_str);
+                }
+            }
+
             if (std.mem.eql(u8, m.kind, "native_cmodule")) {
                 if (self.runtime_path) |rt_path| {
-                    const native_cmodule = @import("materializers/native_cmodule.zig");
-                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, m, art.target);
-
                     const zig_version_res = try std.process.run(self.allocator, self.io, .{ .argv = &.{ "zig", "version" } });
                     defer self.allocator.free(zig_version_res.stdout);
                     defer self.allocator.free(zig_version_res.stderr);
@@ -239,10 +248,21 @@ pub const Materializer = struct {
                         .lua_abi = art.lua_abi,
                         .target = host_target,
                         .sources = m.input.?.sources,
-                        .output_module = m.output.?.module,
-                        .output_path = m.output.?.path,
+                        .output_module = if (m.output != null) m.output.?.module else "",
+                        .output_path = if (m.output != null) m.output.?.path else "",
+                        .build_env = build_env_items.items,
                     });
                     defer self.allocator.free(recipe_hash);
+
+                    const log_name_sanitized = try self.allocator.dupe(u8, desc.package.name);
+                    defer self.allocator.free(log_name_sanitized);
+                    std.mem.replaceScalar(u8, log_name_sanitized, '/', '-');
+                    const hash_short_len = @min(8, recipe_hash.len);
+                    const log_file_name = try std.fmt.allocPrint(self.allocator, "{s}-{s}-{s}.log", .{ log_name_sanitized, desc.package.version, recipe_hash[0..hash_short_len] });
+                    defer self.allocator.free(log_file_name);
+
+                    const native_cmodule = @import("materializers/native_cmodule.zig");
+                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, m, art.target, log_file_name, self.on_event, self.on_event_context);
 
                     var new_provides = art.provides;
                     var cmodules = std.ArrayList(manifest.FeatureProvision).empty;
@@ -269,9 +289,6 @@ pub const Materializer = struct {
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "cmake")) {
                 if (self.runtime_path) |rt_path| {
-                    const cmake = @import("materializers/cmake.zig");
-                    try cmake.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m);
-
                     const cmake_version_res = try std.process.run(self.allocator, self.io, .{ .argv = &.{ "cmake", "--version" } });
                     defer self.allocator.free(cmake_version_res.stdout);
                     defer self.allocator.free(cmake_version_res.stderr);
@@ -295,8 +312,19 @@ pub const Materializer = struct {
                         .lua_abi = art.lua_abi,
                         .target = host_target,
                         .collect = m.collect,
+                        .build_env = build_env_items.items,
                     });
                     defer self.allocator.free(recipe_hash);
+
+                    const log_name_sanitized = try self.allocator.dupe(u8, desc.package.name);
+                    defer self.allocator.free(log_name_sanitized);
+                    std.mem.replaceScalar(u8, log_name_sanitized, '/', '-');
+                    const hash_short_len = @min(8, recipe_hash.len);
+                    const log_file_name = try std.fmt.allocPrint(self.allocator, "{s}-{s}-{s}.log", .{ log_name_sanitized, desc.package.version, recipe_hash[0..hash_short_len] });
+                    defer self.allocator.free(log_file_name);
+
+                    const cmake = @import("materializers/cmake.zig");
+                    try cmake.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, self.on_event, self.on_event_context);
 
                     var new_provides = try art.provides.clone(self.allocator);
                     errdefer new_provides.deinit(self.allocator);
@@ -336,9 +364,6 @@ pub const Materializer = struct {
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "command")) {
                 if (self.runtime_path) |rt_path| {
-                    const command_mat = @import("materializers/command.zig");
-                    try command_mat.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m);
-
                     const runtime_hash = if (had_runtime)
                         try @import("../identity/hash.zig").blake3_file(self.allocator, self.io, try std.fs.path.join(self.allocator, &.{ rt_path, "manifest.toml" }))
                     else
@@ -355,8 +380,19 @@ pub const Materializer = struct {
                         .runtime_hash = runtime_hash,
                         .lua_abi = art.lua_abi,
                         .target = host_target,
+                        .build_env = build_env_items.items,
                     });
                     defer self.allocator.free(recipe_hash);
+
+                    const log_name_sanitized = try self.allocator.dupe(u8, desc.package.name);
+                    defer self.allocator.free(log_name_sanitized);
+                    std.mem.replaceScalar(u8, log_name_sanitized, '/', '-');
+                    const hash_short_len = @min(8, recipe_hash.len);
+                    const log_file_name = try std.fmt.allocPrint(self.allocator, "{s}-{s}-{s}.log", .{ log_name_sanitized, desc.package.version, recipe_hash[0..hash_short_len] });
+                    defer self.allocator.free(log_file_name);
+
+                    const command_mat = @import("materializers/command.zig");
+                    try command_mat.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, self.on_event, self.on_event_context);
 
                     var new_provides = try art.provides.clone(self.allocator);
                     errdefer new_provides.deinit(self.allocator);

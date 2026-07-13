@@ -386,6 +386,15 @@ pub const add_command = struct {
 
         var resolver = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
 
+        const build_env = try mt.resolveBuildEnv(allocator, env);
+        defer {
+            for (build_env) |be| {
+                allocator.free(be.key);
+                allocator.free(be.value);
+            }
+            allocator.free(build_env);
+        }
+
         if (!self.json) backend.phase("Resolving active runtime...", .{});
         profile_span = profiler.now();
         const rt_res = resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName()), mt.runtimeConstraint(), idx, resolved_registries, .{
@@ -393,9 +402,10 @@ pub const add_command = struct {
             .prefer_local = true,
             .on_event = on_resolve_cb,
             .on_event_context = on_resolve_ctx,
+            .build_env = build_env,
         }, env) catch |err| {
             if (err == error.NoCompatibleCandidateFound or err == error.PackageNotFound or err == error.FileNotFound) {
-                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon interpreter set lua@5.4` or `moon interpreter install` first." } };
+                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon interpreter set lua@5.4` or `moon interpreter set luajit@2.1` to select one." } };
                 return error.MissingRuntime;
             }
             return err;
@@ -510,6 +520,7 @@ pub const add_command = struct {
                 .runtime_path = mat.runtime_path,
                 .on_event = on_resolve_cb,
                 .on_event_context = on_resolve_ctx,
+                .build_env = build_env,
             },
             env,
             lua_exe,
@@ -593,6 +604,7 @@ pub const add_command = struct {
                     .runtime_path = mat.runtime_path,
                     .on_event = on_resolve_cb,
                     .on_event_context = on_resolve_ctx,
+                    .build_env = build_env,
                 }, kind, env) catch |err| {
                     if (err == error.RocksVersionDiscoveryFailed and parsed.resolver == null) continue;
                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
@@ -611,6 +623,7 @@ pub const add_command = struct {
                             .runtime_path = mat.runtime_path,
                             .on_event = on_resolve_cb,
                             .on_event_context = on_resolve_ctx,
+                            .build_env = build_env,
                         }, env) catch continue;
                         resolved_direct_opt = .{
                             .name = try allocator.dupe(u8, parsed.name),

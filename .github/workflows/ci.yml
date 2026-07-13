@@ -20,7 +20,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: '0.13.0' # Matches release.yml
+          version: '0.16.0' # Matches release.yml
 
       - name: Check Formatting
         run: zig fmt --check src/ build.zig

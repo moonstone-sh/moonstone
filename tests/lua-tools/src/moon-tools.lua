@@ -280,6 +280,28 @@ build = { type = "builtin", modules = { fake = "fake.lua" }, install = { bin = {
 dependencies = { "lua >= 5.1" }
 ]], port)
 
+  local make_files = {
+    ["Makefile"] = [[
+all:
+	@echo "return {" > env_test.lua
+	@echo "  OPENSSL_DIR = \"$$OPENSSL_DIR\"," >> env_test.lua
+	@echo "  CFLAGS = \"$$CFLAGS\"," >> env_test.lua
+	@echo "  CPPFLAGS = \"$$CPPFLAGS\"," >> env_test.lua
+	@echo "  LDFLAGS = \"$$LDFLAGS\"" >> env_test.lua
+	@echo "}" >> env_test.lua
+	@mkdir -p "$(PREFIX)/share/lua/$(LUA_ABI)"
+	@cp env_test.lua "$(PREFIX)/share/lua/$(LUA_ABI)/env_test.lua"
+install:
+	@echo "Skipping install step"
+]]
+  }
+  create_tar_gz(make_files, join(base_dir, "make-env-test-1.0.tar.gz"))
+  local rockspec_make = string.format([[package = "make-env-test"
+version = "1.0-1"
+source = { url = "http://localhost:%d/make-env-test-1.0.tar.gz" }
+build = { type = "make", build_pass = true, install_pass = false, variables = { PREFIX = "$(PREFIX)", LUA_ABI = "$(LUA_ABI)" }, modules = { env_test = "env_test.lua" } }
+]], port)
+
   local child_lua = [[
 return { hello = "from child" }
 ]]
@@ -304,6 +326,7 @@ dependencies = { "lua >= 5.1", "child >= 1.0" }
 
   write_file(join(base_dir, "builtin-cmodule-0.1.0-1.rockspec"), rockspec_builtin)
   write_file(join(base_dir, "fakebin-1.0-1.rockspec"), rockspec_fakebin)
+  write_file(join(base_dir, "make-env-test-1.0-1.rockspec"), rockspec_make)
   write_file(join(base_dir, "child-1.0-1.rockspec"), rockspec_child)
   write_file(join(base_dir, "parent-1.0-1.rockspec"), rockspec_parent)
 
@@ -311,6 +334,7 @@ dependencies = { "lua >= 5.1", "child >= 1.0" }
     repository = {
       ["builtin-cmodule"] = { ["0.1.0-1"] = { { arch = "rockspec" } } },
       fakebin = { ["1.0-1"] = { { arch = "rockspec" } } },
+      ["make-env-test"] = { ["1.0-1"] = { { arch = "rockspec" } } },
       child = { ["1.0-1"] = { { arch = "rockspec" } } },
       parent = { ["1.0-1"] = { { arch = "rockspec" } } },
     },

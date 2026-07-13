@@ -745,6 +745,23 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
 
         .metadata_sync_started => |label| wctx.sendPhase(label),
         .metadata_sync_done => |label| wctx.sendPhaseDone(label),
+        .build_failed => |bf| {
+            var buf: [4096]u8 = undefined;
+            const msg = std.fmt.bufPrint(
+                &buf,
+                "Build failed for {s}. Command: {s}\nTail of stderr:\n{s}",
+                .{ bf.pkg_name, bf.command, bf.stderr_tail },
+            ) catch return;
+            wctx.sendWarning(msg);
+            if (bf.log_path) |lp| {
+                const log_msg = std.fmt.bufPrint(
+                    &buf,
+                    "Full build log for {s} saved to: {s}",
+                    .{ bf.pkg_name, lp },
+                ) catch return;
+                wctx.sendWarning(log_msg);
+            }
+        },
     }
 }
 

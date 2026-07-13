@@ -23,6 +23,9 @@ pub const Rockspec = struct {
     version: []const u8,
     source: struct {
         url: []const u8,
+        tag: ?[]const u8 = null,
+        branch: ?[]const u8 = null,
+        module: ?[]const u8 = null,
     },
     build: struct {
         type: []const u8,

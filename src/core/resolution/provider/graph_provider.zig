@@ -340,6 +340,40 @@ pub const RegistryProvider = struct {
             }
         }
 
+        // Safety-net: if this is a LuaRocks transitive dependency that
+        // hasn't been built yet, build it on-demand.  Normally the inline
+        // materialization in getDependencies handles this, but this guard
+        // catches edge cases (e.g. solution extraction after backtracking).
+        if (!self.options.offline and self.env != null) {
+            var is_rocks = request.resolver == .rocks;
+            if (!is_rocks) {
+                if (self.findStoreDependencyOrigin(request.name, .rocks)) |_| {
+                    is_rocks = true;
+                }
+            }
+            if (is_rocks) {
+                var opts = self.options;
+                opts.lua_exe = self.lua_exe;
+                const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?) catch |err| {
+                    if (err == error.PackageNotFound or err == error.RockspecNotFound or
+                        err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
+                        err == error.RocksVersionDiscoveryFailed)
+                    {
+                        return null;
+                    }
+                    return err;
+                };
+                defer built.deinit(self.allocator);
+
+                const arena = self.arena.allocator();
+                var cloned = try built.clone(arena);
+                cloned.location = .local_store;
+                try self.artifacts.append(arena, cloned);
+
+                return try built.clone(self.allocator);
+            }
+        }
+
         return null;
     }
 
@@ -745,6 +779,63 @@ pub const RegistryProvider = struct {
                 }
                 artifact = art.*;
                 break;
+            }
+        }
+
+        // -- Inline materialization for LuaRocks transitive deps ----------
+        // When pubgrub asks for the dependencies of a rocks package that
+        // has not been built yet, build it on-demand so its manifest.toml
+        // (which lists transitive deps) becomes available.  This implements
+        // the "Inline Materialization" design from ARCHITECTURE.md section 9.
+        if (artifact == null) {
+            var dep_resolver: ?root.ResolverKind = null;
+            for (self.targets) |t| {
+                if (std.mem.eql(u8, t.name, name)) {
+                    dep_resolver = t.resolver;
+                    break;
+                }
+            }
+            if (dep_resolver == null) {
+                if (self.findStoreDependencyOrigin(name, null)) |origin| {
+                    dep_resolver = origin.child_resolver;
+                }
+            }
+
+            if (dep_resolver == .rocks and self.env != null and !self.options.offline) {
+                const v_str = try version.toString(self.allocator);
+                defer self.allocator.free(v_str);
+
+                var opts = self.options;
+                opts.lua_exe = self.lua_exe;
+
+                const built = rocks_resolver.resolve(self.allocator, self.io, name, v_str, opts, self.env.?) catch |err| {
+                    if (err == error.PackageNotFound or err == error.RockspecNotFound or
+                        err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
+                        err == error.RocksVersionDiscoveryFailed)
+                    {
+                        // Cannot build this package; return empty deps so
+                        // pubgrub can try a different version or backtrack.
+                        return try terms.toOwnedSlice(self.allocator);
+                    }
+                    return err;
+                };
+                defer built.deinit(self.allocator);
+
+                // Clone into the arena and mark as local_store so the
+                // manifest.toml reader below picks it up.
+                var cloned = try built.clone(arena);
+                cloned.location = .local_store;
+                try self.artifacts.append(arena, cloned);
+
+                // Re-scan artifacts to find the freshly-built candidate.
+                for (self.artifacts.items) |*art| {
+                    if (!std.mem.eql(u8, art.name, name)) continue;
+                    const v = semver.Version.parse(art.version) catch continue;
+                    if (version.compare(v) == 0) {
+                        artifact = art.*;
+                        break;
+                    }
+                }
             }
         }
 

@@ -40,6 +40,9 @@ pub fn build(
     runtime_path: []const u8,
     config: manifest.MaterializeConfig,
     target: []const u8,
+    log_file_name: []const u8,
+    on_event: ?@import("../../resolution/options.zig").ResolveCallback,
+    on_event_context: ?*anyopaque,
 ) !void {
     const builtin = @import("builtin");
     const is_macos = builtin.os.tag == .macos;
@@ -121,7 +124,41 @@ pub fn build(
     defer allocator.free(res.stderr);
 
     if (res.term != .exited or res.term.exited != 0) {
-        std.debug.print("native module compilation failed:\n{s}\n", .{res.stderr});
+        var log_path: ?[]const u8 = null;
+        if (std.Io.Dir.cwd().openDir(io, ".moonstone", .{})) |moon_dir| {
+            if (moon_dir.createDirPath(io, "logs/build")) |_| {
+                const log_full_path = try std.fs.path.join(allocator, &.{ ".moonstone", "logs", "build", log_file_name });
+                if (std.Io.Dir.cwd().createFile(io, log_full_path, .{})) |log_file| {
+                    log_file.writeStreamingAll(io, "=== STDOUT ===\n") catch {};
+                    log_file.writeStreamingAll(io, res.stdout) catch {};
+                    log_file.writeStreamingAll(io, "\n=== STDERR ===\n") catch {};
+                    log_file.writeStreamingAll(io, res.stderr) catch {};
+                    log_file.close(io);
+                    log_path = log_full_path;
+                } else |_| {
+                    allocator.free(log_full_path);
+                }
+            } else |_| {}
+            moon_dir.close(io);
+        } else |_| {}
+
+        if (on_event) |cb| {
+            const tail_len = @min(res.stderr.len, 2048);
+            const tail = res.stderr[res.stderr.len - tail_len ..];
+            cb(on_event_context, .{ .build_failed = .{
+                .pkg_name = std.fs.path.basename(out_dir_path),
+                .command = "zig cc",
+                .stderr_tail = tail,
+                .log_path = log_path,
+            }});
+        } else {
+            const tail_len = @min(res.stderr.len, 2048);
+            const tail = res.stderr[res.stderr.len - tail_len ..];
+            std.debug.print("native module compilation failed:\n", .{});
+            if (log_path) |lp| std.debug.print("Full log written to: {s}\n", .{lp});
+            std.debug.print("Tail of stderr:\n{s}\n", .{tail});
+        }
+        if (log_path) |lp| allocator.free(lp);
         return error.CompilationFailed;
     }
 }

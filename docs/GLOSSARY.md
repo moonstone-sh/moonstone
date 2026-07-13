@@ -118,15 +118,10 @@ Rules:
 The same package may appear multiple times with different roles:
 
 ```toml
-[[dependencies]]
-role = "tool"
-name = "acme/comptime-gen"
-constraint = "^1.0"
-
-[[dependencies]]
-role = "runtime"
-name = "acme/comptime-gen"
-constraint = "^1.0"
+[dependencies.runtime]
+"moonstone/my-lib" = "1.0"
+[dependencies.dev]
+"moonstone/my-lib" = { version = "1.0", role = "dev" }
 ```
 
 Moonstone preserves all roles. The linker places capabilities into the correct scopes.
@@ -150,3 +145,26 @@ A single package may provide more than one kind of thing:
 | `ballad_plugin`| Ballad pipeline plugin              |
 
 A package declares capabilities via `[[provides]]` entries in its descriptor.
+
+---
+
+## Orbits (Workspaces)
+
+An **Orbit** is a workspace setup where multiple local projects/packages are developed together under a single root project, sharing a unified deterministic environment and `moonstone.lock`.
+
+**Key Concepts:**
+- Defined using the `[[orbits.member]]` array in `moonstone.toml` of the root project.
+- A member specifies a `name` and a `path`.
+- When `moon sync` or `moon run` runs, it cascades environment resolution across all members of the orbit.
+- Execution machinery uses `moon exec`/`moon run` without introducing a separate executor.
+
+**Example Definition:**
+```toml
+[[orbits.member]]
+name = "meteorite"
+path = "bench/meteorite"
+
+[[orbits.member]]
+name = "openresty"
+path = "bench/openresty"
+```

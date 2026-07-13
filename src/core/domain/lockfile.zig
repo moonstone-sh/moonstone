@@ -118,8 +118,20 @@ pub const LockFile = struct {
         errdefer lf.deinit();
 
         if (root.get("package")) |v| {
+            if (v != .array) return error.InvalidLockFile;
             for (v.array.items) |pkg_val| {
                 const t = pkg_val.table;
+                
+                // Helper to get optional string
+                const getStr = struct {
+                    fn get(table: *toml.Table, key: []const u8) ?[]const u8 {
+                        if (table.get(key)) |val| {
+                            if (val == .string) return val.string;
+                        }
+                        return null;
+                    }
+                }.get;
+                
                 const reproducible = blk: {
                     const rep = t.get("reproducible");
                     if (rep) |r| {
@@ -127,26 +139,27 @@ pub const LockFile = struct {
                     }
                     break :blk true;
                 };
+                
                 try lf.packages.append(allocator, .{
-                    .name = try allocator.dupe(u8, (t.get("name") orelse return error.MissingName).string),
-                    .version = try allocator.dupe(u8, (t.get("version") orelse return error.MissingVersion).string),
-                    .kind = try Kind.from_string((t.get("kind") orelse return error.MissingKind).string),
-                    .source_hash = if (t.get("source_hash")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .recipe_hash = try allocator.dupe(u8, (t.get("recipe_hash") orelse return error.MissingRecipeHash).string),
-                    .artifact_hash = try allocator.dupe(u8, (t.get("artifact_hash") orelse return error.MissingArtifactHash).string),
-                    .runtime = try allocator.dupe(u8, (t.get("runtime") orelse return error.MissingRuntime).string),
-                    .lua_abi = try allocator.dupe(u8, (t.get("lua_abi") orelse return error.MissingLuaAbi).string),
-                    .target = try allocator.dupe(u8, (t.get("target") orelse return error.MissingTarget).string),
-                    .constellation = try allocator.dupe(u8, (t.get("constellation") orelse return error.MissingConstellation).string),
-                    .source = if (t.get("source")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .source_kind = if (t.get("source_kind")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .source_payload = if (t.get("source_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .source_url = if (t.get("source_url")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .rockspec = if (t.get("rockspec")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .rockspec_hash = if (t.get("rockspec_hash")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .rockspec_payload = if (t.get("rockspec_payload")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .resolver = if (t.get("resolver")) |s| try allocator.dupe(u8, s.string) else &.{},
-                    .link_mode = if (t.get("link_mode")) |s| try allocator.dupe(u8, s.string) else &.{},
+                    .name = try allocator.dupe(u8, getStr(t, "name") orelse return error.MissingName),
+                    .version = try allocator.dupe(u8, getStr(t, "version") orelse return error.MissingVersion),
+                    .kind = try Kind.from_string(getStr(t, "kind") orelse return error.MissingKind),
+                    .source_hash = if (getStr(t, "source_hash")) |s| try allocator.dupe(u8, s) else &.{},
+                    .recipe_hash = try allocator.dupe(u8, getStr(t, "recipe_hash") orelse return error.MissingRecipeHash),
+                    .artifact_hash = try allocator.dupe(u8, getStr(t, "artifact_hash") orelse return error.MissingArtifactHash),
+                    .runtime = try allocator.dupe(u8, getStr(t, "runtime") orelse return error.MissingRuntime),
+                    .lua_abi = try allocator.dupe(u8, getStr(t, "lua_abi") orelse return error.MissingLuaAbi),
+                    .target = try allocator.dupe(u8, getStr(t, "target") orelse return error.MissingTarget),
+                    .constellation = try allocator.dupe(u8, getStr(t, "constellation") orelse return error.MissingConstellation),
+                    .source = if (getStr(t, "source")) |s| try allocator.dupe(u8, s) else &.{},
+                    .source_kind = if (getStr(t, "source_kind")) |s| try allocator.dupe(u8, s) else &.{},
+                    .source_payload = if (getStr(t, "source_payload")) |s| try allocator.dupe(u8, s) else &.{},
+                    .source_url = if (getStr(t, "source_url")) |s| try allocator.dupe(u8, s) else &.{},
+                    .rockspec = if (getStr(t, "rockspec")) |s| try allocator.dupe(u8, s) else &.{},
+                    .rockspec_hash = if (getStr(t, "rockspec_hash")) |s| try allocator.dupe(u8, s) else &.{},
+                    .rockspec_payload = if (getStr(t, "rockspec_payload")) |s| try allocator.dupe(u8, s) else &.{},
+                    .resolver = if (getStr(t, "resolver")) |s| try allocator.dupe(u8, s) else &.{},
+                    .link_mode = if (getStr(t, "link_mode")) |s| try allocator.dupe(u8, s) else &.{},
                     .reproducible = reproducible,
                     .roles = blk: {
                         if (t.get("roles")) |g| {

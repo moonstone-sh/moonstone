@@ -21,6 +21,7 @@ pub const RecipeOptions = struct {
     output_module: []const u8 = "",
     output_path: []const u8 = "",
     collect: manifest.CollectConfig = .{},
+    build_env: []const []const u8 = &.{},
 };
 
 pub const SourcePayloadOptions = struct {
@@ -73,6 +74,19 @@ pub fn computeRecipeHash(
         try collect_str.appendSlice(allocator, s);
     }
 
+    var sorted_build_env = std.ArrayList([]const u8).empty;
+    defer sorted_build_env.deinit(allocator);
+    for (options.build_env) |env| {
+        try sorted_build_env.append(allocator, env);
+    }
+    std.mem.sort([]const u8, sorted_build_env.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    const build_env_str = try std.mem.join(allocator, ",", sorted_build_env.items);
+    defer allocator.free(build_env_str);
+
     const recipe_str = try std.fmt.allocPrint(allocator,
         \\moonstone:recipe:v2
         \\kind={s}
@@ -91,6 +105,7 @@ pub fn computeRecipeHash(
         \\output_module={s}
         \\output_path={s}
         \\collect={s}
+        \\build_env={s}
         \\
     , .{
         options.kind,
@@ -109,6 +124,7 @@ pub fn computeRecipeHash(
         options.output_module,
         options.output_path,
         collect_str.items,
+        build_env_str,
     });
     defer allocator.free(recipe_str);
 

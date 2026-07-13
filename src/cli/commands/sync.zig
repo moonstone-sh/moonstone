@@ -522,6 +522,15 @@ pub const SyncCommand = struct {
             return try self.runCheck(ctx, &mt, &idx);
         }
 
+        const build_env = try mt.resolveBuildEnv(allocator, env);
+        defer {
+            for (build_env) |be| {
+                allocator.free(be.key);
+                allocator.free(be.value);
+            }
+            allocator.free(build_env);
+        }
+
         if (!self.json) backend.phase("Reading registry configuration...", .{});
         var profile_span = profiler.now();
         const registries = try moonstone.registry.resolver.resolve(allocator, io, env);
@@ -573,6 +582,7 @@ pub const SyncCommand = struct {
             .on_event = on_resolve_cb,
             .on_event_context = on_resolve_ctx,
             .offline = self.offline,
+            .build_env = build_env,
         }, env);
         profiler.span("sync.runtime.resolve", profile_span);
         defer rt_res.deinit(allocator);
@@ -642,6 +652,7 @@ pub const SyncCommand = struct {
                         .on_event = on_resolve_cb,
                         .on_event_context = on_resolve_ctx,
                         .offline = false,
+                        .build_env = build_env,
                     },
                     env,
                 ) catch null;
@@ -730,6 +741,7 @@ pub const SyncCommand = struct {
             .runtime = active_lua_abi,
             .runtime_artifact_hash = rt_res.artifact_hash,
             .runtime_path = rt_mat_res.path,
+            .build_env = build_env,
         }, env, null, targets.items);
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
@@ -970,6 +982,7 @@ pub const SyncCommand = struct {
                         .runtime_path = rt_mat_res.path,
                         .on_event = on_resolve_cb,
                         .on_event_context = on_resolve_ctx,
+                        .build_env = build_env,
                     }, kind, env) catch |err| {
                         if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                         return err;
@@ -988,6 +1001,7 @@ pub const SyncCommand = struct {
                                 .runtime_path = rt_mat_res.path,
                                 .on_event = on_resolve_cb,
                                 .on_event_context = on_resolve_ctx,
+                                .build_env = build_env,
                             }, env) catch continue;
                             resolved_direct_opt = .{
                                 .name = try allocator.dupe(u8, dep_name),
@@ -1074,6 +1088,7 @@ pub const SyncCommand = struct {
                                     .runtime_path = rt_mat_res.path,
                                     .on_event = on_resolve_cb,
                                     .on_event_context = on_resolve_ctx,
+                                    .build_env = build_env,
                                 }, kind, env) catch |err| {
                                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                                     return err;
@@ -1815,7 +1830,7 @@ pub const SyncCommand = struct {
                 }
             }
 
-            const lock_entry = lf.find(dep_name) orelse {
+            const lock_entry = lf.findIgnoreCase(dep_name) orelse {
                 issues += 1;
                 const msg = try std.fmt.allocPrint(allocator, "moonstone.lock is missing dependency {s}; run 'moon sync'.", .{dep_name});
                 defer allocator.free(msg);
@@ -1849,7 +1864,7 @@ fn lockedDependenciesMatch(
             if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
         }
 
-        const lock_entry = lf.find(dep_name) orelse return false;
+        const lock_entry = lf.findIgnoreCase(dep_name) orelse return false;
         const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }

@@ -11,6 +11,9 @@ pub fn build(
     runtime_path: []const u8,
     lua_abi: []const u8,
     config: manifest.MaterializeConfig,
+    log_file_name: []const u8,
+    on_event: ?@import("../../resolution/options.zig").ResolveCallback,
+    on_event_context: ?*anyopaque,
 ) !void {
     // 0. Ensure cmake is available
     {
@@ -95,5 +98,5 @@ pub fn build(
     // Actually, the user should use ${build} or similar if we want to be explicit.
     // Let's add ${build} to the expansion.
 
-    try command.build_internal(allocator, io, env_map, source_dir_path, out_dir_path, runtime_path, lua_abi, cmd_config, build_dir);
+    try command.build_internal(allocator, io, env_map, source_dir_path, out_dir_path, runtime_path, lua_abi, cmd_config, build_dir, log_file_name, on_event, on_event_context);
 }

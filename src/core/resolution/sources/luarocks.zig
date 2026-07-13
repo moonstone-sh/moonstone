@@ -310,6 +310,88 @@ fn normalize_luarocks_version(allocator: std.mem.Allocator, version: []const u8)
     return try allocator.dupe(u8, version);
 }
 
+fn translateCommandBuild(
+    allocator: std.mem.Allocator,
+    rock: *const luarocks.Rockspec,
+    lua_abi: []const u8,
+) ![]const TranslatedModule {
+    _ = lua_abi;
+    var list = std.ArrayList(TranslatedModule).empty;
+    errdefer {
+        for (list.items) |*m| {
+            allocator.free(m.name);
+            allocator.free(m.dest_path);
+            if (m.config) |*c| c.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
+
+    const is_cmake = std.mem.eql(u8, rock.build.type, "cmake");
+    
+    var steps = std.ArrayList(manifest.CommandStep).empty;
+    defer {
+        for (steps.items) |s| {
+            allocator.free(s.command);
+            for (s.args) |a| allocator.free(a);
+            allocator.free(s.args);
+        }
+        steps.deinit(allocator);
+    }
+    var env_pairs = std.ArrayList(manifest.EnvPair).empty;
+    defer {
+        for (env_pairs.items) |e| {
+            allocator.free(e.key);
+            allocator.free(e.value);
+        }
+        env_pairs.deinit(allocator);
+    }
+
+    if (!is_cmake) {
+        // Build command
+        const build_cmd = "make"; // TODO: read build_command from rockspec if available
+        var b_args = std.ArrayList([]const u8).empty;
+        
+        // Note: we can't easily parse build_variables from JSON yet as Rockspec doesn't have it defined fully,
+        // but typically rockspecs have build_variables. We'll set up standard env vars.
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LIBDIR"), .value = try allocator.dupe(u8, "${out}/lib/lua/${lua_abi}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "BINDIR"), .value = try allocator.dupe(u8, "${out}/bin") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_INCDIR"), .value = try allocator.dupe(u8, "${runtime.include}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_LIBDIR"), .value = try allocator.dupe(u8, "${runtime.lib}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_BINDIR"), .value = try allocator.dupe(u8, "${runtime.bin_dir}") });
+        
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "DESTDIR"), .value = try allocator.dupe(u8, "${out}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "prefix"), .value = try allocator.dupe(u8, "") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "INST_LIBDIR"), .value = try allocator.dupe(u8, "${out}/lib/lua/${lua_abi}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "INST_LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LIBDIR"), .value = try allocator.dupe(u8, "${out}/lib/lua/${lua_abi}") });
+        
+        try steps.append(allocator, .{ .command = try allocator.dupe(u8, build_cmd), .args = try b_args.toOwnedSlice(allocator) });
+        
+        var i_args = std.ArrayList([]const u8).empty;
+        try i_args.append(allocator, try allocator.dupe(u8, "install"));
+        try steps.append(allocator, .{ .command = try allocator.dupe(u8, build_cmd), .args = try i_args.toOwnedSlice(allocator) });
+    }
+
+    const config = manifest.MaterializeConfig{
+        .kind = if (is_cmake) "cmake" else "command",
+        .steps = try steps.toOwnedSlice(allocator),
+        .env = try env_pairs.toOwnedSlice(allocator),
+    };
+
+    try list.append(allocator, .{
+        .name = try allocator.dupe(u8, "command_build"),
+        .kind = .c,
+        .dest_path = try allocator.dupe(u8, ""),
+        .config = config,
+    });
+
+    return try list.toOwnedSlice(allocator);
+}
+
 const TranslatedModule = struct {
     name: []const u8,
     kind: enum { lua, c },
@@ -396,6 +478,39 @@ fn translateBuiltinBuild(
                     .config = m_config,
                 });
             }
+        } else if (mod_val == .array) {
+            // Bare array of source files — a common LuaRocks convention.
+            // e.g. lpeg = { 'lpcap.c', 'lpcode.c', ... }
+            // All entries must be C files; treat as a multi-source C module.
+            const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+
+            var srcs_list = std.ArrayList([]const u8).empty;
+            errdefer {
+                for (srcs_list.items) |s| allocator.free(s);
+                srcs_list.deinit(allocator);
+            }
+
+            for (mod_val.array.items) |item| {
+                if (item == .string) {
+                    try srcs_list.append(allocator, try allocator.dupe(u8, item.string));
+                }
+            }
+
+            const m_config = manifest.MaterializeConfig{
+                .kind = "native-cmodule",
+                .strategy = "rocks",
+                .input = .{ .sources = try srcs_list.toOwnedSlice(allocator) },
+                .output = .{
+                    .module = try allocator.dupe(u8, mod_name),
+                    .path = try allocator.dupe(u8, dest_path),
+                },
+            };
+            try list.append(allocator, .{
+                .name = try allocator.dupe(u8, mod_name),
+                .kind = .c,
+                .dest_path = dest_path,
+                .config = m_config,
+            });
         } else if (mod_val == .object) {
             const m_obj = mod_val.object;
             const sources_val = m_obj.get("sources") orelse m_obj.get("source");
@@ -689,10 +804,11 @@ fn resolve_binary_rock(
         "",
         null,
         "rocks-binary",
-        &.{},
-        &.{},
-        &.{},
-        &.{},
+        &.{}, // lua_modules
+        &.{}, // lua_cmodules
+        &.{}, // bins
+        &.{}, // dependencies
+        &.{}, // build_env
     );
     return .{
         .path = commit_res.path,
@@ -803,6 +919,11 @@ fn classify_rock(rock: *const luarocks.Rockspec) RockClass {
                 const mod_val = entry.value_ptr.*;
                 if (mod_val == .string) {
                     if (is_c_file(mod_val.string)) return .builtin_cmodule;
+                } else if (mod_val == .array) {
+                    // Bare array of source files — check for C files.
+                    for (mod_val.array.items) |item| {
+                        if (item == .string and is_c_file(item.string)) return .builtin_cmodule;
+                    }
                 } else if (mod_val == .object) {
                     if (mod_val.object.get("sources")) |srcs| {
                         if (srcs == .array and srcs.array.items.len > 0) return .builtin_cmodule;
@@ -999,7 +1120,36 @@ fn fetch_and_unpack_source(
         const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null) catch |err| {
             if (err != error.HttpError and err != error.FileNotFound and err != error.UnsupportedUriScheme) return err;
             if (rock.source.url.len == 0) return error.SourceRockNotFound;
-            const fallback_url = try allocator.dupe(u8, rock.source.url);
+            var fallback_url: []const u8 = undefined;
+            if (std.mem.startsWith(u8, rock.source.url, "git://github.com/")) {
+                var it = std.mem.splitSequence(u8, rock.source.url[17..], "/");
+                const user = it.next() orelse "";
+                var repo = it.next() orelse "";
+                if (std.mem.endsWith(u8, repo, ".git")) {
+                    repo = repo[0..repo.len - 4];
+                }
+                const ref = if (rock.source.tag) |t| t else if (rock.source.branch) |b| b else "master";
+                fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/tags/{s}.tar.gz", .{ user, repo, ref });
+                if (rock.source.tag == null) {
+                    allocator.free(fallback_url);
+                    fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/heads/{s}.tar.gz", .{ user, repo, ref });
+                }
+            } else if (std.mem.startsWith(u8, rock.source.url, "git+https://github.com/")) {
+                var it = std.mem.splitSequence(u8, rock.source.url[23..], "/");
+                const user = it.next() orelse "";
+                var repo = it.next() orelse "";
+                if (std.mem.endsWith(u8, repo, ".git")) {
+                    repo = repo[0..repo.len - 4];
+                }
+                const ref = if (rock.source.tag) |t| t else if (rock.source.branch) |b| b else "master";
+                fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/tags/{s}.tar.gz", .{ user, repo, ref });
+                if (rock.source.tag == null) {
+                    allocator.free(fallback_url);
+                    fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/heads/{s}.tar.gz", .{ user, repo, ref });
+                }
+            } else {
+                fallback_url = try allocator.dupe(u8, rock.source.url);
+            }
             errdefer allocator.free(fallback_url);
             const fallback_data = http_get(allocator, io, fallback_url, env_map, on_event, on_event_context, null) catch |fallback_err| {
                 if (fallback_err == error.HttpError) return error.SourceRockNotFound;
@@ -1115,6 +1265,46 @@ fn build_c_module_list(
             .path = try allocator.dupe(u8, mod.dest_path),
         });
     }
+    return try list.toOwnedSlice(allocator);
+}
+
+fn discover_modules_from_dir(allocator: std.mem.Allocator, io: std.Io, root_dir: []const u8, prefix: []const u8, ext: []const u8) ![]manifest.FeatureProvision {
+    var list = std.ArrayList(manifest.FeatureProvision).empty;
+    errdefer {
+        for (list.items) |m| {
+            allocator.free(m.name);
+            allocator.free(m.path);
+        }
+        list.deinit(allocator);
+    }
+    
+    var dir = std.Io.Dir.cwd().openDir(io, root_dir, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return try list.toOwnedSlice(allocator);
+        return err;
+    };
+    defer dir.close(io);
+    
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+    
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ext)) continue;
+        
+        var name_buf = std.ArrayList(u8).empty;
+        defer name_buf.deinit(allocator);
+        const without_ext = entry.path[0 .. entry.path.len - ext.len];
+        for (without_ext) |c| {
+            if (c == '/') try name_buf.append(allocator, '.')
+            else try name_buf.append(allocator, c);
+        }
+        
+        try list.append(allocator, .{
+            .name = try allocator.dupe(u8, name_buf.items),
+            .path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{prefix, entry.path}),
+        });
+    }
+    
     return try list.toOwnedSlice(allocator);
 }
 
@@ -1254,7 +1444,18 @@ fn commit_synthetic_artifact(
     lua_cmodules: []manifest.FeatureProvision,
     bins: []manifest.FeatureProvision,
     dependencies: []const manifest.StoreDependency,
+    build_env: []const manifest.EnvPair,
 ) !RockResult {
+    var build_env_strings = std.ArrayList([]const u8).empty;
+    defer {
+        for (build_env_strings.items) |s| allocator.free(s);
+        build_env_strings.deinit(allocator);
+    }
+    for (build_env) |be| {
+        const str = try std.fmt.allocPrint(allocator, "{s}={s}", .{ be.key, be.value });
+        try build_env_strings.append(allocator, str);
+    }
+
     const recipe_hash = try store.computeRecipeHash(allocator, .{
         .kind = if (pkg_kind == .bin) "bin" else "lib",
         .name = pkg_name,
@@ -1265,6 +1466,7 @@ fn commit_synthetic_artifact(
         .runtime_hash = runtime_artifact_hash,
         .lua_abi = runtime_spec,
         .target = target,
+        .build_env = build_env_strings.items,
         .collect = .{
             .lua_modules = lua_modules,
             .lua_cmodules = lua_cmodules,
@@ -1438,10 +1640,7 @@ pub fn resolve(
 
     const rock_class = classify_rock(&rock);
     switch (rock_class) {
-        .pure_lua, .builtin_cmodule => {}, // Continue below
-        .command_build => {
-            return error.UnsupportedLuaRocksBuildType;
-        },
+        .pure_lua, .builtin_cmodule, .command_build => {}, // Continue below
         .unsupported => {
             return error.UnsupportedLuaRocksBuildType;
         },
@@ -1484,7 +1683,28 @@ pub fn resolve(
     defer allocator.free(build_out_dir);
     try std.Io.Dir.cwd().createDirPath(io, build_out_dir);
 
-    const translated = try translateBuiltinBuild(allocator, &rock, runtime_spec);
+    var translated = if (rock_class == .command_build)
+        try translateCommandBuild(allocator, &rock, runtime_spec)
+    else
+        try translateBuiltinBuild(allocator, &rock, runtime_spec);
+
+    if (options.build_env.len > 0) {
+        // translated is []TranslatedModule
+        // we need to inject the build env into each module's config
+        var updated_translated = std.ArrayList(TranslatedModule).empty;
+        for (translated) |m| {
+            var mut_m = m;
+            if (mut_m.config) |*c| {
+                var new_env = std.ArrayList(manifest.EnvPair).empty;
+                for (c.env) |e| try new_env.append(allocator, .{ .key = try allocator.dupe(u8, e.key), .value = try allocator.dupe(u8, e.value) });
+                for (options.build_env) |be| try new_env.append(allocator, .{ .key = try allocator.dupe(u8, be.key), .value = try allocator.dupe(u8, be.value) });
+                c.env = try new_env.toOwnedSlice(allocator);
+            }
+            try updated_translated.append(allocator, mut_m);
+        }
+        allocator.free(translated);
+        translated = try updated_translated.toOwnedSlice(allocator);
+    }
     defer {
         for (translated) |m| {
             allocator.free(m.name);
@@ -1511,12 +1731,40 @@ pub fn resolve(
     const native_cmodule = @import("../../materialization/materializers/native_cmodule.zig");
     const runtime_path = options.runtime_path orelse return error.RuntimePathRequired;
 
+    var hash_part = fetched_source.hash;
+    if (std.mem.startsWith(u8, hash_part, "b3:")) {
+        hash_part = hash_part[3..];
+    }
+    const hash_short_len = @min(8, hash_part.len);
+    const hash_short = hash_part[0..hash_short_len];
+
     for (translated) |mod| {
         if (mod.kind == .c) {
-            native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, mod.config.?, options.target orelse "native") catch |err| {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "native module compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
-                return err;
-            };
+            const config = mod.config.?;
+            if (std.mem.eql(u8, config.kind, "command")) {
+                const command_mat = @import("../../materialization/materializers/command.zig");
+                const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
+                defer allocator.free(log_file_name);
+                command_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, runtime_spec, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
+                    @import("../../diagnostics/error_context.zig").setFmt(allocator, "command compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
+                    return err;
+                };
+            } else if (std.mem.eql(u8, config.kind, "cmake")) {
+                const cmake_mat = @import("../../materialization/materializers/cmake.zig");
+                const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
+                defer allocator.free(log_file_name);
+                cmake_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, runtime_spec, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
+                    @import("../../diagnostics/error_context.zig").setFmt(allocator, "cmake compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
+                    return err;
+                };
+            } else {
+                const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
+                defer allocator.free(log_file_name);
+                native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, config, options.target orelse "native", log_file_name, options.on_event, options.on_event_context) catch |err| {
+                    @import("../../diagnostics/error_context.zig").setFmt(allocator, "native module compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
+                    return err;
+                };
+            }
         } else {
             // Copy pure Lua file
             const fallback_src_rel = if (mod.source_path == null) try std.fmt.allocPrint(allocator, "{s}.lua", .{mod.name}) else null;
@@ -1554,17 +1802,42 @@ pub fn resolve(
     const bin_val = if (rock.build.install) |inst| inst.bin else null;
     try copy_bins(allocator, io, work_dir, files_bin_dir, bin_val);
 
-    const lua_modules = try build_lua_module_list_from_translated(allocator, translated);
+    var lua_modules: []manifest.FeatureProvision = &.{};
+    var lua_cmodules: []manifest.FeatureProvision = &.{};
+
+    if (rock_class == .command_build) {
+        const lua_ver_dot = if (std.mem.startsWith(u8, runtime_spec, "lua") and runtime_spec.len == 5)
+            try std.fmt.allocPrint(allocator, "{c}.{c}", .{ runtime_spec[3], runtime_spec[4] })
+        else
+            try allocator.dupe(u8, runtime_spec);
+        defer allocator.free(lua_ver_dot);
+
+        // Discover installed files dynamically
+        const share_dir = try std.fs.path.join(allocator, &.{ build_out_dir, "share", "lua", lua_ver_dot });
+        defer allocator.free(share_dir);
+        const lib_dir = try std.fs.path.join(allocator, &.{ build_out_dir, "lib", "lua", lua_ver_dot });
+        defer allocator.free(lib_dir);
+        
+        const share_prefix = try std.fmt.allocPrint(allocator, "share/lua/{s}", .{lua_ver_dot});
+        defer allocator.free(share_prefix);
+        const discovered_lua = try discover_modules_from_dir(allocator, io, share_dir, share_prefix, ".lua");
+        lua_modules = discovered_lua;
+        
+        const lib_prefix = try std.fmt.allocPrint(allocator, "lib/lua/{s}", .{lua_ver_dot});
+        defer allocator.free(lib_prefix);
+        const so_ext = ".so"; // assuming .so
+        const discovered_c = try discover_modules_from_dir(allocator, io, lib_dir, lib_prefix, so_ext);
+        lua_cmodules = discovered_c;
+    } else {
+        lua_modules = try build_lua_module_list_from_translated(allocator, translated);
+        lua_cmodules = try build_c_module_list(allocator, translated);
+    }
     defer {
         for (lua_modules) |m| {
             allocator.free(m.name);
             allocator.free(m.path);
         }
         allocator.free(lua_modules);
-    }
-
-    const lua_cmodules = try build_c_module_list(allocator, translated);
-    defer {
         for (lua_cmodules) |m| {
             allocator.free(m.name);
             allocator.free(m.path);
@@ -1632,6 +1905,7 @@ pub fn resolve(
         lua_cmodules,
         bins,
         store_deps_slice,
+        options.build_env,
     );
     defer allocator.free(commit_res.path);
     defer allocator.free(commit_res.hash);

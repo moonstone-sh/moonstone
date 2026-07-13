@@ -1084,6 +1084,18 @@ pub const MoonstoneToml = struct {
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
     orbits: std.ArrayListUnmanaged(OrbitConfig) = .empty,
+    build: ?Build = null,
+
+    pub const BuildEnvVar = struct {
+        value: ?[]const u8 = null,
+        from: ?[]const u8 = null,
+        optional: bool = false,
+        default: ?[]const u8 = null,
+    };
+
+    pub const Build = struct {
+        env: std.StringArrayHashMapUnmanaged(BuildEnvVar) = .{},
+    };
 
     pub const OrbitConfig = struct {
         name: []const u8,
@@ -1098,6 +1110,34 @@ pub const MoonstoneToml = struct {
         };
     }
 
+    pub fn resolveBuildEnv(self: *const MoonstoneToml, allocator: std.mem.Allocator, env_map: *std.process.Environ.Map) ![]const EnvPair {
+        if (self.build) |*build| {
+            if (build.env.count() == 0) return &.{};
+            var res = std.ArrayList(EnvPair).empty;
+            var it = build.env.iterator();
+            while (it.next()) |entry| {
+                var val: ?[]const u8 = null;
+                if (entry.value_ptr.value) |v| {
+                    val = try allocator.dupe(u8, v);
+                } else if (entry.value_ptr.from) |f| {
+                    if (env_map.get(f)) |v| {
+                        val = try allocator.dupe(u8, v);
+                    } else if (entry.value_ptr.default) |d| {
+                        val = try allocator.dupe(u8, d);
+                    } else if (!entry.value_ptr.optional) {
+                        std.debug.print("Error: Missing required build environment variable '{s}' (from '{s}')\n", .{ entry.key_ptr.*, f });
+                        return error.MissingBuildEnvVar;
+                    }
+                }
+                if (val) |v| {
+                    try res.append(allocator, .{ .key = try allocator.dupe(u8, entry.key_ptr.*), .value = v });
+                }
+            }
+            return try res.toOwnedSlice(allocator);
+        }
+        return &.{};
+    }
+
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !MoonstoneToml {
         var parser = toml.Parser(toml.Table).init(allocator);
         defer parser.deinit();
@@ -1105,7 +1145,7 @@ pub const MoonstoneToml = struct {
         defer res.deinit();
         const table = res.value;
 
-        var self: MoonstoneToml = undefined;
+        var self = MoonstoneToml.init(allocator);
         const package_val = table.get("package") orelse return error.MissingPackageSection;
         if (package_val != .table) return error.InvalidPackageSection;
         const p_val = package_val.table;
@@ -1149,6 +1189,37 @@ pub const MoonstoneToml = struct {
             .version = try allocator.dupe(u8, runtime_version),
             .abi = runtime_abi,
         };
+
+        if (table.get("build")) |b| {
+            if (b == .table) {
+                var build_cfg = Build{};
+                if (b.table.get("env")) |e| {
+                    if (e == .table) {
+                        var it = e.table.iterator();
+                        while (it.next()) |entry| {
+                            var env_var = BuildEnvVar{};
+                            switch (entry.value_ptr.*) {
+                                .string => |s| env_var.value = try allocator.dupe(u8, s),
+                                .table => |t| {
+                                    if (t.get("from")) |f| if (f == .string) {
+                                        env_var.from = try allocator.dupe(u8, f.string);
+                                    };
+                                    if (t.get("default")) |d| if (d == .string) {
+                                        env_var.default = try allocator.dupe(u8, d.string);
+                                    };
+                                    if (t.get("optional")) |o| if (o == .boolean) {
+                                        env_var.optional = o.boolean;
+                                    };
+                                },
+                                else => continue,
+                            }
+                            try build_cfg.env.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), env_var);
+                        }
+                    }
+                }
+                self.build = build_cfg;
+            }
+        }
 
         self.dependencies = .empty;
         if (table.get("dependencies")) |deps_val| {

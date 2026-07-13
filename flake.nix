@@ -1,5 +1,5 @@
 {
-  description = "Moonstone - A next-generation package manager for Lua";
+  description = "Moonstone - A next-generation environment manager for Lua";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

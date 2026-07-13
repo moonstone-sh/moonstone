@@ -545,7 +545,7 @@ pub const DoctorCommand = struct {
             if (dep.resolver) |r| {
                 if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
             }
-            if (lf.find(dep.name) == null) missing += 1;
+            if (lf.findIgnoreCase(dep.name) == null) missing += 1;
         }
         return missing;
     }

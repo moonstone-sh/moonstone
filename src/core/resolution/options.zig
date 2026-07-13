@@ -12,6 +12,7 @@ pub const ResolveOptions = struct {
     runtime_artifact_hash: ?[]const u8 = null,
     lua_exe: ?[]const u8 = null,
     on_event_context: ?*anyopaque = null,
+    build_env: []const @import("../domain/manifest.zig").EnvPair = &.{},
 };
 
 pub const ResolveEvent = union(enum) {
@@ -34,6 +35,12 @@ pub const ResolveEvent = union(enum) {
     },
     metadata_sync_started: []const u8,
     metadata_sync_done: []const u8,
+    build_failed: struct {
+        pkg_name: []const u8,
+        command: []const u8,
+        stderr_tail: []const u8,
+        log_path: ?[]const u8,
+    },
 };
 
 pub const ResolveCallback = *const fn (ctx: ?*anyopaque, event: ResolveEvent) void;

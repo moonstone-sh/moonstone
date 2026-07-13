@@ -444,6 +444,21 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
                 renderDone(context, "{s}", .{label}) catch {};
             }
         },
+        .build_failed => |bf| {
+            if (context.emitter) |e| {
+                e.emit(context.io, .ERROR, bf.pkg_name, "build_failed", .{
+                    .command = bf.command,
+                    .stderr_tail = bf.stderr_tail,
+                    .log_path = bf.log_path,
+                }) catch {};
+            } else {
+                context.stdout.print("\nBuild failed for '{s}'\nCommand: {s}\n", .{ bf.pkg_name, bf.command }) catch {};
+                if (bf.log_path) |lp| {
+                    context.stdout.print("Full log: {s}\n", .{lp}) catch {};
+                }
+                context.stdout.print("Tail of stderr:\n{s}\n", .{bf.stderr_tail}) catch {};
+            }
+        },
     }
 }
 
