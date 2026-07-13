@@ -93,9 +93,9 @@ pub const Candidate = struct {
     rockspec_hash: []const u8 = "",
     recipe_hash: []const u8 = "",
     runtime: ?[]const u8 = null,
-    lua_version: ?[]const u8 = null,    // e.g. lua@5.4.7
-    lua_api: ?[]const u8 = null,        // e.g. 5.1, 5.4
-    lua_abi: ?[]const u8 = null,        // e.g. lua-5.4
+    lua_version: ?[]const u8 = null, // e.g. lua@5.4.7
+    lua_api: ?[]const u8 = null, // e.g. 5.1, 5.4
+    lua_abi: ?[]const u8 = null, // e.g. lua-5.4
     runtime_artifact_hash: []const u8 = "", // exact binary identity
     local_path: ?[]const u8 = null,
     remote_desc: ?manifest.RemotePackageDescriptor = null,
@@ -160,7 +160,6 @@ pub const Candidate = struct {
         };
     }
 };
-
 
 // Compatibility shim
 pub const ResolvedArtifact = Candidate;

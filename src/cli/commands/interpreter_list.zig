@@ -44,7 +44,10 @@ pub const InterpreterListCommand = struct {
         var count: usize = 0;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         if (show_installed) {
             try std.Io.Dir.cwd().createDirPath(io, paths.index);
@@ -70,8 +73,10 @@ pub const InterpreterListCommand = struct {
             if (c.sqlite3_prepare_v2(idx.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
             defer _ = c.sqlite3_finalize(stmt);
             const transient = moonstone.store.driver.moonstone_sqlite_transient_ptr;
-            bindNullable(stmt, 1, self.target, transient); bindNullable(stmt, 2, self.target, transient);
-            bindNullable(stmt, 3, self.abi, transient); bindNullable(stmt, 4, self.abi, transient);
+            bindNullable(stmt, 1, self.target, transient);
+            bindNullable(stmt, 2, self.target, transient);
+            bindNullable(stmt, 3, self.abi, transient);
+            bindNullable(stmt, 4, self.abi, transient);
             while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
                 count += 1;
                 const r_name = std.mem.span(c.sqlite3_column_text(stmt, 0));
@@ -107,7 +112,10 @@ pub const InterpreterListCommand = struct {
                         continue;
                     };
                     defer {
-                        for (interpreters) |r| { allocator.free(r.name); allocator.free(r.version); }
+                        for (interpreters) |r| {
+                            allocator.free(r.name);
+                            allocator.free(r.version);
+                        }
                         allocator.free(interpreters);
                     }
                     for (interpreters) |r| {

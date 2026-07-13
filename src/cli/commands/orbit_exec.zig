@@ -97,16 +97,16 @@ pub const OrbitExecCommand = struct {
 
         var selected_orbit: ?moonstone.project.orbits.OrbitRef = null;
         for (orbits) |orbit| {
-            if (std.mem.eql(u8, orbit.name, target) or 
-                std.mem.eql(u8, orbit.package_name, target) or 
-                std.mem.eql(u8, orbit.path, target_abs)) {
-                
+            if (std.mem.eql(u8, orbit.name, target) or
+                std.mem.eql(u8, orbit.package_name, target) or
+                std.mem.eql(u8, orbit.path, target_abs))
+            {
                 if (selected_orbit != null) {
                     try ctx.stdout.print("Ambiguous orbit selector \"{s}\":\n", .{target});
                     try ctx.stdout.print("Use the orbit path or exact name.\n", .{});
                     return error.AmbiguousOrbit;
                 }
-                
+
                 selected_orbit = orbit;
             }
         }

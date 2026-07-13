@@ -28,7 +28,10 @@ pub const StoreGcCommand = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         var reachable = std.StringHashMap(void).init(allocator);
         defer {
@@ -59,7 +62,10 @@ pub const StoreGcCommand = struct {
                 var is_valid = true;
                 if (std.Io.Dir.cwd().access(io, toml_path, .{})) |_| {
                     const content = std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| blk: {
-                        if (err == error.FileNotFound) { is_valid = false; break :blk null; }
+                        if (err == error.FileNotFound) {
+                            is_valid = false;
+                            break :blk null;
+                        }
                         return err;
                     };
                     if (content) |c| {
@@ -80,11 +86,11 @@ pub const StoreGcCommand = struct {
                         try stdout.print("Would unregister stale link: {s} -> {s}\n", .{ link.name, link.path });
                     } else {
                         try lr.unregister(link.name);
-                        try stdout.print("Unregistered stale link: {s}\n", .{ link.name });
+                        try stdout.print("Unregistered stale link: {s}\n", .{link.name});
                     }
                 } else {
                     // Valid links keep their artifacts (if any) reachable
-                    // Note: link entries in the 'artifacts' table use 'link' as artifact_hash, 
+                    // Note: link entries in the 'artifacts' table use 'link' as artifact_hash,
                     // which is already filtered out in the scan candidates step by checking b3/ directory.
                 }
             }
@@ -100,7 +106,7 @@ pub const StoreGcCommand = struct {
             var it = pdir.iterate();
             while (try it.next(io)) |entry| {
                 if (entry.kind != .sym_link and entry.kind != .directory) continue;
-                
+
                 const proj_reg_path = try std.fs.path.join(allocator, &.{ paths.projects, entry.name });
                 defer allocator.free(proj_reg_path);
 

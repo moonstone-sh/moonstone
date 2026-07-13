@@ -47,7 +47,12 @@ fn descriptorRelPath(allocator: std.mem.Allocator, name: []const u8, version: []
 }
 
 fn packageKindString(kind: moonstone.domain.manifest.Kind) []const u8 {
-    return switch (kind) { .script => "script", .lib => "lib", .bin => "bin", .runtime => "runtime" };
+    return switch (kind) {
+        .script => "script",
+        .lib => "lib",
+        .bin => "bin",
+        .runtime => "runtime",
+    };
 }
 
 fn fileExt(path: []const u8) []const u8 {
@@ -156,15 +161,17 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
                 defer allocator.free(desc_hash);
                 const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
                 defer allocator.free(rel);
-                const entry = try std.fmt.allocPrint(allocator,
-                    "[[package]]\nname = \"{s}\"\nversion = \"{s}\"\nkind = \"{s}\"\ndescriptor = \"{s}\"\ndescriptor_hash = \"{s}\"\n\n",
-                    .{ parsed.package.name, parsed.package.version, packageKindString(parsed.package.kind), rel, desc_hash });
+                const entry = try std.fmt.allocPrint(allocator, "[[package]]\nname = \"{s}\"\nversion = \"{s}\"\nkind = \"{s}\"\ndescriptor = \"{s}\"\ndescriptor_hash = \"{s}\"\n\n", .{ parsed.package.name, parsed.package.version, packageKindString(parsed.package.kind), rel, desc_hash });
                 try index_entries.append(allocator, entry);
             }
         }
     }
 
-    std.mem.sort([]const u8, index_entries.items, {}, struct { fn less(_: void, a: []const u8, b: []const u8) bool { return std.mem.lessThan(u8, a, b); } }.less);
+    std.mem.sort([]const u8, index_entries.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.less);
     var aw = std.Io.Writer.Allocating.init(allocator);
     defer aw.deinit();
     for (index_entries.items) |entry| try aw.writer.writeAll(entry);
@@ -184,11 +191,11 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
     const sqlite_driver = moonstone.store.driver;
     const sqlite_path_z = try allocator.dupeZ(u8, sqlite_path);
     defer allocator.free(sqlite_path_z);
-    
+
     var db: *sqlite_driver.c.sqlite3 = undefined;
     const rc = sqlite_driver.c.sqlite3_open_v2(sqlite_path_z, @ptrCast(&db), sqlite_driver.c.SQLITE_OPEN_READWRITE | sqlite_driver.c.SQLITE_OPEN_CREATE, null);
     if (rc != sqlite_driver.c.SQLITE_OK) return error.SqliteOpenFailed;
-    
+
     const schema =
         \\CREATE TABLE packages (name TEXT NOT NULL, version TEXT NOT NULL, kind TEXT NOT NULL, descriptor TEXT NOT NULL, descriptor_hash TEXT NOT NULL, yanked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (name, version));
         \\CREATE TABLE artifacts (name TEXT NOT NULL, version TEXT NOT NULL, artifact_hash TEXT NOT NULL, target TEXT, lua_abi TEXT, url TEXT NOT NULL, bytes INTEGER, format TEXT NOT NULL, PRIMARY KEY (name, version, artifact_hash));
@@ -304,9 +311,7 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
 
     try maybeDeleteFile(io, sqlite_path);
 
-    const registry_toml = try std.fmt.allocPrint(allocator,
-        "[registry]\nid = \"{s}\"\nname = \"{s}\"\nprotocol = \"moonstone.registry.v0\"\nrevision = 1\ngenerated_at = \"local\"\nmin_client = \"0.1.0\"\n\n[index]\nformat = \"moonstone.index.v0\"\nurl = \"index.toml\"\nhash = \"{s}\"\nbytes = {d}\nrevision = 1\n\n[index.compact]\nformat = \"moonstone.index.sqlite.v0\"\nurl = \"index.sqlite.zst\"\ncompressed_hash = \"{s}\"\ncontent_hash = \"{s}\"\nbytes = {d}\n\n[blobs]\nalgorithm = \"b3\"\nlayout = \"blobs/b3/{{h0h1}}/{{h2h3}}/{{hash}}\"\n\n[capabilities]\nruntimes = true\nartifacts = true\nsource_packages = true\nrocks_bridge = false\nprivate = false\n",
-        .{ name_for_root, name_for_root, index_hash, index_bytes.len, compressed_hash, content_hash, zst_bytes.len });
+    const registry_toml = try std.fmt.allocPrint(allocator, "[registry]\nid = \"{s}\"\nname = \"{s}\"\nprotocol = \"moonstone.registry.v0\"\nrevision = 1\ngenerated_at = \"local\"\nmin_client = \"0.1.0\"\n\n[index]\nformat = \"moonstone.index.v0\"\nurl = \"index.toml\"\nhash = \"{s}\"\nbytes = {d}\nrevision = 1\n\n[index.compact]\nformat = \"moonstone.index.sqlite.v0\"\nurl = \"index.sqlite.zst\"\ncompressed_hash = \"{s}\"\ncontent_hash = \"{s}\"\nbytes = {d}\n\n[blobs]\nalgorithm = \"b3\"\nlayout = \"blobs/b3/{{h0h1}}/{{h2h3}}/{{hash}}\"\n\n[capabilities]\nruntimes = true\nartifacts = true\nsource_packages = true\nrocks_bridge = false\nprivate = false\n", .{ name_for_root, name_for_root, index_hash, index_bytes.len, compressed_hash, content_hash, zst_bytes.len });
     defer allocator.free(registry_toml);
     const root_path = try std.fs.path.join(allocator, &.{ registry, "registry.toml" });
     defer allocator.free(root_path);
@@ -595,7 +600,7 @@ test "registry authoring suite" {
 
     const init_toml = try std.fs.path.join(allocator, &.{ project_path, "moonstone.toml" });
     defer allocator.free(init_toml);
-    try writeFile(io, init_toml, 
+    try writeFile(io, init_toml,
         \\[project]
         \\name = "test_project"
         \\version = "0.1.0"
@@ -606,7 +611,7 @@ test "registry authoring suite" {
 
     var cwdbuf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const old_cwd = try std.posix.getcwd(&cwdbuf);
-    
+
     try std.posix.chdir(project_path);
     defer std.posix.chdir(old_cwd) catch {};
 

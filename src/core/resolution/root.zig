@@ -45,4 +45,3 @@ pub const ResolveOptions = options.ResolveOptions;
 pub const ResolveCallback = options.ResolveCallback;
 pub const ResolveEvent = options.ResolveEvent;
 pub const ResolveRequest = request.ResolveRequest;
-

@@ -75,7 +75,10 @@ pub const DoctorCommand = struct {
 
         // ── 1. Store directory ────────────────────────────────────────────
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         var store_ok = true;
         var store_msg: []const u8 = "";
@@ -431,7 +434,6 @@ pub const DoctorCommand = struct {
             try self.reportCheck(emitter, io, stdout, "env_symlinks", env_ok, env_msg);
         }
 
-
         if (idx_res) |*i| {
             i.deinit();
             idx_res = null;
@@ -457,7 +459,7 @@ pub const DoctorCommand = struct {
                 }
                 return err;
             };
-            
+
             if (!missing and (res.term != .exited or res.term.exited != 0)) {
                 missing = true;
             }
@@ -475,7 +477,7 @@ pub const DoctorCommand = struct {
             tools_ok = (missing_critical.items.len == 0);
             var msg_buf = std.ArrayList(u8).empty;
             defer msg_buf.deinit(allocator);
-            
+
             if (missing_critical.items.len > 0) {
                 try msg_buf.appendSlice(allocator, "FAIL: Missing critical tools:");
                 for (missing_critical.items) |t| {

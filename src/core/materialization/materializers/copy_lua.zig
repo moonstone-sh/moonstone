@@ -17,7 +17,7 @@ pub fn materialize(
 
         // lua_module can be "inspect" or "foo.bar"
         // src_rel_path is the path in source_dir, e.g. "src/foo/bar.lua"
-        
+
         // Convert "foo.bar" to "foo/bar.lua" if it doesn't have an extension
         // Actually, the user says:
         // [exports.lua]

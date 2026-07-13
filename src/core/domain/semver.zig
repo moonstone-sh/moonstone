@@ -34,7 +34,7 @@ pub const Version = struct {
 
         var main_it = std.mem.splitScalar(u8, main, '.');
         const major_str = main_it.next() orelse return error.InvalidVersion;
-        
+
         var precision: u8 = 1;
         const minor_str = if (main_it.next()) |s| blk: {
             precision = 2;
@@ -164,20 +164,22 @@ pub const Version = struct {
         if (self.precision == 1) {
             return std.fmt.allocPrint(allocator, "{d}{s}{s}{s}{s}", .{
                 self.major,
-                if (self.pre.len > 0) "-" else "", self.pre,
-                build_prefix, self.build,
+                if (self.pre.len > 0) "-" else "",
+                self.pre,
+                build_prefix,
+                self.build,
             });
         } else if (self.precision == 2) {
             return std.fmt.allocPrint(allocator, "{d}.{d}{s}{s}{s}{s}", .{
-                self.major, self.minor,
+                self.major,                        self.minor,
                 if (self.pre.len > 0) "-" else "", self.pre,
-                build_prefix, self.build,
+                build_prefix,                      self.build,
             });
         } else {
             return std.fmt.allocPrint(allocator, "{d}.{d}.{d}{s}{s}{s}{s}", .{
-                self.major, self.minor, self.patch,
-                if (self.pre.len > 0) "-" else "", self.pre,
-                build_prefix, self.build,
+                self.major,                        self.minor, self.patch,
+                if (self.pre.len > 0) "-" else "", self.pre,   build_prefix,
+                self.build,
             });
         }
     }
@@ -185,13 +187,12 @@ pub const Version = struct {
 
 /// Represents a single interval of versions.
 pub const Interval = struct {
-
     pub fn print(self: Interval, writer: anytype) !void {
         if (self.min == null and self.max == null) {
             try writer.writeAll("*");
             return;
         }
-        
+
         try writer.writeAll(if (self.include_min) "[" else "(");
         if (self.min) |min| try min.print(writer) else try writer.writeAll("0.0.0");
         try writer.writeAll(", ");
@@ -321,11 +322,10 @@ pub const Interval = struct {
     pub fn isDisjoint(self: Interval, other: Interval) bool {
         return self.intersect(other) == null;
     }
-    };
+};
 
-    /// Represents a set of allowed versions (disjoint intervals).
-    pub const VersionRange = struct {
-
+/// Represents a set of allowed versions (disjoint intervals).
+pub const VersionRange = struct {
     pub fn print(self: VersionRange, writer: anytype) !void {
         if (self.intervals.len == 0) {
             try writer.writeAll("empty");
@@ -341,81 +341,81 @@ pub const Interval = struct {
         }
     }
 
-        intervals: []const Interval,
+    intervals: []const Interval,
 
-        pub fn any(allocator: std.mem.Allocator) !VersionRange {
-            var list = try allocator.alloc(Interval, 1);
-            list[0] = Interval{};
-            return VersionRange{ .intervals = list };
-        }
+    pub fn any(allocator: std.mem.Allocator) !VersionRange {
+        var list = try allocator.alloc(Interval, 1);
+        list[0] = Interval{};
+        return VersionRange{ .intervals = list };
+    }
 
-        pub fn clone(self: VersionRange, allocator: std.mem.Allocator) !VersionRange {
-            const list = try allocator.alloc(Interval, self.intervals.len);
-            for (self.intervals, 0..) |interval, i| {
-                list[i] = try interval.clone(allocator);
-            }
-            return VersionRange{ .intervals = list };
+    pub fn clone(self: VersionRange, allocator: std.mem.Allocator) !VersionRange {
+        const list = try allocator.alloc(Interval, self.intervals.len);
+        for (self.intervals, 0..) |interval, i| {
+            list[i] = try interval.clone(allocator);
         }
+        return VersionRange{ .intervals = list };
+    }
 
-        pub fn deinit(self: VersionRange, allocator: std.mem.Allocator) void {
-            for (self.intervals) |interval| {
-                var mut_i = interval;
-                mut_i.deinit(allocator);
-            }
-            allocator.free(self.intervals);
+    pub fn deinit(self: VersionRange, allocator: std.mem.Allocator) void {
+        for (self.intervals) |interval| {
+            var mut_i = interval;
+            mut_i.deinit(allocator);
         }
-        pub fn parse(allocator: std.mem.Allocator, text: []const u8) !VersionRange {
-            if (std.mem.eql(u8, text, "*") or text.len == 0) return try any(allocator);
-            var list = std.ArrayList(Interval).empty;
-            errdefer list.deinit(allocator);
-            if (std.mem.startsWith(u8, text, "^")) {
-                const v = try Version.parseCloned(allocator, text[1..]);
-                const next_major = Version{ .major = v.major + 1, .minor = 0, .patch = 0 };
-                try list.append(allocator, .{ .min = v, .max = next_major });
-            } else if (std.mem.startsWith(u8, text, "~")) {
-                const v = try Version.parseCloned(allocator, text[1..]);
-                const next_minor = Version{ .major = v.major, .minor = v.minor + 1, .patch = 0 };
-                try list.append(allocator, .{ .min = v, .max = next_minor });
-            } else if (std.mem.indexOf(u8, text, " ") != null or std.mem.indexOf(u8, text, ">") != null or std.mem.indexOf(u8, text, "<") != null) {
-                var it = std.mem.tokenizeAny(u8, text, " ,");
-                var current = Interval{};
-                while (it.next()) |token| {
-                    if (std.mem.eql(u8, token, ">=")) {
-                        current.min = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
-                        current.include_min = true;
-                    } else if (std.mem.eql(u8, token, ">")) {
-                        current.min = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
-                        current.include_min = false;
-                    } else if (std.mem.eql(u8, token, "<=")) {
-                        current.max = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
-                        current.include_max = true;
-                    } else if (std.mem.eql(u8, token, "<")) {
-                        current.max = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
-                        current.include_max = false;
-                    } else {
-                        const v = try Version.parseCloned(allocator, token);
-                        current.min = v;
-                        current.max = v;
-                        current.include_min = true;
-                        current.include_max = true;
-                    }
-                }
-                try list.append(allocator, current);
-            } else {
-                const v = try Version.parseCloned(allocator, text);
-                if (v.precision == 3) {
-                    try list.append(allocator, .{ .min = v, .max = v, .include_min = true, .include_max = true });
-                } else if (v.precision == 2) {
-                    const next_minor = Version{ .major = v.major, .minor = v.minor + 1, .patch = 0 };
-                    try list.append(allocator, .{ .min = v, .max = next_minor, .include_min = true, .include_max = false });
+        allocator.free(self.intervals);
+    }
+    pub fn parse(allocator: std.mem.Allocator, text: []const u8) !VersionRange {
+        if (std.mem.eql(u8, text, "*") or text.len == 0) return try any(allocator);
+        var list = std.ArrayList(Interval).empty;
+        errdefer list.deinit(allocator);
+        if (std.mem.startsWith(u8, text, "^")) {
+            const v = try Version.parseCloned(allocator, text[1..]);
+            const next_major = Version{ .major = v.major + 1, .minor = 0, .patch = 0 };
+            try list.append(allocator, .{ .min = v, .max = next_major });
+        } else if (std.mem.startsWith(u8, text, "~")) {
+            const v = try Version.parseCloned(allocator, text[1..]);
+            const next_minor = Version{ .major = v.major, .minor = v.minor + 1, .patch = 0 };
+            try list.append(allocator, .{ .min = v, .max = next_minor });
+        } else if (std.mem.indexOf(u8, text, " ") != null or std.mem.indexOf(u8, text, ">") != null or std.mem.indexOf(u8, text, "<") != null) {
+            var it = std.mem.tokenizeAny(u8, text, " ,");
+            var current = Interval{};
+            while (it.next()) |token| {
+                if (std.mem.eql(u8, token, ">=")) {
+                    current.min = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
+                    current.include_min = true;
+                } else if (std.mem.eql(u8, token, ">")) {
+                    current.min = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
+                    current.include_min = false;
+                } else if (std.mem.eql(u8, token, "<=")) {
+                    current.max = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
+                    current.include_max = true;
+                } else if (std.mem.eql(u8, token, "<")) {
+                    current.max = try Version.parseCloned(allocator, it.next() orelse return error.InvalidRange);
+                    current.include_max = false;
                 } else {
-                    const next_major = Version{ .major = v.major + 1, .minor = 0, .patch = 0 };
-                    try list.append(allocator, .{ .min = v, .max = next_major, .include_min = true, .include_max = false });
+                    const v = try Version.parseCloned(allocator, token);
+                    current.min = v;
+                    current.max = v;
+                    current.include_min = true;
+                    current.include_max = true;
                 }
             }
-
-            return VersionRange{ .intervals = try list.toOwnedSlice(allocator) };
+            try list.append(allocator, current);
+        } else {
+            const v = try Version.parseCloned(allocator, text);
+            if (v.precision == 3) {
+                try list.append(allocator, .{ .min = v, .max = v, .include_min = true, .include_max = true });
+            } else if (v.precision == 2) {
+                const next_minor = Version{ .major = v.major, .minor = v.minor + 1, .patch = 0 };
+                try list.append(allocator, .{ .min = v, .max = next_minor, .include_min = true, .include_max = false });
+            } else {
+                const next_major = Version{ .major = v.major + 1, .minor = 0, .patch = 0 };
+                try list.append(allocator, .{ .min = v, .max = next_major, .include_min = true, .include_max = false });
+            }
         }
+
+        return VersionRange{ .intervals = try list.toOwnedSlice(allocator) };
+    }
 
     pub fn contains(self: VersionRange, v: Version) bool {
         for (self.intervals) |i| {
@@ -595,9 +595,7 @@ pub const Interval = struct {
 
         return VersionRange{ .intervals = try list.toOwnedSlice(allocator) };
     }
-
-
-    };
+};
 
 /// Backward compatibility helper for existing codebase
 pub fn matches(version_text: []const u8, range_text: []const u8) bool {
@@ -673,13 +671,12 @@ test "range union merging" {
     defer merged.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), merged.intervals.len);
-    
+
     const min_str = try merged.intervals[0].min.?.toString(allocator);
     defer allocator.free(min_str);
     try std.testing.expectEqualStrings("1.0.0", min_str);
-    
+
     const max_str = try merged.intervals[0].max.?.toString(allocator);
     defer allocator.free(max_str);
     try std.testing.expectEqualStrings("3.0.0", max_str);
 }
-

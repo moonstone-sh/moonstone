@@ -136,7 +136,17 @@ fn verifySha256(expected_prefixed: []const u8, bytes: []const u8) !void {
 
 fn hostTarget(allocator: std.mem.Allocator) ![]const u8 {
     const builtin = @import("builtin");
-    const arch = switch (builtin.cpu.arch) { .x86_64 => "x86_64", .aarch64 => "aarch64", else => return error.UnsupportedArch };
-    const os = switch (builtin.os.tag) { .linux => "linux-gnu", .macos => "macos", .windows => "windows-msvc", .freebsd => "freebsd", else => return error.UnsupportedOS };
+    const arch = switch (builtin.cpu.arch) {
+        .x86_64 => "x86_64",
+        .aarch64 => "aarch64",
+        else => return error.UnsupportedArch,
+    };
+    const os = switch (builtin.os.tag) {
+        .linux => "linux-gnu",
+        .macos => "macos",
+        .windows => "windows-msvc",
+        .freebsd => "freebsd",
+        else => return error.UnsupportedOS,
+    };
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
 }

@@ -100,7 +100,6 @@ pub fn artifact_hash(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) 
         entries.deinit(allocator);
     }
 
-
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 

@@ -18,7 +18,7 @@ pub const Solver = struct {
     allocator: std.mem.Allocator,
     provider: package_provider.PackageProvider,
     options: report_mod.SolverOptions,
-    
+
     arena: std.heap.ArenaAllocator,
     incompatibilities: std.ArrayListUnmanaged(*Incompatibility),
     solution: partial_solution_mod.PartialSolution,
@@ -41,7 +41,7 @@ pub const Solver = struct {
         if (self.options.on_event) |cb| {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
-            
+
             var obj_map = std.json.ObjectMap.empty;
             const fields = @typeInfo(@TypeOf(data_map)).@"struct".fields;
             inline for (fields) |f| {
@@ -70,7 +70,7 @@ pub const Solver = struct {
             const negated_range = try t.range.complement(arena);
             root_terms[0] = try t.clone(arena);
             root_terms[0].range = negated_range;
-            
+
             const root_inc = try arena.create(Incompatibility);
             root_inc.* = .{
                 .terms = root_terms,
@@ -79,7 +79,6 @@ pub const Solver = struct {
 
             try self.incompatibilities.append(arena, root_inc);
         }
-
 
         while (true) {
             const conflict = try self.propagate();
@@ -90,7 +89,7 @@ pub const Solver = struct {
                     return error.NoSolution;
                 }
                 self.emit(.backtracking, .{ .level = @as(i32, @intCast(backtrack_level)) });
-                
+
                 while (self.solution.assignments.items.len > 0) {
                     const as = self.solution.assignments.getLast();
                     if (as.level > @as(u32, @intCast(backtrack_level))) {
@@ -118,8 +117,8 @@ pub const Solver = struct {
 
                 for (self.solution.assignments.items) |as| {
                     if (as.term.range.intervals.len == 1 and as.term.range.intervals[0].min != null and as.term.range.intervals[0].max != null and
-                        as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) == 0) {
-                        
+                        as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) == 0)
+                    {
                         const v = as.term.range.intervals[0].min.?;
                         const v_str = try v.toString(self.allocator);
                         defer self.allocator.free(v_str);
@@ -150,7 +149,7 @@ pub const Solver = struct {
             var i: usize = 0;
             while (i < self.incompatibilities.items.len) : (i += 1) {
                 const inc = self.incompatibilities.items[i];
-                
+
                 var contradicted_term: ?usize = null;
                 var satisfied_count: usize = 0;
 
@@ -161,16 +160,13 @@ pub const Solver = struct {
                         contradicted_term = j;
                     }
                 }
-                
-                if (satisfied_count == inc.terms.len) {
 
+                if (satisfied_count == inc.terms.len) {
                     return inc;
                 }
 
                 if (satisfied_count == inc.terms.len - 1 and contradicted_term == null) {
                     for (inc.terms) |term| {
-
-
                         if (!self.solution.isSatisfied(term)) {
                             const negated_range = try term.range.complement(arena);
 
@@ -195,7 +191,6 @@ pub const Solver = struct {
         return null;
     }
 
-
     fn decide(self: *Solver) !?[]const u8 {
         const arena = self.arena.allocator();
         var seen = std.StringArrayHashMapUnmanaged(void).empty;
@@ -209,8 +204,8 @@ pub const Solver = struct {
             try seen.put(arena, as.term.name, {});
 
             if (as.term.range.intervals.len != 1 or as.term.range.intervals[0].min == null or as.term.range.intervals[0].max == null or
-                as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) != 0) {
-                
+                as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) != 0)
+            {
                 const versions = try self.provider.getVersions(as.term.name);
                 defer arena.free(versions);
                 self.emit(.resolving, .{ .package = as.term.name });
@@ -233,15 +228,15 @@ pub const Solver = struct {
                     };
                     const exact_range = semver.VersionRange{ .intervals = exact_intervals };
 
-                        try self.solution.assignments.append(arena, .{
-                            .term = .{
-                                .name = try arena.dupe(u8, as.term.name),
-                                .range = exact_range,
-                                .registry = if (as.term.registry) |r| try arena.dupe(u8, r) else null,
-                                .resolver = as.term.resolver,
-                            },
-                            .level = self.solution.decision_level,
-                        });
+                    try self.solution.assignments.append(arena, .{
+                        .term = .{
+                            .name = try arena.dupe(u8, as.term.name),
+                            .range = exact_range,
+                            .registry = if (as.term.registry) |r| try arena.dupe(u8, r) else null,
+                            .resolver = as.term.resolver,
+                        },
+                        .level = self.solution.decision_level,
+                    });
 
                     const deps = try self.provider.getDependencies(as.term.name, v);
                     defer {
@@ -269,7 +264,7 @@ pub const Solver = struct {
                         };
                         try self.incompatibilities.append(arena, inc);
                     }
-                    
+
                     return as.term.name;
                 } else {
                     const inc = try arena.create(Incompatibility);
@@ -291,7 +286,7 @@ pub const Solver = struct {
     fn resolveConflict(self: *Solver, conflict: *Incompatibility) !i32 {
         const arena = self.arena.allocator();
         var current = try conflict.clone(arena);
-        
+
         while (true) {
             var highest_level: u32 = 0;
             var second_highest_level: u32 = 0;
@@ -346,7 +341,7 @@ pub const Solver = struct {
                 }
             }
         }
-        
+
         if (map.get(name)) |range| {
             if (range.intervals.len == 1 and range.intervals[0].isAny()) {
                 _ = map.swapRemove(name);

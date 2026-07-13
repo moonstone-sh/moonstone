@@ -99,10 +99,10 @@ fn doFetch(
     var transfer_buf: [8192]u8 = undefined;
     var decompress: std.http.Decompress = undefined;
     var reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buffer);
-    
+
     var out_list = std.ArrayList(u8).empty;
     errdefer out_list.deinit(allocator);
-    
+
     var downloaded: usize = 0;
     while (true) {
         var chunk_buf: [8192]u8 = undefined;

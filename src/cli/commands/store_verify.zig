@@ -30,7 +30,10 @@ pub const StoreVerifyCommand = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
@@ -80,7 +83,7 @@ pub const StoreVerifyCommand = struct {
             if (!std.mem.eql(u8, expected_hash, actual_hash)) {
                 if (!self.json) try stdout.print("CORRUPTED!\n  Expected: {s}\n  Actual:   {s}\n", .{ expected_hash, actual_hash });
                 corrupted += 1;
-                
+
                 if (self.repair) {
                     if (!self.json) try stdout.print("Repairing (deleting artifact)...\n", .{});
                     var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);

@@ -65,7 +65,7 @@ pub const ListCommand = struct {
         }
 
         var count: usize = 0;
-        
+
         // Helper to print a dependency
         const printDep = struct {
             fn run_internal(pkg_name: []const u8, constraint: []const u8, lf: ?moonstone.domain.lockfile.LockFile, is_json: bool, e: ?*ndjson.Emitter, c_ctx: *router.Context, c_ptr: *usize) !void {

@@ -58,7 +58,6 @@ pub const Coordinator = struct {
         environ_map: *std.process.Environ.Map,
     ) !candidate_mod.Candidate {
 
-
         // 1. Try local store first
         if (try self.tryResolveFromStore(pkg_name, constraint, .moonstone, index, options)) |cand| {
             return cand;
@@ -229,8 +228,8 @@ pub const Coordinator = struct {
             // Runtime ABI compatibility check
             if (options.runtime != null) {
                 if (entry.kind != .runtime) {
-                    // Links don't currently store lua_abi in the links table, 
-                    // but we could check the manifest if needed. 
+                    // Links don't currently store lua_abi in the links table,
+                    // but we could check the manifest if needed.
                     // For now assume live links are compatible if the user registered them.
                 }
             }

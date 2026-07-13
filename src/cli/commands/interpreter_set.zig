@@ -111,7 +111,7 @@ pub const InterpreterSetCommand = struct {
         var version = spec;
         if (std.mem.indexOfScalar(u8, spec, '@')) |pos| {
             interpreter_name = spec[0..pos];
-            version = spec[pos+1..];
+            version = spec[pos + 1 ..];
         }
 
         if (self.global) {
@@ -144,7 +144,7 @@ pub const InterpreterSetCommand = struct {
             allocator.free(mt.runtime.abi);
 
             const interpreter_abi = try moonstone.domain.manifest.inferRuntimeAbi(allocator, interpreter_name, version);
-            
+
             mt.runtime.name = try allocator.dupe(u8, interpreter_name);
             mt.runtime.version = try allocator.dupe(u8, version);
             mt.runtime.abi = interpreter_abi;
@@ -189,14 +189,17 @@ pub const InterpreterSetCommand = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
         defer allocator.free(index_db_path);
         const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
         defer allocator.free(index_db_path_z);
-        
+
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
@@ -214,7 +217,10 @@ pub const InterpreterSetCommand = struct {
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
         }, env);
-        defer { var r = rt_res; r.deinit(allocator); }
+        defer {
+            var r = rt_res;
+            r.deinit(allocator);
+        }
 
         // Materialize if remote
         if (rt_res.local_path == null) {
@@ -245,7 +251,7 @@ pub const InterpreterSetCommand = struct {
         // Simple string replacement for now to avoid parsing/serializing the whole thing and losing comments
         // Real implementation should use a proper TOML editor if we want to preserve structure.
         // For now, let's just use the parser to verify and then do a surgical edit.
-        
+
         var parser = moonstone.domain.manifest.toml.Parser(moonstone.domain.manifest.toml.Table).init(allocator);
         defer parser.deinit();
         var res = try parser.parseString(config_content);

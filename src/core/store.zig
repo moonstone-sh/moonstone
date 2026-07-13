@@ -147,7 +147,10 @@ pub fn materializeLocalProject(
     lua_abi: []const u8,
 ) ![]const u8 {
     const paths = try fs.resolve_moonstone(allocator, environ_map, io);
-    defer { var p = paths; p.deinit(allocator); }
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
 
     const tar_path = try std.fs.path.join(allocator, &.{ paths.tmp, "local-artifact.tar.gz" });
     defer allocator.free(tar_path);
@@ -155,7 +158,11 @@ pub fn materializeLocalProject(
     const tar_result = try std.process.run(allocator, io, .{
         .argv = &.{
             "tar",
-            "-czf", tar_path, "-C", project_path, ".",
+            "-czf",
+            tar_path,
+            "-C",
+            project_path,
+            ".",
         },
     });
     defer allocator.free(tar_result.stdout);
@@ -324,7 +331,10 @@ pub fn commit_to_store_with_sources(
     source_payloads: SourcePayloadOptions,
 ) ![]const u8 {
     const paths = try fs.resolve_moonstone(allocator, environ_map, io);
-    defer { var p = paths; p.deinit(allocator); }
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
 
     const art_hash = remote_art.hash[3..]; // Strip b3:
     const h0h1 = art_hash[0..2];
@@ -343,14 +353,14 @@ pub fn commit_to_store_with_sources(
     // 1. Move unpacked files to art_path/files
     const files_path = try std.fs.path.join(allocator, &.{ final_art_path, "files" });
     defer allocator.free(files_path);
-    
-    // Atomic rename isn't possible across devices if store is elsewhere, 
+
+    // Atomic rename isn't possible across devices if store is elsewhere,
     // but in v0 we assume local tmp/store.
     std.Io.Dir.cwd().deleteTree(io, final_art_path) catch |err| {
         if (err != error.FileNotFound) return err;
     };
     try std.Io.Dir.cwd().createDirPath(io, final_art_path);
-    
+
     var stored_source_payload: []const u8 = "";
     var stored_rockspec_payload: []const u8 = "";
 

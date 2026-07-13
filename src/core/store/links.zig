@@ -57,7 +57,6 @@ pub fn deinitEntries(entries: []LinkEntry, allocator: std.mem.Allocator) void {
     allocator.free(entries);
 }
 
-
 pub const LinkStore = struct {
     driver: *driver_mod.StoreDriver,
 

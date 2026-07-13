@@ -69,7 +69,7 @@ pub const OrbitSyncCommand = struct {
     pub fn runImpl(self: OrbitSyncCommand, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
         const project_root = try moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".");
         defer project_root.deinit(ctx.allocator);
-        
+
         var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "orbit-sync") else null;
         const emitter = if (emitter_obj) |*e| e else null;
 
@@ -95,12 +95,12 @@ pub const OrbitSyncCommand = struct {
             const target = self.positionals[0];
             const target_abs = try std.fs.path.resolve(ctx.allocator, &.{ project_root.path, target });
             defer ctx.allocator.free(target_abs);
-            
+
             for (orbits) |orbit| {
-                if (std.mem.eql(u8, orbit.name, target) or 
-                    std.mem.eql(u8, orbit.package_name, target) or 
-                    std.mem.eql(u8, orbit.path, target_abs)) {
-                    
+                if (std.mem.eql(u8, orbit.name, target) or
+                    std.mem.eql(u8, orbit.package_name, target) or
+                    std.mem.eql(u8, orbit.path, target_abs))
+                {
                     try target_orbits.append(ctx.allocator, orbit);
                 }
             }
@@ -122,14 +122,14 @@ pub const OrbitSyncCommand = struct {
             backend.phase("Syncing orbit {s}...", .{orbit.name});
 
             try std.process.setCurrentPath(ctx.io, orbit.path);
-            
+
             var child_sync = sync_command{
                 .json = self.json,
                 .locked = self.locked,
             };
             child_sync.runImpl(ctx, backend) catch |err| {
                 std.process.setCurrentPath(ctx.io, root_cwd) catch {};
-                
+
                 // Keep the error detail
                 return err;
             };

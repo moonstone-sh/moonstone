@@ -39,7 +39,7 @@ pub const OrbitRunCommand = struct {
         }
 
         var list = std.ArrayList([]const u8).empty;
-        
+
         if (args.len <= 1) {
             for (orbits) |orbit| {
                 try list.append(ctx.allocator, try ctx.allocator.dupe(u8, orbit.name));
@@ -60,10 +60,10 @@ pub const OrbitRunCommand = struct {
                     f.close(ctx.io);
                     const orbit_content = std.Io.Dir.cwd().readFileAlloc(ctx.io, orbit_toml_path, ctx.allocator, std.Io.Limit.limited(1024 * 1024)) catch return &.{};
                     defer ctx.allocator.free(orbit_content);
-                    
+
                     var orbit_mt = moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, orbit_content) catch return &.{};
                     defer orbit_mt.deinit(ctx.allocator);
-                    
+
                     var sit = orbit_mt.scripts.iterator();
                     while (sit.next()) |entry| {
                         const script_name = entry.key_ptr.*;
@@ -108,16 +108,16 @@ pub const OrbitRunCommand = struct {
 
         var selected_orbit: ?moonstone.project.orbits.OrbitRef = null;
         for (orbits) |orbit| {
-            if (std.mem.eql(u8, orbit.name, target) or 
-                std.mem.eql(u8, orbit.package_name, target) or 
-                std.mem.eql(u8, orbit.path, target_abs)) {
-                
+            if (std.mem.eql(u8, orbit.name, target) or
+                std.mem.eql(u8, orbit.package_name, target) or
+                std.mem.eql(u8, orbit.path, target_abs))
+            {
                 if (selected_orbit != null) {
                     try ctx.stdout.print("Ambiguous orbit selector \"{s}\":\n", .{target});
                     try ctx.stdout.print("Use the orbit path or exact name.\n", .{});
                     return error.AmbiguousOrbit;
                 }
-                
+
                 selected_orbit = orbit;
             }
         }

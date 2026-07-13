@@ -23,7 +23,7 @@ jobs:
           version: '0.16.0' # Matches release.yml
 
       - name: Check Formatting
-        run: zig fmt --check src/ build.zig
+        run: zig fmt --check --exclude src/core/assets/templates src/ build.zig
 
       - name: Build All Targets
         # We ensure that changes don't break the cross-compilation matrix

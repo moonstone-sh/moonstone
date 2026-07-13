@@ -27,7 +27,10 @@ pub const StoreDriverCheckCommand = struct {
         const env = ctx.env;
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
@@ -41,7 +44,7 @@ pub const StoreDriverCheckCommand = struct {
         defer _ = sql_c.sqlite3_close(db);
 
         if (sql_c.sqlite3_exec(db, "PRAGMA integrity_check;", null, null, null) != sql_c.SQLITE_OK) return error.SQLiteExecError;
-        
+
         if (!self.json) {
             try stdout.print("StoreDriver integrity check passed.\n", .{});
         }

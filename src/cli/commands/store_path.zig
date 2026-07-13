@@ -31,7 +31,10 @@ pub const StorePathCommand = struct {
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
         _ = args;
         const paths = try moonstone.platform.fs.resolve_moonstone(ctx.allocator, ctx.env, ctx.io);
-        defer { var p = paths; p.deinit(ctx.allocator); }
+        defer {
+            var p = paths;
+            p.deinit(ctx.allocator);
+        }
         const index_db = try std.fs.path.join(ctx.allocator, &.{ paths.index, "index.sqlite" });
         defer ctx.allocator.free(index_db);
         const index_db_z = try ctx.allocator.dupeZ(u8, index_db);
@@ -65,7 +68,10 @@ pub const StorePathCommand = struct {
         const spec = self.positionals[0];
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
 

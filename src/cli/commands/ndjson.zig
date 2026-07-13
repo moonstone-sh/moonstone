@@ -63,7 +63,7 @@ pub const Emitter = struct {
         const ts_raw = std.Io.Timestamp.now(io, .real);
         const seconds = @divFloor(ts_raw.nanoseconds, std.time.ns_per_s);
         const ms: u64 = @intCast(@divFloor(@mod(ts_raw.nanoseconds, std.time.ns_per_s), std.time.ns_per_ms));
-        const ts = try std.fmt.bufPrint(&ts_buf, "{d}.{d:0>3}Z", .{seconds, ms});
+        const ts = try std.fmt.bufPrint(&ts_buf, "{d}.{d:0>3}Z", .{ seconds, ms });
 
         // 2. Serialize to NDJSON
         try std.json.Stringify.value(.{
@@ -80,7 +80,7 @@ pub const Emitter = struct {
                 .version = build_options.version,
             },
         }, .{}, &aw.writer);
-        
+
         try self.stdout.writeAll(aw.writer.buffer[0..aw.writer.end]);
         try self.stdout.writeAll("\n");
         try self.stdout.flush();
@@ -106,7 +106,7 @@ pub const Emitter = struct {
         const ts_raw = std.Io.Timestamp.now(io, .real);
         const seconds = @divFloor(ts_raw.nanoseconds, std.time.ns_per_s);
         const ms: u64 = @intCast(@divFloor(@mod(ts_raw.nanoseconds, std.time.ns_per_s), std.time.ns_per_ms));
-        const ts = try std.fmt.bufPrint(&ts_buf, "{d}.{d:0>3}Z", .{seconds, ms});
+        const ts = try std.fmt.bufPrint(&ts_buf, "{d}.{d:0>3}Z", .{ seconds, ms });
 
         try std.json.Stringify.value(.{
             .kind = kind.asString(),
@@ -122,7 +122,7 @@ pub const Emitter = struct {
                 .version = build_options.version,
             },
         }, .{}, &aw.writer);
-        
+
         try self.stdout.writeAll(aw.writer.buffer[0..aw.writer.end]);
         try self.stdout.writeAll("\n");
         try self.stdout.flush();

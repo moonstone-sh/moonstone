@@ -46,7 +46,7 @@ pub const StoreDriverRebuildCommand = struct {
 
         // 2. Walk the store and find manifest.toml files
         if (!self.json) try stdout.print("Scanning store for artifacts...\n", .{});
-        
+
         const store_path = paths.store;
         const b3_path = try std.fs.path.join(allocator, &.{ store_path, "b3" });
         defer allocator.free(b3_path);

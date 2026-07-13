@@ -150,7 +150,7 @@ pub fn build(
                 .command = "zig cc",
                 .stderr_tail = tail,
                 .log_path = log_path,
-            }});
+            } });
         } else {
             const tail_len = @min(res.stderr.len, 2048);
             const tail = res.stderr[res.stderr.len - tail_len ..];

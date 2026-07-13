@@ -68,14 +68,17 @@ pub const update_command = struct {
         defer lf.deinit();
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
         defer allocator.free(index_db_path);
         const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
         defer allocator.free(index_db_path_z);
-        
+
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
@@ -86,10 +89,17 @@ pub const update_command = struct {
 
         var provider_impl = try allocator.create(moonstone.solver.registry_provider.RegistryProvider);
         provider_impl.init(
-            allocator, io, idx, registries, .{
+            allocator,
+            io,
+            idx,
+            registries,
+            .{
                 .offline = false,
                 .runtime = concrete_abi,
-            }, env, null, &.{}, // update --outdated doesn't use explicit targets for all yet
+            },
+            env,
+            null,
+            &.{}, // update --outdated doesn't use explicit targets for all yet
         );
         defer {
             provider_impl.deinit();
@@ -109,7 +119,10 @@ pub const update_command = struct {
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
         }, env);
-        defer { var r = rt_res; r.deinit(allocator); }
+        defer {
+            var r = rt_res;
+            r.deinit(allocator);
+        }
 
         if (self.outdated or self.interactive or self.positionals.len > 0) {
             if (emitter == null) {
@@ -154,7 +167,10 @@ pub const update_command = struct {
                         .on_event = @import("command.zig").onResolveEvent,
                         .on_event_context = &resolve_cb_ctx,
                     }, env) catch continue;
-                    defer { var r = latest_res; r.deinit(allocator); }
+                    defer {
+                        var r = latest_res;
+                        r.deinit(allocator);
+                    }
 
                     const is_outdated = if (locked) |l| blk: {
                         const cur = moonstone.domain.semver.Version.parse(l.version) catch break :blk true;
@@ -178,7 +194,7 @@ pub const update_command = struct {
                             if (self.interactive) {
                                 try stdout.print("  Update '{s}'? [y/N] ", .{pkg_name});
                                 try stdout.flush();
-                                
+
                                 const stdin = std.Io.getStdIn();
                                 var buf: [16]u8 = undefined;
                                 const n = try stdin.read(io, &buf);
@@ -187,7 +203,7 @@ pub const update_command = struct {
                                     should_update = true;
                                 }
                             }
-                            
+
                             if (should_update) {
                                 try updates_to_apply.append(allocator, try allocator.dupe(u8, pkg_name));
                             }
@@ -203,7 +219,7 @@ pub const update_command = struct {
                 for (updates_to_apply.items) |pkg_name| {
                     if (lf.remove(pkg_name)) {}
                 }
-                
+
                 if (!self.dry_run) {
                     const install = @import("sync.zig").sync_command{ .json = self.json };
                     try install.run(ctx);

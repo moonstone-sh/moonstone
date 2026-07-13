@@ -263,7 +263,6 @@ fn writeScopedPathPrepend(
     try writer.print("\"{s}\"]\n", .{tool_bin_dir});
 }
 
-
 fn writeRuntimeScope(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -1434,21 +1433,14 @@ test "shim generation does not hardcode lua versions" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try liveLinkScriptCommand(
-        allocator,
-        io,
-        tmp.dir,
-        "dummy_bin",
-        "/fake/source",
-        "dummy_cmd"
-    );
+    try liveLinkScriptCommand(allocator, io, tmp.dir, "dummy_bin", "/fake/source", "dummy_cmd");
 
     const content = try tmp.dir.readFileAlloc(io, "dummy_bin", allocator, 4096);
     defer allocator.free(content);
 
     // Should contain the dynamic loop
     try std.testing.expect(std.mem.indexOf(u8, content, "for d in \"$TOOL_ROOT/.moonstone/env/share/lua/\"*; do") != null);
-    
+
     // Should NOT contain the old hardcoded versions
     try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.1/") == null);
     try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.4/") == null);

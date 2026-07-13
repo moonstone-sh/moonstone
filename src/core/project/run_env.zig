@@ -4,13 +4,13 @@ const manifest = @import("../domain/manifest.zig");
 pub const RunEnv = struct {
     env_map: std.process.Environ.Map,
     allocator: std.mem.Allocator,
-    
+
     // Explicitly stored pieces for 'moon env' formatting
     bin_path: []const u8,
     lua_path: []const u8,
     lua_cpath: []const u8,
     lua_ver_suffix: []const u8, // e.g. "5_4"
-    lua_ver_dot: []const u8,    // e.g. "5.4"
+    lua_ver_dot: []const u8, // e.g. "5.4"
 
     pub fn deinit(self: *RunEnv) void {
         self.env_map.deinit();
@@ -30,7 +30,10 @@ pub fn get_run_env(
 ) !RunEnv {
     const platform_fs = @import("../platform/fs.zig");
     const paths = try platform_fs.resolve_moonstone(allocator, base_env, io);
-    defer { var p = paths; p.deinit(allocator); }
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
 
     // 1. Search for project root (upwards)
     const search_path = try std.Io.Dir.cwd().realPathFileAlloc(io, start_path, allocator);
@@ -67,7 +70,7 @@ pub fn get_run_env(
             dir.close(io);
             break;
         }
-        
+
         const next = try allocator.dupe(u8, parent);
         allocator.free(current_path);
         current_path = next;
@@ -84,7 +87,7 @@ pub fn get_run_env(
             if (err == error.FileNotFound) break :blk null;
             return err;
         };
-        
+
         if (content) |c| {
             defer allocator.free(c);
             var parser = @import("toml").Parser(@import("toml").Table).init(allocator);
@@ -236,7 +239,6 @@ fn build_run_env(
         .lua_ver_dot = lua_ver_dot,
     };
 }
-
 
 pub const EnvMode = enum {
     runtime,

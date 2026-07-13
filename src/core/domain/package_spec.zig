@@ -52,8 +52,8 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
     if (std.mem.lastIndexOfScalar(u8, current, '@')) |at_idx| {
         const has_url_scheme = std.mem.indexOf(u8, current[0..at_idx], "://") != null;
         if (!has_url_scheme) {
-             result.constraint = try allocator.dupe(u8, current[at_idx + 1 ..]);
-             current = current[0..at_idx];
+            result.constraint = try allocator.dupe(u8, current[at_idx + 1 ..]);
+            current = current[0..at_idx];
         }
     }
 

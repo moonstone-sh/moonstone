@@ -42,14 +42,17 @@ pub const upgrade_command = struct {
         defer mt.deinit(allocator);
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
         defer allocator.free(index_db_path);
         const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
         defer allocator.free(index_db_path_z);
-        
+
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 

@@ -56,7 +56,6 @@ pub fn resolve(
         }
     }
 
-
     return error.NoCompatibleCandidateFound;
 }
 
@@ -70,7 +69,6 @@ pub fn resolve_remote(
     options: options_mod.ResolveOptions,
     env: ?*std.process.Environ.Map,
 ) !candidate_mod.RemoteResolveResult {
-
     if (options.offline) return error.PackageNotFound;
 
     var client = registry.RegistryClient.init(allocator, io, registry_url, token, env);
@@ -206,16 +204,10 @@ fn resolveFromIndex(allocator: std.mem.Allocator, client: *registry.RegistryClie
 
 fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
     if (std.mem.eql(u8, index_name, requested_name)) return true;
-    
-    const canonical_req = if (std.mem.eql(u8, requested_name, "lua")) @as([]const u8, "moonstone/lua")
-                          else if (std.mem.eql(u8, requested_name, "luajit")) @as([]const u8, "moonstone/luajit")
-                          else if (std.mem.eql(u8, requested_name, "love")) @as([]const u8, "moonstone/love")
-                          else requested_name;
 
-    const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua")
-                          else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit")
-                          else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love")
-                          else index_name;
+    const canonical_req = if (std.mem.eql(u8, requested_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, requested_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, requested_name, "love")) @as([]const u8, "moonstone/love") else requested_name;
+
+    const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love") else index_name;
 
     return std.mem.eql(u8, canonical_idx, canonical_req);
 }
@@ -227,7 +219,7 @@ fn matches(version: []const u8, range: []const u8) bool {
 fn artifactMatchesRuntimeAbi(art: manifest.RemoteArtifact, options: options_mod.ResolveOptions) bool {
     // If the artifact declares its own isolated runtime, it doesn't need to match the project runtime
     if (isResolvableRuntimeSpec(art.runtime)) return true;
-    
+
     if (options.runtime) |active_abi| {
         return options_mod.runtimeAbiMatches(active_abi, art.lua_abi);
     }
@@ -241,7 +233,6 @@ fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
     if (std.mem.indexOfScalar(u8, runtime_spec, '@')) |at| return at > 0 and at + 1 < runtime_spec.len;
     return true;
 }
-
 
 fn get_host_target(allocator: std.mem.Allocator) ![]const u8 {
     const builtin = @import("builtin");

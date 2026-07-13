@@ -33,7 +33,6 @@ pub fn deinitResolved(slice: []ResolvedRegistry, allocator: std.mem.Allocator) v
 const c = driver_mod.c;
 
 pub const RuntimeEntry = struct {
-
     name: []const u8,
     version: []const u8,
 };
@@ -108,7 +107,6 @@ pub const RegistryClient = struct {
         defer self.allocator.free(actual_hash);
 
         if (!std.mem.eql(u8, actual_hash, self.meta.?.index.hash)) {
-
             return error.StoreIndexHashMismatch;
         }
 
@@ -194,7 +192,6 @@ pub const RegistryClient = struct {
         defer if (url.ptr != sub_path.ptr) self.allocator.free(url);
         cache.write(key, url, content) catch {};
     }
-
 
     pub const CompactPackageVersion = struct { version: []const u8, descriptor: []const u8 };
 
@@ -311,7 +308,6 @@ pub const RegistryClient = struct {
 
     pub fn fetch_descriptor(self: *RegistryClient, descriptor_path: []const u8) !manifest.RemotePackageDescriptor {
         const content = self.read_file_from_registry(descriptor_path) catch |err| {
-
             return err;
         };
         defer self.allocator.free(content);
@@ -379,7 +375,6 @@ pub const RegistryClient = struct {
             defer self.allocator.free(blob_abs);
 
             return std.Io.Dir.cwd().readFileAlloc(self.io, blob_abs, self.allocator, std.Io.Limit.limited(50 * 1024 * 1024)) catch |err| {
-
                 return err;
             };
         }
@@ -430,7 +425,6 @@ pub const RegistryClient = struct {
             defer self.allocator.free(full_path);
 
             const content = std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.allocator, std.Io.Limit.limited(50 * 1024 * 1024)) catch |err| {
-
                 return err;
             };
             errdefer self.allocator.free(content);
@@ -439,7 +433,6 @@ pub const RegistryClient = struct {
             return content;
         }
     }
-
 
     fn get_url_single(self: *RegistryClient, url: []const u8, timeout_ms: u32) ![]u8 {
         const client = &(self.http_client orelse return error.HttpClientNotInitialized);

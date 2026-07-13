@@ -327,7 +327,7 @@ fn translateCommandBuild(
     }
 
     const is_cmake = std.mem.eql(u8, rock.build.type, "cmake");
-    
+
     var steps = std.ArrayList(manifest.CommandStep).empty;
     defer {
         for (steps.items) |s| {
@@ -350,7 +350,7 @@ fn translateCommandBuild(
         // Build command
         const build_cmd = "make"; // TODO: read build_command from rockspec if available
         var b_args = std.ArrayList([]const u8).empty;
-        
+
         // Note: we can't easily parse build_variables from JSON yet as Rockspec doesn't have it defined fully,
         // but typically rockspecs have build_variables. We'll set up standard env vars.
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
@@ -360,7 +360,7 @@ fn translateCommandBuild(
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_INCDIR"), .value = try allocator.dupe(u8, "${runtime.include}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_LIBDIR"), .value = try allocator.dupe(u8, "${runtime.lib}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_BINDIR"), .value = try allocator.dupe(u8, "${runtime.bin_dir}") });
-        
+
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "DESTDIR"), .value = try allocator.dupe(u8, "${out}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "prefix"), .value = try allocator.dupe(u8, "") });
@@ -368,9 +368,9 @@ fn translateCommandBuild(
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "INST_LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LIBDIR"), .value = try allocator.dupe(u8, "${out}/lib/lua/${lua_abi}") });
-        
+
         try steps.append(allocator, .{ .command = try allocator.dupe(u8, build_cmd), .args = try b_args.toOwnedSlice(allocator) });
-        
+
         var i_args = std.ArrayList([]const u8).empty;
         try i_args.append(allocator, try allocator.dupe(u8, "install"));
         try steps.append(allocator, .{ .command = try allocator.dupe(u8, build_cmd), .args = try i_args.toOwnedSlice(allocator) });
@@ -1126,7 +1126,7 @@ fn fetch_and_unpack_source(
                 const user = it.next() orelse "";
                 var repo = it.next() orelse "";
                 if (std.mem.endsWith(u8, repo, ".git")) {
-                    repo = repo[0..repo.len - 4];
+                    repo = repo[0 .. repo.len - 4];
                 }
                 const ref = if (rock.source.tag) |t| t else if (rock.source.branch) |b| b else "master";
                 fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/tags/{s}.tar.gz", .{ user, repo, ref });
@@ -1139,7 +1139,7 @@ fn fetch_and_unpack_source(
                 const user = it.next() orelse "";
                 var repo = it.next() orelse "";
                 if (std.mem.endsWith(u8, repo, ".git")) {
-                    repo = repo[0..repo.len - 4];
+                    repo = repo[0 .. repo.len - 4];
                 }
                 const ref = if (rock.source.tag) |t| t else if (rock.source.branch) |b| b else "master";
                 fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/tags/{s}.tar.gz", .{ user, repo, ref });
@@ -1277,34 +1277,33 @@ fn discover_modules_from_dir(allocator: std.mem.Allocator, io: std.Io, root_dir:
         }
         list.deinit(allocator);
     }
-    
+
     var dir = std.Io.Dir.cwd().openDir(io, root_dir, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) return try list.toOwnedSlice(allocator);
         return err;
     };
     defer dir.close(io);
-    
+
     var walker = try dir.walk(allocator);
     defer walker.deinit();
-    
+
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ext)) continue;
-        
+
         var name_buf = std.ArrayList(u8).empty;
         defer name_buf.deinit(allocator);
         const without_ext = entry.path[0 .. entry.path.len - ext.len];
         for (without_ext) |c| {
-            if (c == '/') try name_buf.append(allocator, '.')
-            else try name_buf.append(allocator, c);
+            if (c == '/') try name_buf.append(allocator, '.') else try name_buf.append(allocator, c);
         }
-        
+
         try list.append(allocator, .{
             .name = try allocator.dupe(u8, name_buf.items),
-            .path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{prefix, entry.path}),
+            .path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.path }),
         });
     }
-    
+
     return try list.toOwnedSlice(allocator);
 }
 
@@ -1817,12 +1816,12 @@ pub fn resolve(
         defer allocator.free(share_dir);
         const lib_dir = try std.fs.path.join(allocator, &.{ build_out_dir, "lib", "lua", lua_ver_dot });
         defer allocator.free(lib_dir);
-        
+
         const share_prefix = try std.fmt.allocPrint(allocator, "share/lua/{s}", .{lua_ver_dot});
         defer allocator.free(share_prefix);
         const discovered_lua = try discover_modules_from_dir(allocator, io, share_dir, share_prefix, ".lua");
         lua_modules = discovered_lua;
-        
+
         const lib_prefix = try std.fmt.allocPrint(allocator, "lib/lua/{s}", .{lua_ver_dot});
         defer allocator.free(lib_prefix);
         const so_ext = ".so"; // assuming .so

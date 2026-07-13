@@ -108,7 +108,7 @@ pub const CommandNode = struct {
                             if (!matched) {
                                 const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                                ctx.error_detail = .{ .unknown_flag = .{ 
+                                ctx.error_detail = .{ .unknown_flag = .{
                                     .flag = try ctx.allocator.dupe(u8, flag_name),
                                     .command = try ctx.allocator.dupe(u8, cmd_name),
                                 } };
@@ -205,14 +205,14 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
     // If we are at the last argument...
     if (args.len == 1) {
         var list = std.ArrayList([]const u8).empty;
-        
+
         // 1. Check subcommand prefixes
         for (root.subcommands) |sub| {
             if (std.mem.startsWith(u8, sub.name, target)) {
                 try list.append(ctx.allocator, sub.name);
             }
         }
-        
+
         // 2. Check flag prefixes (if this node is a leaf or group?)
         // Groups usually don't have flags in our current impl, only leaves.
         if (root.flags_fn) |f_fn| {
@@ -234,7 +234,7 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
             if (sub.run_fn != null) {
                 // Leaf node: combine its complete_fn suggestions with its flags
                 var combined = std.ArrayList([]const u8).empty;
-                
+
                 // Add flags
                 if (sub.flags_fn) |f_fn| {
                     const flags = try f_fn(ctx.allocator);
@@ -242,7 +242,7 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
                     for (flags) |f| {
                         // Avoid suggesting flags already provided earlier
                         var already_used = false;
-                        for (args[0..args.len - 1]) |prev_arg| {
+                        for (args[0 .. args.len - 1]) |prev_arg| {
                             if (std.mem.eql(u8, prev_arg, f)) {
                                 already_used = true;
                                 break;
@@ -263,7 +263,7 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
                     const comps = try c_fn(args[1..], ctx);
                     try combined.appendSlice(ctx.allocator, comps);
                 }
-                
+
                 return combined.toOwnedSlice(ctx.allocator);
             } else {
                 // Group node: recurse
@@ -272,5 +272,5 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
         }
     }
 
-    return &. {};
+    return &.{};
 }

@@ -88,7 +88,7 @@ pub const InterpreterPathCommand = struct {
             // Resolve real artifact metadata from bin/lua link
             const bin_lua_path = try std.fs.path.join(allocator, &.{ project_root, ".moonstone", "env", "bin", "lua" });
             defer allocator.free(bin_lua_path);
-            
+
             var link_buf: [std.posix.PATH_MAX]u8 = undefined;
             const link_len = std.Io.Dir.readLinkAbsolute(io, bin_lua_path, &link_buf) catch |err| blk: {
                 if (err == error.NotLink) {
@@ -101,7 +101,7 @@ pub const InterpreterPathCommand = struct {
 
             // Extract hash from path
             const hash_suffix = if (std.mem.indexOf(u8, target, "/store/v0/b3/")) |pos| blk: {
-                const sub = target[pos + 13..];
+                const sub = target[pos + 13 ..];
                 if (std.mem.indexOfScalar(u8, sub, '/')) |slash_pos| {
                     break :blk sub[0..slash_pos];
                 }
@@ -124,11 +124,13 @@ pub const InterpreterPathCommand = struct {
                 .lua_abi = try allocator.dupe(u8, rt_table.get("abi").?.string),
                 .path = try allocator.dupe(u8, art_path),
             };
-
         } else if (self.positionals.len > 0) {
             const spec = self.positionals[0];
             const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-            defer { var p = paths; p.deinit(allocator); }
+            defer {
+                var p = paths;
+                p.deinit(allocator);
+            }
 
             const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
             defer allocator.free(index_db_path);

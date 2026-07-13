@@ -102,7 +102,7 @@ pub const RunCommand = struct {
         };
 
         if (emitter == null) {
-            try stdout.print("> {s}\n\n", .{ script_cmd });
+            try stdout.print("> {s}\n\n", .{script_cmd});
         }
 
         var run_env = try moonstone.project.run_env.get_run_env(allocator, io, ".", env);

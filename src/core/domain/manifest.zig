@@ -1344,7 +1344,7 @@ pub const MoonstoneToml = struct {
                                 if (name_val != .string) return error.OrbitInvalidName;
                                 const path_val = member_val.table.get("path") orelse return error.OrbitMissingPath;
                                 if (path_val != .string) return error.OrbitInvalidPath;
-                                
+
                                 try self.orbits.append(allocator, .{
                                     .name = try allocator.dupe(u8, name_val.string),
                                     .path = try allocator.dupe(u8, path_val.string),

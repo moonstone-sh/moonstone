@@ -20,9 +20,7 @@ pub fn build(
         const res = std.process.run(allocator, io, .{
             .argv = &.{ "cmake", "--version" },
         }) catch |err| {
-            if (err == error.FileNotFound) {
-
-            }
+            if (err == error.FileNotFound) {}
             return err;
         };
         allocator.free(res.stdout);
@@ -31,7 +29,7 @@ pub fn build(
 
     const lua_include = try std.fs.path.join(allocator, &.{ runtime_path, "files", "include" });
     defer allocator.free(lua_include);
-    
+
     const build_dir = try std.fs.path.join(allocator, &.{ out_dir_path, "build" });
     defer allocator.free(build_dir);
     try std.Io.Dir.cwd().createDirPath(io, build_dir);
@@ -58,12 +56,12 @@ pub fn build(
     try conf_args.append(allocator, try allocator.dupe(u8, "-B"));
     try conf_args.append(allocator, try allocator.dupe(u8, build_dir));
     try conf_args.append(allocator, try allocator.dupe(u8, "-DCMAKE_BUILD_TYPE=Release"));
-    
+
     // Explicitly pass Lua include paths to prevent system discovery
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIR={s}", .{lua_include}));
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIRS={s}", .{lua_include}));
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_INCLUDE_DIR={s}", .{lua_include}));
-    
+
     // Append user ldflags (formerly cmake_args)
     for (config.ldflags) |arg| {
         try conf_args.append(allocator, try allocator.dupe(u8, arg));
@@ -93,7 +91,7 @@ pub fn build(
     // Create a modified config for the command materializer
     var cmd_config = config;
     cmd_config.steps = steps.items;
-    
+
     // Ensure we use the build dir in collect paths if they are relative
     // Actually, the user should use ${build} or similar if we want to be explicit.
     // Let's add ${build} to the expansion.

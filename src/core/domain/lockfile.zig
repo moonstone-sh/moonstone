@@ -121,7 +121,7 @@ pub const LockFile = struct {
             if (v != .array) return error.InvalidLockFile;
             for (v.array.items) |pkg_val| {
                 const t = pkg_val.table;
-                
+
                 // Helper to get optional string
                 const getStr = struct {
                     fn get(table: *toml.Table, key: []const u8) ?[]const u8 {
@@ -131,7 +131,7 @@ pub const LockFile = struct {
                         return null;
                     }
                 }.get;
-                
+
                 const reproducible = blk: {
                     const rep = t.get("reproducible");
                     if (rep) |r| {
@@ -139,7 +139,7 @@ pub const LockFile = struct {
                     }
                     break :blk true;
                 };
-                
+
                 try lf.packages.append(allocator, .{
                     .name = try allocator.dupe(u8, getStr(t, "name") orelse return error.MissingName),
                     .version = try allocator.dupe(u8, getStr(t, "version") orelse return error.MissingVersion),

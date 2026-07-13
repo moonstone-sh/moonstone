@@ -50,7 +50,10 @@ fn registerCurrentProject(self: LinkCommand, allocator: std.mem.Allocator, io: s
     defer allocator.free(cwd);
 
     const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-    defer { var p = paths; p.deinit(allocator); }
+    defer {
+        var p = paths;
+        p.deinit(allocator);
+    }
 
     try std.Io.Dir.cwd().createDirPath(io, paths.index);
 
@@ -79,7 +82,6 @@ fn registerCurrentProject(self: LinkCommand, allocator: std.mem.Allocator, io: s
         .version = mt.package.version,
         .kind = mt.package.kind,
     });
-
 
     if (!self.json) {
         try stdout.print("Linked package registered: {s} -> {s}\n", .{ pkg_name, cwd });

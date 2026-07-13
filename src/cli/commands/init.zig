@@ -111,7 +111,10 @@ pub const init_command = struct {
 
     fn defaultRuntimeSpec(allocator: std.mem.Allocator, env: *std.process.Environ.Map, io: std.Io) !?[]const u8 {
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var mp = paths; mp.deinit(allocator); }
+        defer {
+            var mp = paths;
+            mp.deinit(allocator);
+        }
 
         const config_path = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
         defer allocator.free(config_path);
@@ -175,8 +178,11 @@ pub const init_command = struct {
         // Check for global name collision in links
         {
             const paths = try moonstone.platform.fs.resolve_moonstone(allocator, ctx.env, io);
-            defer { var mp = paths; mp.deinit(allocator); }
-            
+            defer {
+                var mp = paths;
+                mp.deinit(allocator);
+            }
+
             try std.Io.Dir.cwd().createDirPath(io, paths.index);
 
             const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
@@ -364,8 +370,7 @@ pub const init_command = struct {
             }
             try project_dir.createDirPath(io, "src");
             try project_dir.createDirPath(io, "assets");
-        }
- else if (std.mem.eql(u8, template, "c-bin")) {
+        } else if (std.mem.eql(u8, template, "c-bin")) {
             try project_dir.createDirPath(io, "src");
             if (project_dir.access(io, "src/main.c", .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, "src/main.c", .{});
@@ -454,8 +459,8 @@ pub const init_command = struct {
                 try f.writeStreamingAll(io, content);
             }
         } else if (std.mem.eql(u8, template, "bin")) {
-             try project_dir.createDirPath(io, "src");
-             if (project_dir.access(io, "src/main.c", .{})) |_| {} else |_| {
+            try project_dir.createDirPath(io, "src");
+            if (project_dir.access(io, "src/main.c", .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, "src/main.c", .{});
                 defer f.close(io);
                 try f.writeStreamingAll(io, T.bin_main);
@@ -471,7 +476,7 @@ pub const init_command = struct {
             .kind = pkg_kind,
             .description = if (self.desc) |d| try allocator.dupe(u8, d) else try allocator.dupe(u8, "A new Moonstone Lua project"),
         };
-        
+
         pkg.runtime = .{
             .name = try allocator.dupe(u8, runtime_name),
             .version = try allocator.dupe(u8, runtime_version),
@@ -529,7 +534,7 @@ pub const init_command = struct {
                 // Git already initialized, skip
             } else |_| {
                 if (emitter == null) try stdout.print("Initializing git repository...\n", .{});
-                
+
                 const git_res = try std.process.run(allocator, io, .{
                     .argv = &.{ "git", "init", target_path },
                 });

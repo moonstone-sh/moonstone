@@ -104,12 +104,18 @@ pub const StoreListCommand = struct {
             }
         }
         const kind_filter = if (self.kind) |k| if (std.mem.eql(u8, k, "interpreter")) "runtime" else k else null;
-        bindNullable(stmt, 1, kind_filter, transient); bindNullable(stmt, 2, kind_filter, transient);
-        bindNullable(stmt, 3, self.resolver, transient); bindNullable(stmt, 4, self.resolver, transient);
-        bindNullable(stmt, 5, self.target, transient); bindNullable(stmt, 6, self.target, transient);
-        bindNullable(stmt, 7, self.abi, transient); bindNullable(stmt, 8, self.abi, transient);
-        bindNullable(stmt, 9, name_like, transient); bindNullable(stmt, 10, name_like, transient);
-        bindNullable(stmt, 11, name_tri, transient); bindNullable(stmt, 12, name_tri, transient);
+        bindNullable(stmt, 1, kind_filter, transient);
+        bindNullable(stmt, 2, kind_filter, transient);
+        bindNullable(stmt, 3, self.resolver, transient);
+        bindNullable(stmt, 4, self.resolver, transient);
+        bindNullable(stmt, 5, self.target, transient);
+        bindNullable(stmt, 6, self.target, transient);
+        bindNullable(stmt, 7, self.abi, transient);
+        bindNullable(stmt, 8, self.abi, transient);
+        bindNullable(stmt, 9, name_like, transient);
+        bindNullable(stmt, 10, name_like, transient);
+        bindNullable(stmt, 11, name_tri, transient);
+        bindNullable(stmt, 12, name_tri, transient);
 
         if (emitter) |e| {
             try e.emit(ctx.io, .START, "store-list", "begin", .{});
@@ -178,7 +184,10 @@ pub const StoreListCommand = struct {
         }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
@@ -235,7 +244,10 @@ pub const StoreListCommand = struct {
         }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.index);
         const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });

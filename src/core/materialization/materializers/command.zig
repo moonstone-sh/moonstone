@@ -71,7 +71,7 @@ pub fn build_internal(
     // 2. Prepare env
     var final_env = try env_map.clone(allocator);
     defer final_env.deinit();
-    
+
     // Add default build env
     // Let the system use default CC/CXX unless cross-compiling
     // try final_env.put("CC", "zig cc");
@@ -108,7 +108,7 @@ pub fn build_internal(
         }
         var it = final_env.iterator();
         while (it.next()) |entry| {
-            std.debug.print("env: {s} = {s}\n", .{entry.key_ptr.*, entry.value_ptr.*});
+            std.debug.print("env: {s} = {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
         std.debug.print("=====================\n\n", .{});
 
@@ -139,7 +139,7 @@ pub fn build_internal(
                     .command = step.cmd,
                     .stderr_tail = tail,
                     .log_path = log_path,
-                }});
+                } });
             } else {
                 const tail_len = @min(res.stderr.len, 2048);
                 const tail = res.stderr[res.stderr.len - tail_len ..];
@@ -230,13 +230,13 @@ fn collectOutputs(
         for (items) |item| {
             const expanded_src = try expandVariables(allocator, item.path, out_path, src_path, build_path, lua_include, lua_lib, lua_bin_dir, lua_abi);
             defer allocator.free(expanded_src);
-            
+
             const src_abs = if (std.fs.path.isAbsolute(expanded_src)) expanded_src else try std.fs.path.join(allocator, &.{ src_path, expanded_src });
             defer if (!std.fs.path.isAbsolute(expanded_src)) allocator.free(src_abs);
 
             const dest_abs = try std.fs.path.join(allocator, &.{ out_path, item.name });
             defer allocator.free(dest_abs);
-            
+
             // Skip if source and destination are the same path
             if (std.mem.eql(u8, src_abs, dest_abs)) {
                 continue;
@@ -250,7 +250,6 @@ fn collectOutputs(
                 .argv = &.{ "cp", src_abs, dest_abs },
             });
             if (cp_res.term != .exited or cp_res.term.exited != 0) {
-
                 return error.CopyFailed;
             }
         }

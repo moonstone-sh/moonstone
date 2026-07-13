@@ -5,20 +5,19 @@ pub const ArtifactPackage = struct {
     artifact_hash: []const u8,
     name: []const u8,
     version: []const u8,
-    lua_version: []const u8,           // e.g. lua@5.4.7
-    lua_abi: []const u8,               // e.g. lua-5.4
+    lua_version: []const u8, // e.g. lua@5.4.7
+    lua_abi: []const u8, // e.g. lua-5.4
     runtime_artifact_hash: []const u8, // exact binary identity
 };
 
 pub const SourcePackage = struct {
     name: []const u8,
     version: []const u8,
-    lua_version: []const u8,           // e.g. lua@5.4.7
-    lua_abi: []const u8,               // e.g. lua-5.4
+    lua_version: []const u8, // e.g. lua@5.4.7
+    lua_abi: []const u8, // e.g. lua-5.4
     runtime_artifact_hash: []const u8, // exact binary identity
     recipe_hash: []const u8,
 };
-
 
 pub const PathPackage = struct {
     name: []const u8,

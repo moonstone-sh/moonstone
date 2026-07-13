@@ -39,7 +39,10 @@ pub const SetupCommand = struct {
         }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
-        defer { var p = paths; p.deinit(allocator); }
+        defer {
+            var p = paths;
+            p.deinit(allocator);
+        }
 
         try std.Io.Dir.cwd().createDirPath(io, paths.shims);
         var shim_dir = try std.Io.Dir.cwd().openDir(io, paths.shims, .{});
@@ -52,9 +55,9 @@ pub const SetupCommand = struct {
         const tools = [_][]const u8{ "lua", "luac" };
         for (tools) |tool| {
             if (emitter) |e| try e.emit(io, .PROGRESS, tool, "creating-shim", .{});
-            
+
             // Create a small shell script shim
-            const shim_content = try std.fmt.allocPrint(allocator, 
+            const shim_content = try std.fmt.allocPrint(allocator,
                 \\#!/bin/sh
                 \\exec "{s}" exec -- "{s}" "$@"
                 \\
@@ -76,7 +79,7 @@ pub const SetupCommand = struct {
             // Make executable
             const abs_shim = try std.fs.path.join(allocator, &.{ paths.shims, tool });
             defer allocator.free(abs_shim);
-            
+
             const chmod_res = try std.process.run(allocator, io, .{
                 .argv = &.{ "chmod", "+x", abs_shim },
             });

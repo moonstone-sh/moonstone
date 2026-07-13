@@ -8,9 +8,9 @@ pub const Incompatibility = struct {
     cause: Cause,
 
     pub const Cause = union(enum) {
-        root,           // Root project dependency
-        dependency,     // Package A depends on Package B
-        no_versions,    // No versions of a package exist
+        root, // Root project dependency
+        dependency, // Package A depends on Package B
+        no_versions, // No versions of a package exist
         learned: struct {
             conflict: *Incompatibility,
             other: *Incompatibility,
