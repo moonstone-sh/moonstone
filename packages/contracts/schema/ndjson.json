@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MoonstoneMessageEnvelope",
+  "description": "Standard message envelope for the Moonstone CLI NDJSON output stream.",
+  "type": "object",
+  "required": ["kind", "timestamp", "seq", "about", "value", "data", "terminator"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["START", "PROGRESS", "STATUS", "ERROR", "WARN", "RESULT", "PROMPT", "INFO", "DUMP"]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "about": {
+      "type": "string"
+    },
+    "value": {
+      "type": "string"
+    },
+    "terminator": {
+      "type": "boolean"
+    },
+    "meta": {
+      "type": "object",
+      "required": ["command", "pid", "version"],
+      "properties": {
+        "command": { "type": "string" },
+        "pid": { "type": "integer" },
+        "version": { "type": "string" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "description": "Inner payload that changes based on 'kind' and 'about'.",
+      "properties": {},
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "ArtifactData": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "state": { "type": "string" },
+        "materializer": { "type": "string" },
+        "bytes_downloaded": { "type": ["integer", "null"] },
+        "bytes_total": { "type": ["integer", "null"] },
+        "bytes_per_second": { "type": ["number", "null"] },
+        "artifact_hash": { "type": "string" },
+        "elapsed_ms": { "type": "integer" },
+        "error": { "type": "string" },
+        "error_detail": { "type": "string" },
+        "registry": { "type": "string" },
+        "target": { "type": "string" },
+        "cache_hit": { "type": "boolean" },
+        "warn": { "type": "string" },
+        "resolved_kind": { "type": "string" },
+        "override": { "type": "string" },
+        "manifest_table": { "type": "string" },
+        "symlink": { "type": "string" },
+        "old_version": { "type": "string" },
+        "new_version": { "type": "string" },
+        "old_constraint": { "type": "string" },
+        "new_constraint": { "type": "string" },
+        "path": { "type": "string" },
+        "recreated": { "type": "boolean" }
+      }
+    }
+  }
+}
