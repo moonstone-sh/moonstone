@@ -11,6 +11,7 @@ These definitions allow frontend developers, TUI wrapper authors, and CI pipelin
 *   **[JSON Schema](./schema/ndjson.json)**: Language-agnostic specification schema for validating NDJSON lines.
 *   **[TypeScript Types](./typescript/ndjson.ts)**: Discriminated union types built for TS environments.
 *   **[Go Structs](./go/ndjson.go)**: Structs and decoders for Go integrations.
+*   **[LuaCATS definitions](./lua/ndjson.lua)**: Standard type annotations for static analysis in Lua environments (LSPs).
 
 ---
 
@@ -99,4 +100,24 @@ func main() {
 		}
 	}
 }
+```
+
+### Lua
+
+Lua developers can cast decoded tables using the annotated classes to get full autocomplete in their editors (e.g. Neovim with `lua-language-server` / LuaCATS):
+
+```lua
+-- Assumes a JSON parser like dkjson or cjson is available
+local json = require("dkjson")
+
+local line = '{"kind":"RESULT","about":"sync","value":"ok","terminator":true,"data":{"artifacts_ok":3,"artifacts_failed":0,"duration_ms":1200}}'
+
+---@type MessageEnvelope
+local envelope = json.decode(line)
+
+if envelope.kind == "RESULT" and envelope.about == "sync" then
+    ---@type SyncResultData
+    local result = envelope.data
+    print(string.format("Materialized %d packages in %dms", result.artifacts_ok, result.duration_ms))
+end
 ```

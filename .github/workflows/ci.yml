@@ -29,3 +29,7 @@ jobs:
       - name: Run Native Tests
         # We run the internal test suite
         run: zig build test
+
+      - name: Run Contracts Verification Tests
+        # We verify TS, Go, and LuaCATS contracts remain valid
+        run: ./packages/contracts/tests/run.sh
