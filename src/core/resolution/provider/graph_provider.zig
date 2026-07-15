@@ -435,7 +435,7 @@ pub const RegistryProvider = struct {
 
         // 1. Check already known artifacts
         for (self.artifacts.items) |art| {
-            if (std.mem.eql(u8, art.name, name)) {
+            if (packageNamesMatch(art.name, name)) {
                 const v = try semver.Version.parseCloned(arena, art.version);
                 try versions.append(self.allocator, v);
             }
@@ -758,7 +758,7 @@ pub const RegistryProvider = struct {
 
         var artifact: ?candidate_mod.Candidate = null;
         for (self.artifacts.items) |*art| {
-            if (!std.mem.eql(u8, art.name, name)) continue;
+            if (!packageNamesMatch(art.name, name)) continue;
             const v = semver.Version.parse(art.version) catch continue;
             if (version.compare(v) == 0) {
                 if (art.origin == .moonstone_registry and art.remote_desc == null) {
@@ -829,7 +829,7 @@ pub const RegistryProvider = struct {
 
                 // Re-scan artifacts to find the freshly-built candidate.
                 for (self.artifacts.items) |*art| {
-                    if (!std.mem.eql(u8, art.name, name)) continue;
+                    if (!packageNamesMatch(art.name, name)) continue;
                     const v = semver.Version.parse(art.version) catch continue;
                     if (version.compare(v) == 0) {
                         artifact = art.*;
