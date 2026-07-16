@@ -13,6 +13,11 @@ jobs:
   build-and-release:
     name: Build & Publish GitHub Release
     runs-on: ubuntu-latest
+    outputs:
+      mac_arm: ${{ steps.hashes.outputs.mac_arm }}
+      mac_intel: ${{ steps.hashes.outputs.mac_intel }}
+      linux_arm: ${{ steps.hashes.outputs.linux_arm }}
+      linux_intel: ${{ steps.hashes.outputs.linux_intel }}
 
     steps:
       - name: Checkout code
@@ -34,6 +39,15 @@ jobs:
             tar -czf "${binary}.tar.gz" "$binary"
           done
 
+      - name: Compute Hashes
+        id: hashes
+        run: |
+          cd zig-out/bin
+          echo "mac_arm=$(sha256sum moon-aarch64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "mac_intel=$(sha256sum moon-x86_64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm=$(sha256sum moon-aarch64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_intel=$(sha256sum moon-x86_64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -44,28 +58,14 @@ jobs:
     name: Update Homebrew Formula
     needs: build-and-release
     runs-on: ubuntu-latest
+    env:
+      MAC_ARM: ${{ needs.build-and-release.outputs.mac_arm }}
+      MAC_INTEL: ${{ needs.build-and-release.outputs.mac_intel }}
+      LINUX_ARM: ${{ needs.build-and-release.outputs.linux_arm }}
+      LINUX_INTEL: ${{ needs.build-and-release.outputs.linux_intel }}
     steps:
       - name: Extract version from tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
-
-      - name: Download release assets
-        uses: dsaltares/fetch-gh-release-asset@master
-        with:
-          version: tags/v${{ env.VERSION }}
-          file: 'moon-.*\.tar\.gz'
-          regex: true
-          target: './binaries/'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute Hashes
-        id: hashes
-        run: |
-          cd binaries/
-          echo "MAC_ARM=$(sha256sum moon-aarch64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
-          echo "MAC_INTEL=$(sha256sum moon-x86_64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
-          echo "LINUX_ARM=$(sha256sum moon-aarch64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
-          echo "LINUX_INTEL=$(sha256sum moon-x86_64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
 
       - name: Checkout Tap Repository
         uses: actions/checkout@v4
