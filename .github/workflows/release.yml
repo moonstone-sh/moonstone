@@ -76,6 +76,7 @@ jobs:
 
       - name: Update Formula
         run: |
+          mkdir -p homebrew-moonstone/Formula
           cat << 'EOF' > homebrew-moonstone/Formula/moonstone.rb
           class Moonstone < Formula
             desc "Reliable Lua environments, ready at a snap"
