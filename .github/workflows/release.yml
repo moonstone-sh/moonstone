@@ -18,6 +18,9 @@ jobs:
       mac_intel: ${{ steps.hashes.outputs.mac_intel }}
       linux_arm: ${{ steps.hashes.outputs.linux_arm }}
       linux_intel: ${{ steps.hashes.outputs.linux_intel }}
+      riscv_linux: ${{ steps.hashes.outputs.riscv_linux }}
+      freebsd_arm: ${{ steps.hashes.outputs.freebsd_arm }}
+      freebsd_intel: ${{ steps.hashes.outputs.freebsd_intel }}
 
     steps:
       - name: Checkout code
@@ -34,9 +37,29 @@ jobs:
           zig build -Doptimize=ReleaseSafe
           
           # Compress all generated cross-compiled binaries
+          VERSION="${GITHUB_REF#refs/tags/v}"
           cd zig-out/bin
           for binary in moon-*; do
-            tar -czf "${binary}.tar.gz" "$binary"
+            if [[ "$binary" == *.tar.gz ]]; then
+              continue
+            fi
+            
+            # Extract the triple from the binary name
+            triple="${binary#moon-${VERSION}-}"
+            
+            # Normalize triple names for release packaging
+            if [[ "$triple" == "aarch64-linux-gnu" ]]; then
+              triple="aarch64-linux"
+            elif [[ "$triple" == "x86_64-linux-gnu" ]]; then
+              triple="x86_64-linux"
+            elif [[ "$triple" == "riscv64-linux-gnu" ]]; then
+              triple="riscv64-linux"
+            fi
+            
+            # Move binary to a temporary standard name "moon" so that it's extracted correctly by Homebrew
+            mv "$binary" moon
+            tar -czf "moon-${triple}.tar.gz" moon
+            rm moon
           done
 
       - name: Compute Hashes
@@ -47,6 +70,9 @@ jobs:
           echo "mac_intel=$(sha256sum moon-x86_64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
           echo "linux_arm=$(sha256sum moon-aarch64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
           echo "linux_intel=$(sha256sum moon-x86_64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "riscv_linux=$(sha256sum moon-riscv64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "freebsd_arm=$(sha256sum moon-aarch64-freebsd.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "freebsd_intel=$(sha256sum moon-x86_64-freebsd.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
@@ -63,6 +89,9 @@ jobs:
       MAC_INTEL: ${{ needs.build-and-release.outputs.mac_intel }}
       LINUX_ARM: ${{ needs.build-and-release.outputs.linux_arm }}
       LINUX_INTEL: ${{ needs.build-and-release.outputs.linux_intel }}
+      RISCV_LINUX: ${{ needs.build-and-release.outputs.riscv_linux }}
+      FREEBSD_ARM: ${{ needs.build-and-release.outputs.freebsd_arm }}
+      FREEBSD_INTEL: ${{ needs.build-and-release.outputs.freebsd_intel }}
     steps:
       - name: Extract version from tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
@@ -101,6 +130,21 @@ jobs:
             if OS.linux? && Hardware::CPU.intel?
               url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-x86_64-linux.tar.gz"
               sha256 "${{ env.LINUX_INTEL }}"
+            end
+
+            if OS.linux? && Hardware::CPU.riscv64?
+              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-riscv64-linux.tar.gz"
+              sha256 "${{ env.RISCV_LINUX }}"
+            end
+
+            if OS.respond_to?(:freebsd?) && OS.freebsd?
+              if Hardware::CPU.arm?
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-aarch64-freebsd.tar.gz"
+                sha256 "${{ env.FREEBSD_ARM }}"
+              else
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-x86_64-freebsd.tar.gz"
+                sha256 "${{ env.FREEBSD_INTEL }}"
+              end
             end
 
             def install
