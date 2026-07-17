@@ -2057,7 +2057,7 @@ test "StoreManifest source provenance enrichment preserves artifact identity" {
 
     sm_before.origin.source_kind = try std.testing.allocator.dupe(u8, "puc_lua_source");
     sm_before.origin.source_payload = try std.testing.allocator.dupe(u8, "sources/source.tar.gz");
-    sm_before.origin.source_url = try std.testing.allocator.dupe(u8, "https://moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz");
+    sm_before.origin.source_url = try std.testing.allocator.dupe(u8, "https://registry.moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz");
     sm_before.artifact.source_hash = try std.testing.allocator.dupe(u8, "b3:aabbccdd1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
 
     // Serialize the enriched manifest
@@ -2074,7 +2074,7 @@ test "StoreManifest source provenance enrichment preserves artifact identity" {
     // Assert: provenance metadata was enriched
     try std.testing.expectEqualStrings("puc_lua_source", sm_after.origin.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", sm_after.origin.source_payload);
-    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz", sm_after.origin.source_url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz", sm_after.origin.source_url);
     try std.testing.expectEqualStrings("b3:aabbccdd1234567890abcdef1234567890abcdef1234567890abcdef1234567890", sm_after.artifact.source_hash);
 
     // Assert: artifact identity is unchanged
@@ -2110,7 +2110,7 @@ test "StoreManifest source_url round-trips through serialize and parse" {
         \\source = "blobs/b3/ar/ti/facthash.tar.zst"
         \\source_kind = "puc_lua_source"
         \\source_payload = "sources/source.tar.gz"
-        \\source_url = "https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
+        \\source_url = "https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
         \\
         \\[compat]
         \\runtime_version = "lua@5.4.7"
@@ -2126,7 +2126,7 @@ test "StoreManifest source_url round-trips through serialize and parse" {
 
     try std.testing.expectEqualStrings("puc_lua_source", sm.origin.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", sm.origin.source_payload);
-    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm.origin.source_url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm.origin.source_url);
 
     // Serialize and re-parse
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
@@ -2140,5 +2140,5 @@ test "StoreManifest source_url round-trips through serialize and parse" {
 
     try std.testing.expectEqualStrings("puc_lua_source", sm2.origin.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", sm2.origin.source_payload);
-    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm2.origin.source_url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm2.origin.source_url);
 }

@@ -321,7 +321,7 @@ test "lockfile source_url round-trips through serialize and parse" {
         \\source = "registry"
         \\source_kind = "puc_lua_source"
         \\source_payload = "sources/source.tar.gz"
-        \\source_url = "https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
+        \\source_url = "https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz"
     ;
 
     var lf = try LockFile.parse(std.testing.allocator, toml_text);
@@ -331,7 +331,7 @@ test "lockfile source_url round-trips through serialize and parse" {
     const entry = lf.packages.items[0];
     try std.testing.expectEqualStrings("puc_lua_source", entry.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", entry.source_payload);
-    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry.source_url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry.source_url);
 
     // Serialize and re-parse
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
@@ -347,7 +347,7 @@ test "lockfile source_url round-trips through serialize and parse" {
     const entry2 = lf2.packages.items[0];
     try std.testing.expectEqualStrings("puc_lua_source", entry2.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", entry2.source_payload);
-    try std.testing.expectEqualStrings("https://moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry2.source_url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", entry2.source_url);
 
     // Assert: no absolute filesystem paths in serialized lockfile
     try std.testing.expect(std.mem.indexOf(u8, serialized, "/Users/") == null);

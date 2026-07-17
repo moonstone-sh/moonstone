@@ -99,7 +99,7 @@ echo "  ✓ before state correct"
 #  to verify the schema and invariants.)
 
 SOURCE_ARCHIVE_HASH="b3:aabbccdd1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-SOURCE_URL="https://moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz"
+SOURCE_URL="https://registry.moonstone.sh/registry/v0/blobs/b3/aa/bb/aabbccdd-source.tar.gz"
 
 # Create the upstream source payload
 echo "fake-upstream-source" > "$STORE_DIR/sources/source.tar.gz"

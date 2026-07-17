@@ -91,7 +91,7 @@ min_client = "0.1.0"
 
 [index]
 format = "toml"
-url = "https://moonstone.sh/registry/v0/index.toml"
+url = "https://registry.moonstone.sh/registry/v0/index.toml"
 hash = "b3:abc123..."
 bytes = 1048576
 revision = 42
@@ -191,7 +191,7 @@ runtimes = ["lua54"]
 [[artifact]]
 target = "native"
 lua_abi = "lua54"
-url = "https://moonstone.sh/registry/blobs/b3/aa/bb/...tar.gz"
+url = "https://registry.moonstone.sh/registry/blobs/b3/aa/bb/...tar.gz"
 hash = "b3:..."
 format = "tar.gz"
 bytes = 15360
@@ -296,7 +296,7 @@ static registry.
 ### Endpoints
 
 A mature registry exposes the following endpoints.  All paths are prefixed by the
-registry URL (e.g. `https://moonstone.sh/registry/v0`).
+registry URL (e.g. `https://registry.moonstone.sh/registry/v0`).
 
 #### Read endpoints (public or token-scoped)
 
@@ -328,7 +328,7 @@ Tokens are scoped per-registry in `moonstone.toml`:
 
 ```toml
 [registries.moonstone]
-url = "https://moonstone.sh/registry/v0"
+url = "https://registry.moonstone.sh/registry/v0"
 token = "mst_..."
 ```
 

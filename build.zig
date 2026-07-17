@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Custom build options (Shared)
-    const default_registry_url = b.option([]const u8, "default_registry_url", "Default registry URL") orelse "https://moonstone.sh/registry/v0";
+    const default_registry_url = b.option([]const u8, "default_registry_url", "Default registry URL") orelse "https://registry.moonstone.sh/registry/v0";
     const options = b.addOptions();
     options.addOption([]const u8, "name", @tagName(zon.name));
     options.addOption([]const u8, "version", zon.version);
