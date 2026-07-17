@@ -18,9 +18,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         ARCH="aarch64"; \
     else \
         ARCH="x86_64"; \
-    fi && \
-    CLEAN_VER=$(echo $MOONSTONE_VERSION | sed 's/^v//') && \
-    curl -fsSL "https://github.com/moonstone-sh/moonstone/releases/download/${MOONSTONE_VERSION}/moon-${CLEAN_VER}-${ARCH}-linux-gnu.tar.gz" | tar -xz -C /usr/local/bin
+    curl -fsSL "https://github.com/moonstone-sh/moonstone/releases/download/${MOONSTONE_VERSION}/moon-${ARCH}-linux.tar.gz" | tar -xz -C /usr/local/bin
 
 
 ENTRYPOINT ["moon"]
