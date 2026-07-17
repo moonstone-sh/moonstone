@@ -18,6 +18,7 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         ARCH="aarch64"; \
     else \
         ARCH="x86_64"; \
+    fi && \
     curl -fsSL "https://github.com/moonstone-sh/moonstone/releases/download/${MOONSTONE_VERSION}/moon-${ARCH}-linux.tar.gz" | tar -xz -C /usr/local/bin
 
 

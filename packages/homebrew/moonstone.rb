@@ -30,6 +30,15 @@ class Moonstone < Formula
     generate_completions_from_executable(bin/"moon", "completions", "--shell")
   end
 
+  def post_install
+    Utils.popen_read(
+      "curl", "-fsS", "--connect-timeout", "2", "--max-time", "5",
+      "-X", "POST", "-H", "Content-Type: application/json",
+      "--data", '{"source":"homebrew"}',
+      "https://moonstone.sh/api/metrics/installations",
+    )
+  end
+
   test do
     system "#{bin}/moon", "--version"
   end
