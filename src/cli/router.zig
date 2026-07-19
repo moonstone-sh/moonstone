@@ -116,6 +116,9 @@ pub const CommandNode = struct {
                             }
                         } else {
                             try positionals.append(ctx.allocator, arg);
+                            if (comptime @hasDecl(CmdType, "name") and (std.mem.eql(u8, CmdType.name, "exec") or std.mem.eql(u8, CmdType.name, "run"))) {
+                                stop_parsing_flags = true;
+                            }
                         }
                     }
 

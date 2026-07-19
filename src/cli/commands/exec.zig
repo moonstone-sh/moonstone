@@ -206,7 +206,7 @@ pub const ExecCommand = struct {
 
         // Workaround: std.process.spawn uses parent PATH for expand_arg0 resolution,
         // ignoring environ_map PATH. Manually search PATH from run_env.env_map.
-        if (!std.fs.path.isAbsolute(self.positionals[0])) {
+        if (!std.fs.path.isAbsolute(argv[0])) {
             if (run_env.env_map.get("PATH")) |path_val| {
                 var path_it = std.mem.splitScalar(u8, path_val, ':');
                 while (path_it.next()) |dir| {
