@@ -432,6 +432,43 @@ pub const DoctorCommand = struct {
             }
             try results.append(allocator, .{ .passed = env_ok, .name = .env_symlinks, .message = env_msg, .fixed = self.fix and !env_ok });
             try self.reportCheck(emitter, io, stdout, "env_symlinks", env_ok, env_msg);
+
+            // 5b. Native C-module dynamic symbol loading check
+            var cmod_ok = true;
+            var cmod_msg: []const u8 = "";
+            const lua_bin_path = ".moonstone/env/bin/lua";
+            if (std.Io.Dir.cwd().access(io, lua_bin_path, .{})) |_| {
+                const test_cmd = "local ok, fs = pcall(require, 'lfs'); local ok2, lpeg = pcall(require, 'lpeg')";
+                const res = std.process.run(allocator, io, .{
+                    .argv = &.{ lua_bin_path, "-e", test_cmd },
+                }) catch null;
+                if (res) |r| {
+                    defer allocator.free(r.stdout);
+                    defer allocator.free(r.stderr);
+                    if (r.term != .exited or r.term.exited != 0) {
+                        const err_out = r.stderr;
+                        if (std.mem.indexOf(u8, err_out, "undefined symbol: lua_") != null or
+                            std.mem.indexOf(u8, err_out, "undefined symbol: luaL_") != null)
+                        {
+                            cmod_ok = false;
+                            cmod_msg = try std.fmt.allocPrint(allocator, "FAIL: ELF dynamic symbol error on C-module load ('undefined symbol: lua_*'). On NixOS/Linux, set LD_PRELOAD=/path/to/liblua.so or use nix-ld.", .{});
+                        } else if (std.mem.indexOf(u8, err_out, "cannot open shared object file") != null) {
+                            cmod_ok = false;
+                            cmod_msg = try std.fmt.allocPrint(allocator, "WARN: Missing C shared library dependency. On NixOS, run inside a nix-shell with required C libraries.", .{});
+                        } else {
+                            cmod_msg = try std.fmt.allocPrint(allocator, "OK", .{});
+                        }
+                    } else {
+                        cmod_msg = try std.fmt.allocPrint(allocator, "OK", .{});
+                    }
+                } else {
+                    cmod_msg = try std.fmt.allocPrint(allocator, "OK", .{});
+                }
+            } else |_| {
+                cmod_msg = try std.fmt.allocPrint(allocator, "OK (skipped, no active runtime bin)", .{});
+            }
+            try results.append(allocator, .{ .passed = cmod_ok, .name = .env_symlinks, .message = cmod_msg, .fixed = false });
+            try self.reportCheck(emitter, io, stdout, "cmodule_symbols", cmod_ok, cmod_msg);
         }
 
         if (idx_res) |*i| {
