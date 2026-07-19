@@ -229,10 +229,11 @@ pub const ExecCommand = struct {
             try stdout.flush();
         }
 
-        var term = std.process.spawn(io, .{
+        var child = std.process.spawn(io, .{
             .argv = argv,
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
+            .stderr = .pipe,
         }) catch |err| {
             if (err == error.FileNotFound) {
                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
@@ -242,9 +243,57 @@ pub const ExecCommand = struct {
             return err;
         };
 
-        const wait_res = try term.wait(io);
+        var captured_stderr = std.ArrayList(u8).empty;
+        defer captured_stderr.deinit(allocator);
+
+        if (child.stderr) |*pipe| {
+            var buf: [1024]u8 = undefined;
+            var iov = [_][]u8{&buf};
+            while (pipe.readStreaming(io, &iov) catch null) |n| {
+                if (n == 0) break;
+                const chunk = buf[0..n];
+                _ = ctx.stderr.write(chunk) catch {};
+                try captured_stderr.appendSlice(allocator, chunk);
+            }
+        }
+
+        const wait_res = try child.wait(io);
 
         if (wait_res != .exited or wait_res.exited != 0) {
+            const stderr_str = captured_stderr.items;
+            if (std.mem.indexOf(u8, stderr_str, "undefined symbol: lua_") != null or
+                std.mem.indexOf(u8, stderr_str, "undefined symbol: luaL_") != null)
+            {
+                try ctx.stderr.print(
+                    \\
+                    \\💡 Moonstone Diagnostic: Dynamic C-Module Symbol Resolution Error
+                    \\─────────────────────────────────────────────────────────────────
+                    \\The Lua interpreter failed to resolve C API symbols (e.g. 'lua_pushstring' / 'lua_gettop') when loading a native C-module (.so).
+                    \\
+                    \\This occurs on NixOS or custom Linux systems when the active Lua binary was compiled without dynamic symbol exports ('-Wl,-E' / '-rdynamic').
+                    \\
+                    \\Suggested Fixes:
+                    \\  1. Switch to a Moonstone-managed, prebuilt runtime with full dynamic export support:
+                    \\     moon use lua@5.4
+                    \\
+                    \\  2. Or set LD_PRELOAD to the active Lua shared library if using a custom system binary:
+                    \\     LD_PRELOAD=/path/to/liblua.so moon exec <command>
+                    \\
+                , .{});
+            } else if (std.mem.indexOf(u8, stderr_str, "cannot open shared object file") != null) {
+                try ctx.stderr.print(
+                    \\
+                    \\💡 Moonstone Diagnostic: Missing System Shared Library
+                    \\─────────────────────────────────────────────────────
+                    \\A native C-module requires a system shared library that could not be found on PATH / LD_LIBRARY_PATH.
+                    \\
+                    \\Suggested Fixes:
+                    \\  On NixOS, enter a nix shell with the required C libraries:
+                    \\     nix-shell -p zlib openssl ...
+                    \\
+                , .{});
+            }
+
             std.process.exit(if (wait_res == .exited) @intCast(wait_res.exited) else 1);
         }
     }
