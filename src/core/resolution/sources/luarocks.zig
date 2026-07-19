@@ -5,6 +5,7 @@ const http = @import("../../platform/http.zig");
 const store = @import("../../store.zig");
 const hash = @import("../../identity/hash.zig");
 const luarocks = @import("../../luarocks/rockspec.zig");
+const luarocks_compat = @import("../../luarocks/compat.zig");
 const manifest_cache_mod = @import("../../cache/manifest_cache.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
@@ -969,7 +970,14 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
         };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+        if (res.term != .exited or res.term.exited != 0) {
+            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'unzip' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack zip archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
+            return error.UnpackError;
+        }
     } else if (is_tar_gz) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
         const res = std.process.run(allocator, io, .{
@@ -983,7 +991,14 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
         };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+        if (res.term != .exited or res.term.exited != 0) {
+            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.gz archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
+            return error.UnpackError;
+        }
     } else if (is_tar_bz2) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
         const res = std.process.run(allocator, io, .{
@@ -997,7 +1012,14 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
         };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+        if (res.term != .exited or res.term.exited != 0) {
+            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.bz2 archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
+            return error.UnpackError;
+        }
     } else if (is_tar_xz) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
         const res = std.process.run(allocator, io, .{
@@ -1011,7 +1033,14 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
         };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+        if (res.term != .exited or res.term.exited != 0) {
+            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.xz archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
+            return error.UnpackError;
+        }
     } else if (is_tar) {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
         const res = std.process.run(allocator, io, .{
@@ -1025,7 +1054,14 @@ fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []cons
         };
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) return error.UnpackError;
+        if (res.term != .exited or res.term.exited != 0) {
+            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
+                return error.SystemUtilityMissing;
+            }
+            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
+            return error.UnpackError;
+        }
     } else {
         const ext = std.fs.path.extension(archive_url);
         @import("../../diagnostics/error_context.zig").setFmt(allocator, "unsupported archive format while unpacking LuaRocks package {s}@{s}\narchive: {s}\ndetected extension: {s}", .{ package_name, package_version, archive_url, if (ext.len > 0) ext else "<none>" });
@@ -1676,6 +1712,7 @@ pub fn resolve(
     };
     defer fetched_source.deinit(allocator);
     const work_dir = fetched_source.path;
+    const compatibility_recipe = try luarocks_compat.apply(allocator, io, pkg_name, options.runtime_c_api, work_dir);
 
     // Phase 6: Translate to Moonstone recipe
     const build_out_dir = try std.fs.path.join(allocator, &.{ tmp_dir, "out" });
@@ -1759,7 +1796,7 @@ pub fn resolve(
             } else {
                 const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
                 defer allocator.free(log_file_name);
-                native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, config, options.target orelse "native", log_file_name, options.on_event, options.on_event_context) catch |err| {
+                native_cmodule.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, options.runtime_c_api, config, options.target orelse "native", log_file_name, options.on_event, options.on_event_context) catch |err| {
                     @import("../../diagnostics/error_context.zig").setFmt(allocator, "native module compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
                     return err;
                 };
@@ -1881,6 +1918,27 @@ pub fn resolve(
     }
 
     // Phase 7: Commit
+    var recipe_build_env = std.ArrayList(manifest.EnvPair).empty;
+    defer {
+        for (recipe_build_env.items) |entry| {
+            allocator.free(entry.key);
+            allocator.free(entry.value);
+        }
+        recipe_build_env.deinit(allocator);
+    }
+    for (options.build_env) |entry| {
+        try recipe_build_env.append(allocator, .{
+            .key = try allocator.dupe(u8, entry.key),
+            .value = try allocator.dupe(u8, entry.value),
+        });
+    }
+    if (compatibility_recipe) |recipe| {
+        try recipe_build_env.append(allocator, .{
+            .key = try allocator.dupe(u8, recipe.key),
+            .value = try allocator.dupe(u8, recipe.value),
+        });
+    }
+
     const commit_res = try commit_synthetic_artifact(
         allocator,
         io,
@@ -1904,7 +1962,7 @@ pub fn resolve(
         lua_cmodules,
         bins,
         store_deps_slice,
-        options.build_env,
+        recipe_build_env.items,
     );
     defer allocator.free(commit_res.path);
     defer allocator.free(commit_res.hash);
