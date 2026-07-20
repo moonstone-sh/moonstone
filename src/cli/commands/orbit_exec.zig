@@ -47,28 +47,9 @@ pub const OrbitExecCommand = struct {
     }
 
     pub fn run(self: OrbitExecCommand, ctx: *router.Context) !void {
-        // Enforce presence of `--`
-        var has_dash_dash = false;
-        var dash_dash_index: usize = 0;
-        for (ctx.all_args, 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, "--")) {
-                has_dash_dash = true;
-                dash_dash_index = i;
-                break;
-            }
-        }
-
-        if (!has_dash_dash) {
-            try ctx.stdout.print(
-                \\Usage: moon orbit exec <orbit> -- <cmd...>
-                \\
-            , .{});
-            return error.MissingArgument;
-        }
-
         if (self.positionals.len < 2) {
             try ctx.stdout.print(
-                \\Usage: moon orbit exec <orbit> -- <cmd...>
+                \\Usage: moon orbit exec <orbit> [--] <cmd...>
                 \\
             , .{});
             return error.MissingArgument;

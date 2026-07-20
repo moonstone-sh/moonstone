@@ -160,11 +160,8 @@ pub const ExecCommand = struct {
             var it = std.mem.splitScalar(u8, path_val, ':');
             var first = true;
             while (it.next()) |p| {
-                if (p.len == 0) continue;
-                const real_p = std.Io.Dir.cwd().realPathFileAlloc(io, p, allocator) catch blk: {
-                    if (std.fs.path.isAbsolute(p)) break :blk try allocator.dupe(u8, p);
-                    break :blk try std.fs.path.resolve(allocator, &.{p});
-                };
+                if (p.len == 0 or !std.fs.path.isAbsolute(p)) continue;
+                const real_p = std.Io.Dir.cwd().realPathFileAlloc(io, p, allocator) catch try allocator.dupe(u8, p);
                 defer allocator.free(real_p);
 
                 if (std.mem.eql(u8, real_p, real_shims)) continue;
@@ -210,7 +207,7 @@ pub const ExecCommand = struct {
             if (run_env.env_map.get("PATH")) |path_val| {
                 var path_it = std.mem.splitScalar(u8, path_val, ':');
                 while (path_it.next()) |dir| {
-                    if (dir.len == 0) continue;
+                    if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) continue;
                     const candidate = try std.fs.path.join(allocator, &.{ dir, self.positionals[0] });
                     defer allocator.free(candidate);
                     if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| {

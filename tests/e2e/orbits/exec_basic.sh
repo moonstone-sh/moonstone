@@ -54,11 +54,11 @@ child
 EOF
 
 # Sync child explicitly
-moon orbit sync child
+"$MOON_BIN" orbit sync child
 
 # 1. Orbit exec runs inside child env
 echo "Testing orbit exec runs inside child env..."
-OUTPUT=$(moon orbit exec child -- lua -e 'print("orbit:" .. _VERSION)')
+OUTPUT=$("$MOON_BIN" orbit exec child lua -e 'print("orbit:" .. _VERSION)')
 if [[ "$OUTPUT" != *"orbit:Lua 5.4"* ]]; then
     echo "Fail: Expected orbit:Lua 5.4, got $OUTPUT"
     exit 1
@@ -66,7 +66,7 @@ fi
 
 # 2. Orbit run executes child script
 echo "Testing orbit run executes child script..."
-OUTPUT=$(moon orbit run child hello)
+OUTPUT=$("$MOON_BIN" orbit run child hello)
 if [[ "$OUTPUT" != *"hello from child"* ]]; then
     echo "Fail: Expected hello from child, got $OUTPUT"
     exit 1
@@ -74,7 +74,7 @@ fi
 
 # 3. Orbit exec does not use root cwd
 echo "Testing orbit exec does not use root cwd..."
-OUTPUT=$(moon orbit exec child -- lua -e 'local f=io.open("file.txt"); print(f:read("*a"))')
+OUTPUT=$("$MOON_BIN" orbit exec child lua -e 'local f=io.open("file.txt"); print(f:read("*a"))')
 if [[ "$OUTPUT" != *"child"* ]]; then
     echo "Fail: Expected child, got $OUTPUT"
     exit 1
@@ -82,22 +82,23 @@ fi
 
 # 4. Selector by path works
 echo "Testing selector by path..."
-OUTPUT=$(moon orbit exec ./child -- lua -e 'print("ok")')
+OUTPUT=$("$MOON_BIN" orbit exec ./child lua -e 'print("ok")')
 if [[ "$OUTPUT" != *"ok"* ]]; then
     echo "Fail: Expected ok, got $OUTPUT"
     exit 1
 fi
 
-# 5. Missing `--` for exec fails
-echo "Testing missing -- fails..."
-if moon orbit exec child lua -v >/dev/null 2>&1; then
-    echo "Fail: Expected missing -- to fail"
+# 5. Direct `orbit exec` without `--` succeeds
+echo "Testing orbit exec without --..."
+OUTPUT=$("$MOON_BIN" orbit exec child lua -e 'print("no-dash-dash-ok")')
+if [[ "$OUTPUT" != *"no-dash-dash-ok"* ]]; then
+    echo "Fail: Expected no-dash-dash-ok, got $OUTPUT"
     exit 1
 fi
 
 # 6. Unknown orbit fails clearly
 echo "Testing unknown orbit..."
-if moon orbit run does-not-exist hello >/dev/null 2>&1; then
+if "$MOON_BIN" orbit run does-not-exist hello >/dev/null 2>&1; then
     echo "Fail: Expected unknown orbit to fail"
     exit 1
 fi
@@ -105,7 +106,7 @@ fi
 # 7. Cwd restoration
 echo "Testing cwd restoration..."
 # After an orbit command fails, another root-relative operation should still work from the original root cwd.
-moon orbit run does-not-exist hello >/dev/null 2>&1 || true
+"$MOON_BIN" orbit run does-not-exist hello >/dev/null 2>&1 || true
 # We should still be in $PROJECT_DIR
 if [ ! -f "moonstone.toml" ] || [ ! -f "file.txt" ]; then
     echo "Fail: CWD was not restored after failure!"
