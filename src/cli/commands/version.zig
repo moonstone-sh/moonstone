@@ -22,11 +22,12 @@ pub const VersionCommand = struct {
     }
 
     pub fn run(self: VersionCommand, ctx: *router.Context) !void {
+        const channel = build_options.distribution_channel;
         if (self.json) {
             var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, name);
-            try emitter.terminate(ctx.io, name, "ok", .{ .version = build_options.version });
+            try emitter.terminate(ctx.io, name, "ok", .{ .version = build_options.version, .channel = channel });
         } else {
-            try ctx.stdout.print("Moonstone v{s}\n", .{build_options.version});
+            try ctx.stdout.print("Moonstone v{s} ({s})\n", .{ build_options.version, channel });
         }
     }
 };

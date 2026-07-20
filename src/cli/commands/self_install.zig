@@ -1,5 +1,6 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
+const build_options = @import("build_options");
 const router = @import("../router.zig");
 
 const ReleaseManifest = struct {
@@ -34,6 +35,13 @@ pub const SelfInstallCommand = struct {
     }
 
     pub fn run(self: SelfInstallCommand, ctx: *router.Context) !void {
+        const channel = build_options.distribution_channel;
+        const is_standalone = std.mem.eql(u8, channel, "standalone") or std.mem.eql(u8, channel, "default") or std.mem.eql(u8, channel, "binary");
+        if (!is_standalone) {
+            try printManagedInstallMessage(ctx.stdout, channel);
+            return error.ManagedDistributionChannel;
+        }
+
         if ((self.version == null) == !self.latest) return error.ExactlyOneVersionSelectorRequired;
 
         const allocator = ctx.allocator;
@@ -104,18 +112,65 @@ pub const SelfInstallCommand = struct {
 
         const extracted = try std.fs.path.join(allocator, &.{ work_dir, "moon" });
         defer allocator.free(extracted);
-        // On macOS, replacing an executable in-place via atomic rename can leave
-        // the kernel's code-signing provenance cache stale, causing the new
-        // binary to be killed with SIGKILL ("Code Signature Invalid") on the
-        // next launch (macOS 26 "Tahoe" and later).  Deleting the destination
-        // first clears the cached provenance binding for that path so the new
-        // binary gets a fresh, valid entry.
         std.Io.Dir.deleteFileAbsolute(io, destination) catch {};
         try std.Io.Dir.renameAbsolute(extracted, destination, io);
 
         try stdout.print("Installed Moonstone {s} to {s}\nRun `moon setup` to configure shims.\n", .{ selected_version, destination });
     }
 };
+
+fn printManagedInstallMessage(stdout: *std.Io.Writer, channel: []const u8) !void {
+    if (std.mem.eql(u8, channel, "homebrew")) {
+        try stdout.print(
+            \\Moonstone was installed via Homebrew.
+            \\Self-installation is disabled for package-managed bundles.
+            \\To upgrade Moonstone, run:
+            \\  brew upgrade moonstone
+            \\
+        , .{});
+    } else if (std.mem.eql(u8, channel, "aur") or std.mem.eql(u8, channel, "arch")) {
+        try stdout.print(
+            \\Moonstone was installed via Arch User Repository (AUR).
+            \\Self-installation is disabled for package-managed bundles.
+            \\To upgrade Moonstone, run:
+            \\  yay -S moonstone-bin
+            \\(or: paru -S moonstone-bin)
+            \\
+        , .{});
+    } else if (std.mem.eql(u8, channel, "nix")) {
+        try stdout.print(
+            \\Moonstone was installed via Nix.
+            \\Self-installation is disabled for package-managed bundles.
+            \\To upgrade Moonstone, run:
+            \\  nix profile upgrade moonstone
+            \\(or: nix-env -u moonstone)
+            \\
+        , .{});
+    } else if (std.mem.eql(u8, channel, "apt") or std.mem.eql(u8, channel, "deb")) {
+        try stdout.print(
+            \\Moonstone was installed via APT package manager.
+            \\Self-installation is disabled for package-managed bundles.
+            \\To upgrade Moonstone, run:
+            \\  sudo apt update && sudo apt install --only-upgrade moonstone
+            \\
+        , .{});
+    } else if (std.mem.eql(u8, channel, "alpine") or std.mem.eql(u8, channel, "apk")) {
+        try stdout.print(
+            \\Moonstone was installed via APK package manager.
+            \\Self-installation is disabled for package-managed bundles.
+            \\To upgrade Moonstone, run:
+            \\  sudo apk update && sudo apk upgrade moonstone
+            \\
+        , .{});
+    } else {
+        try stdout.print(
+            \\Moonstone was installed via distribution channel '{s}'.
+            \\Self-installation is disabled for package-managed bundles.
+            \\Please upgrade Moonstone using your distribution's package manager.
+            \\
+        , .{channel});
+    }
+}
 
 fn checkWritable(allocator: std.mem.Allocator, io: std.Io, bin_dir: []const u8) !void {
     const path = try std.fs.path.join(allocator, &.{ bin_dir, ".moon-write-check" });
