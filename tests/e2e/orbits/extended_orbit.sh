@@ -35,7 +35,7 @@ version = "0.1.0"
 
 [interpreter]
 name = "luajit"
-version = "2.1.0-beta3"
+version = "2.1.1783773675"
 
 [scripts]
 test-script = "luajit -v"

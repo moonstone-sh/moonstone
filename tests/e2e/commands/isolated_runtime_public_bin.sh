@@ -6,7 +6,7 @@ set -euo pipefail
 # prepends the correct runtime bin directory.
 #
 # The synthetic registry contains a bin package `synthetic-isolated-bin` that
-# declares runtime `luajit@2.1.0-beta3` while the app uses `lua@5.4.7`.
+# declares runtime `luajit@2.1.1783773675` while the app uses `lua@5.4.7`.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [[ -z "${MOONSTONE_HOME:-}" ]]; then
@@ -31,7 +31,7 @@ if [[ ! -f "$SCOPE" ]]; then
     exit 1
 fi
 
-if ! grep -q "luajit-2.1.0-beta3/files/bin" "$SCOPE"; then
+if ! grep -q "luajit-2.1.1783773675/files/bin" "$SCOPE"; then
     echo "expected $SCOPE to prepend the isolated luajit bin directory" >&2
     cat "$SCOPE" >&2
     exit 1

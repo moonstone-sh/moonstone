@@ -679,6 +679,7 @@ pub const SyncCommand = struct {
         }
 
         mat.runtime_path = rt_mat_res.path;
+        const runtime_c_api = moonstone.runtime.c_api.fromRuntime(rt_res.name, rt_res.lua_api, active_lua_abi);
 
         const rt_recipe_options = moonstone.store.facade.RecipeOptions{
             .kind = @tagName(rt_res.kind),
@@ -739,6 +740,7 @@ pub const SyncCommand = struct {
             .offline = self.offline,
             .prefer_local = !self.update,
             .runtime = active_lua_abi,
+            .runtime_c_api = runtime_c_api,
             .runtime_artifact_hash = rt_res.artifact_hash,
             .runtime_path = rt_mat_res.path,
             .build_env = build_env,
@@ -978,6 +980,7 @@ pub const SyncCommand = struct {
                         .offline = self.offline,
                         .prefer_local = !self.update,
                         .runtime = active_lua_abi,
+                        .runtime_c_api = runtime_c_api,
                         .runtime_artifact_hash = rt_res.artifact_hash,
                         .runtime_path = rt_mat_res.path,
                         .on_event = on_resolve_cb,

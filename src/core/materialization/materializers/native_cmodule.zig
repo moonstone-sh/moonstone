@@ -1,34 +1,43 @@
 const std = @import("std");
 const manifest = @import("../../domain/manifest.zig");
+const c_api = @import("../../runtime/c_api.zig");
 
 fn find_lua_include(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8) ![]const u8 {
-    const include_path = try std.fs.path.join(allocator, &.{ runtime_path, "files", "include" });
-    errdefer allocator.free(include_path);
+    const inc_files = try std.fs.path.join(allocator, &.{ runtime_path, "files", "include" });
+    const inc_direct = try std.fs.path.join(allocator, &.{ runtime_path, "include" });
 
-    const direct_header = try std.fs.path.join(allocator, &.{ include_path, "lua.h" });
-    defer allocator.free(direct_header);
-    if (std.Io.Dir.cwd().access(io, direct_header, .{})) |_| return include_path else |err| {
-        if (err != error.FileNotFound) return err;
+    const candidates = [_][]const u8{ inc_files, inc_direct };
+    defer {
+        allocator.free(inc_files);
+        allocator.free(inc_direct);
     }
 
-    var include_dir = try std.Io.Dir.cwd().openDir(io, include_path, .{ .iterate = true });
-    defer include_dir.close(io);
-    var iterator = include_dir.iterate();
-    while (try iterator.next(io)) |entry| {
-        if (entry.kind != .directory) continue;
-        const nested_path = try std.fs.path.join(allocator, &.{ include_path, entry.name });
-        const nested_header = try std.fs.path.join(allocator, &.{ nested_path, "lua.h" });
-        defer allocator.free(nested_header);
-        if (std.Io.Dir.cwd().access(io, nested_header, .{})) |_| {
-            allocator.free(include_path);
-            return nested_path;
-        } else |err| {
-            allocator.free(nested_path);
-            if (err != error.FileNotFound) return err;
-        }
+    for (candidates) |include_path| {
+        const direct_header = try std.fs.path.join(allocator, &.{ include_path, "lua.h" });
+        defer allocator.free(direct_header);
+        if (std.Io.Dir.cwd().access(io, direct_header, .{})) |_| {
+            return try allocator.dupe(u8, include_path);
+        } else |_| {}
+
+        if (std.Io.Dir.cwd().openDir(io, include_path, .{ .iterate = true })) |include_dir_val| {
+            var include_dir = include_dir_val;
+            defer include_dir.close(io);
+            var iterator = include_dir.iterate();
+            while (iterator.next(io) catch null) |entry| {
+                if (entry.kind != .directory) continue;
+                const nested_path = try std.fs.path.join(allocator, &.{ include_path, entry.name });
+                const nested_header = try std.fs.path.join(allocator, &.{ nested_path, "lua.h" });
+                defer allocator.free(nested_header);
+                if (std.Io.Dir.cwd().access(io, nested_header, .{})) |_| {
+                    return nested_path;
+                } else |_| {
+                    allocator.free(nested_path);
+                }
+            }
+        } else |_| {}
     }
 
-    return include_path;
+    return try std.fs.path.join(allocator, &.{ runtime_path, "include" });
 }
 
 pub fn build(
@@ -38,6 +47,7 @@ pub fn build(
     source_dir_path: []const u8,
     out_dir_path: []const u8,
     runtime_path: []const u8,
+    runtime_c_api: c_api.Profile,
     config: manifest.MaterializeConfig,
     target: []const u8,
     log_file_name: []const u8,
@@ -74,6 +84,18 @@ pub fn build(
 
     try argv.append(allocator, "-I");
     try argv.append(allocator, lua_include);
+
+    try argv.append(allocator, "-I");
+    try argv.append(allocator, source_dir_path);
+
+    const src_inc_dir = try std.fs.path.join(allocator, &.{ source_dir_path, "src" });
+    defer allocator.free(src_inc_dir);
+    if (std.Io.Dir.cwd().access(io, src_inc_dir, .{})) |_| {
+        try argv.append(allocator, "-I");
+        try argv.append(allocator, src_inc_dir);
+    } else |_| {}
+
+    if (runtime_c_api.compilerDefine()) |define| try argv.append(allocator, define);
 
     // Apply custom CFLAGS (stored in .args)
     for (config.args) |flag| {

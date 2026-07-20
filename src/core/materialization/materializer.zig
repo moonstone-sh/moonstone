@@ -262,7 +262,8 @@ pub const Materializer = struct {
                     defer self.allocator.free(log_file_name);
 
                     const native_cmodule = @import("materializers/native_cmodule.zig");
-                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, m, art.target, log_file_name, self.on_event, self.on_event_context);
+                    const runtime_c_api = @import("../runtime/c_api.zig").fromRuntime(art.runtime, art.lua_api, art.lua_abi);
+                    try native_cmodule.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, runtime_c_api, m, art.target, log_file_name, self.on_event, self.on_event_context);
 
                     var new_provides = art.provides;
                     var cmodules = std.ArrayList(manifest.FeatureProvision).empty;

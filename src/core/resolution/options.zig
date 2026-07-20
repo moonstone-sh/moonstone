@@ -1,9 +1,11 @@
 const std = @import("std");
 const coordinator = @import("coordinator.zig");
+const runtime_c_api = @import("../runtime/c_api.zig");
 
 pub const ResolveOptions = struct {
     offline: bool = false,
     runtime: ?[]const u8 = null,
+    runtime_c_api: runtime_c_api.Profile = .unknown,
     runtime_path: ?[]const u8 = null,
     locked: bool = false,
     prefer_local: bool = false,

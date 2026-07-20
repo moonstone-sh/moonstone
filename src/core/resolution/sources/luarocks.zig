@@ -311,12 +311,21 @@ fn normalize_luarocks_version(allocator: std.mem.Allocator, version: []const u8)
     return try allocator.dupe(u8, version);
 }
 
+fn rock_build_type(rock: *const luarocks.Rockspec) []const u8 {
+    return rock.build.type orelse "builtin";
+}
+
+fn rock_source_url(rock: *const luarocks.Rockspec) []const u8 {
+    return rock.source.url orelse "";
+}
+
 fn translateCommandBuild(
     allocator: std.mem.Allocator,
     rock: *const luarocks.Rockspec,
     lua_abi: []const u8,
 ) ![]const TranslatedModule {
     _ = lua_abi;
+    const is_cmake = std.mem.eql(u8, rock_build_type(rock), "cmake");
     var list = std.ArrayList(TranslatedModule).empty;
     errdefer {
         for (list.items) |*m| {
@@ -326,8 +335,6 @@ fn translateCommandBuild(
         }
         list.deinit(allocator);
     }
-
-    const is_cmake = std.mem.eql(u8, rock.build.type, "cmake");
 
     var steps = std.ArrayList(manifest.CommandStep).empty;
     defer {
@@ -899,10 +906,11 @@ fn is_c_file(path: []const u8) bool {
 }
 
 fn classify_rock(rock: *const luarocks.Rockspec) RockClass {
-    const is_builtin = rock.build.type.len == 0 or std.mem.eql(u8, rock.build.type, "builtin");
-    const is_make = std.mem.eql(u8, rock.build.type, "make");
-    const is_cmake = std.mem.eql(u8, rock.build.type, "cmake");
-    const is_command = std.mem.eql(u8, rock.build.type, "command");
+    const btype = rock_build_type(rock);
+    const is_builtin = btype.len == 0 or std.mem.eql(u8, btype, "builtin");
+    const is_make = std.mem.eql(u8, btype, "make");
+    const is_cmake = std.mem.eql(u8, btype, "cmake");
+    const is_command = std.mem.eql(u8, btype, "command");
 
     if (is_make or is_cmake or is_command) {
         return .command_build;
@@ -1155,10 +1163,11 @@ fn fetch_and_unpack_source(
     const source_fetch: SourceFetch = blk: {
         const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null) catch |err| {
             if (err != error.HttpError and err != error.FileNotFound and err != error.UnsupportedUriScheme) return err;
-            if (rock.source.url.len == 0) return error.SourceRockNotFound;
+            const src_url = rock_source_url(rock);
+            if (src_url.len == 0) return error.SourceRockNotFound;
             var fallback_url: []const u8 = undefined;
-            if (std.mem.startsWith(u8, rock.source.url, "git://github.com/")) {
-                var it = std.mem.splitSequence(u8, rock.source.url[17..], "/");
+            if (std.mem.startsWith(u8, src_url, "git://github.com/")) {
+                var it = std.mem.splitSequence(u8, src_url[17..], "/");
                 const user = it.next() orelse "";
                 var repo = it.next() orelse "";
                 if (std.mem.endsWith(u8, repo, ".git")) {
@@ -1170,8 +1179,8 @@ fn fetch_and_unpack_source(
                     allocator.free(fallback_url);
                     fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/heads/{s}.tar.gz", .{ user, repo, ref });
                 }
-            } else if (std.mem.startsWith(u8, rock.source.url, "git+https://github.com/")) {
-                var it = std.mem.splitSequence(u8, rock.source.url[23..], "/");
+            } else if (std.mem.startsWith(u8, src_url, "git+https://github.com/")) {
+                var it = std.mem.splitSequence(u8, src_url[23..], "/");
                 const user = it.next() orelse "";
                 var repo = it.next() orelse "";
                 if (std.mem.endsWith(u8, repo, ".git")) {
@@ -1184,7 +1193,7 @@ fn fetch_and_unpack_source(
                     fallback_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}/archive/refs/heads/{s}.tar.gz", .{ user, repo, ref });
                 }
             } else {
-                fallback_url = try allocator.dupe(u8, rock.source.url);
+                fallback_url = try allocator.dupe(u8, src_url);
             }
             errdefer allocator.free(fallback_url);
             const fallback_data = http_get(allocator, io, fallback_url, env_map, on_event, on_event_context, null) catch |fallback_err| {

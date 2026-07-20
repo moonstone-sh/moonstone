@@ -11,7 +11,7 @@ end
 -- 1. Minimal JSON Encoder
 local function json_encode(v)
     if type(v) == "string" then
-        return string.format("%q", v):gsub("\n", "n"):gsub("\r", "r")
+        return string.format("%q", v)
     elseif type(v) == "number" or type(v) == "boolean" then
         return tostring(v)
     elseif type(v) == "table" then
@@ -101,11 +101,32 @@ local function current_platform()
     return "unix"
 end
 
-if type(final_data.build) == "table" and final_data.build.modules == nil and type(final_data.build.platforms) == "table" then
-    local platform_build = final_data.build.platforms[current_platform()]
-    if type(platform_build) == "table" then
-        final_data.build.modules = platform_build.modules
-        final_data.build.install = final_data.build.install or platform_build.install
+if type(final_data.build) == "table" then
+    if final_data.build.type == nil or final_data.build.type == "" then
+        final_data.build.type = "builtin"
+    end
+    if type(final_data.build.platforms) == "table" then
+        local plat = current_platform()
+        local base_plat = (plat == "win32" or plat == "mingw32") and "win32" or "unix"
+        local order = { base_plat }
+        if plat ~= base_plat then
+            table.insert(order, plat)
+        end
+
+        for _, p in ipairs(order) do
+            local platform_build = final_data.build.platforms[p]
+            if type(platform_build) == "table" then
+                if type(platform_build.modules) == "table" then
+                    final_data.build.modules = final_data.build.modules or {}
+                    for k, v in pairs(platform_build.modules) do
+                        final_data.build.modules[k] = v
+                    end
+                end
+                if type(platform_build.install) == "table" then
+                    final_data.build.install = final_data.build.install or platform_build.install
+                end
+            end
+        end
     end
 end
 

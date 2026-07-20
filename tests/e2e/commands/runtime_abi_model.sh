@@ -8,9 +8,9 @@ rm -rf "${WORKDIR}"
 mkdir -p "${WORKDIR}"
 
 cd "${WORKDIR}"
-moon init luajit-app --name luajit-app --interpreter luajit@2.1.0-beta3 --no-sync --no-git
+moon init luajit-app --name luajit-app --interpreter luajit@2.1.1783773675 --no-sync --no-git
 assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'name = "luajit"'
-assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'version = "2.1.0-beta3"'
+assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'version = "2.1.1783773675"'
 assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'abi = "5.1"'
 
 cd "${WORKDIR}/luajit-app"

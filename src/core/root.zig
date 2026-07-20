@@ -44,6 +44,10 @@ pub const luarocks = struct {
     pub const translate = @import("luarocks/translate.zig");
 };
 
+pub const runtime = struct {
+    pub const c_api = @import("runtime/c_api.zig");
+};
+
 pub const resolution = @import("resolution/root.zig");
 
 pub const materialization = struct {

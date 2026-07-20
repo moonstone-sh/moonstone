@@ -22,16 +22,18 @@ pub const Rockspec = struct {
     package: []const u8,
     version: []const u8,
     source: struct {
-        url: []const u8,
+        url: ?[]const u8 = null,
         tag: ?[]const u8 = null,
         branch: ?[]const u8 = null,
         module: ?[]const u8 = null,
+        dir: ?[]const u8 = null,
     },
     build: struct {
-        type: []const u8,
+        type: ?[]const u8 = null,
         modules: ?std.json.Value = null,
         install: ?struct {
             bin: ?std.json.Value = null,
+            lua: ?std.json.Value = null,
         } = null,
     },
     dependencies: ?[]const []const u8 = null,
@@ -78,10 +80,13 @@ pub fn parse_rockspec(allocator: std.mem.Allocator, io: std.Io, content: []const
         return error.RockspecParseError;
     }
 
-    return try std.json.parseFromSlice(Rockspec, allocator, res.stdout, .{
+    return std.json.parseFromSlice(Rockspec, allocator, res.stdout, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
-    });
+    }) catch |err| {
+        std.debug.print("parseFromSlice Rockspec error: {s}\nJSON: {s}\n", .{ @errorName(err), res.stdout });
+        return err;
+    };
 }
 
 pub const Dependency = struct {

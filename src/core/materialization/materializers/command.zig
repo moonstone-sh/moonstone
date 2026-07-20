@@ -102,16 +102,6 @@ pub fn build_internal(
             .cwd = .{ .path = src_abs },
         });
 
-        std.debug.print("\n=== DEBUG COMMAND ===\n", .{});
-        for (argv.items) |a| {
-            std.debug.print("arg: {s}\n", .{a});
-        }
-        var it = final_env.iterator();
-        while (it.next()) |entry| {
-            std.debug.print("env: {s} = {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-        }
-        std.debug.print("=====================\n\n", .{});
-
         if (res.term != .exited or res.term.exited != 0) {
             var log_path: ?[]const u8 = null;
             if (std.Io.Dir.cwd().openDir(io, ".moonstone", .{})) |moon_dir| {
