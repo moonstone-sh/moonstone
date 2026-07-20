@@ -36,24 +36,19 @@ pub const RunCommand = struct {
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
         const current = if (args.len > 0) args[args.len - 1] else "";
         if (std.mem.startsWith(u8, current, "--")) return &.{};
-        const prefix = if (std.mem.indexOfScalar(u8, current, ':')) |colon| current[0..colon] else current;
+
         const content = std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024)) catch return &.{};
         defer ctx.allocator.free(content);
         var mt = moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content) catch return &.{};
         defer mt.deinit(ctx.allocator);
 
         var list = std.ArrayList([]const u8).empty;
-        var seen = std.StringHashMap(void).init(ctx.allocator);
-        defer seen.deinit();
         var sit = mt.scripts.iterator();
         while (sit.next()) |entry| {
             const script_name = entry.key_ptr.*;
-            const suggestion = if (std.mem.indexOfScalar(u8, script_name, ':')) |colon| script_name[0..colon] else script_name;
-            if (prefix.len > 0 and !std.mem.startsWith(u8, suggestion, prefix)) continue;
-            if (seen.contains(suggestion)) continue;
-            const owned = try ctx.allocator.dupe(u8, suggestion);
-            try seen.put(owned, {});
-            try list.append(ctx.allocator, owned);
+            if (current.len == 0 or std.mem.startsWith(u8, script_name, current)) {
+                try list.append(ctx.allocator, try ctx.allocator.dupe(u8, script_name));
+            }
         }
         return list.toOwnedSlice(ctx.allocator);
     }
@@ -139,3 +134,55 @@ pub const RunCommand = struct {
         }
     }
 };
+
+test "RunCommand script name completions with colon flavors" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, "moonstone.toml",
+        \\[project]
+        \\name = "meteorite"
+        \\version = "0.1.0"
+        \\
+        \\[scripts]
+        \\"bench:fast" = "lua bench/fast.lua"
+        \\"bench:slow" = "lua bench/slow.lua"
+        \\"test:unit" = "lua test/unit.lua"
+    );
+
+    const old_cwd = try std.process.currentPath(allocator);
+    defer allocator.free(old_cwd);
+
+    try tmp.dir.setAsCwd(io);
+    defer std.process.setCurrentPath(old_cwd) catch {};
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var ctx = router.Context{
+        .allocator = allocator,
+        .io = io,
+        .env = &env_map,
+        .stdout = undefined,
+        .stderr = undefined,
+    };
+
+    const comps = try RunCommand.complete(&.{"bench"}, &ctx);
+    defer {
+        for (comps) |c| allocator.free(c);
+        allocator.free(comps);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), comps.len);
+    var found_fast = false;
+    var found_slow = false;
+    for (comps) |c| {
+        if (std.mem.eql(u8, c, "bench:fast")) found_fast = true;
+        if (std.mem.eql(u8, c, "bench:slow")) found_slow = true;
+    }
+    try std.testing.expect(found_fast);
+    try std.testing.expect(found_slow);
+}

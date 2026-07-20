@@ -51,41 +51,51 @@ jobs:
 
       - name: Build All Targets
         run: |
-          # Invoke the explicit release step to build all target triples
-          zig build release -Doptimize=ReleaseSafe
-          
-          # Compress all generated cross-compiled binaries
           if [[ -z "${VERSION:-}" ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
           fi
-          cd zig-out/bin
-          for binary in moon-*; do
-            if [[ "$binary" == *.tar.gz ]]; then
-              continue
+
+          triples=(
+            "aarch64-freebsd"
+            "x86_64-freebsd"
+            "aarch64-macos"
+            "x86_64-macos"
+            "aarch64-linux-gnu"
+            "x86_64-linux-gnu"
+            "x86_64-linux-musl"
+            "aarch64-linux-musl"
+            "arm-linux-gnueabihf"
+            "riscv64-linux-gnu"
+          )
+
+          mkdir -p dist_archives
+          for triple in "${triples[@]}"; do
+            echo "Building target: ${triple}"
+            rm -rf zig-out/bin/moon
+            zig build -Dtarget="${triple}" -Doptimize=ReleaseSafe
+
+            normalized="${triple}"
+            if [[ "$normalized" == "aarch64-linux-gnu" ]]; then
+              normalized="aarch64-linux"
+            elif [[ "$normalized" == "x86_64-linux-gnu" ]]; then
+              normalized="x86_64-linux"
+            elif [[ "$normalized" == "riscv64-linux-gnu" ]]; then
+              normalized="riscv64-linux"
             fi
-            
-            # Extract the triple from the binary name
-            triple="${binary#moon-${VERSION}-}"
-            
-            # Normalize triple names for release packaging
-            if [[ "$triple" == "aarch64-linux-gnu" ]]; then
-              triple="aarch64-linux"
-            elif [[ "$triple" == "x86_64-linux-gnu" ]]; then
-              triple="x86_64-linux"
-            elif [[ "$triple" == "riscv64-linux-gnu" ]]; then
-              triple="riscv64-linux"
-            fi
-            
-            # Move binary to a temporary standard name "moon" so that it's extracted correctly by Homebrew
-            mv "$binary" moon
-            tar -czf "moon-${triple}.tar.gz" moon
-            rm moon
+
+            (cd zig-out/bin && tar -czf "../../dist_archives/moon-${normalized}.tar.gz" moon)
           done
+
+          cp dist_archives/*.tar.gz zig-out/bin/
 
       - name: Compute Hashes
         id: hashes
         run: |
           cd zig-out/bin
+          sha256sum moon-*.tar.gz > SHA256SUMS
+          if command -v b3sum >/dev/null 2>&1; then
+            b3sum moon-*.tar.gz > B3SUMS
+          fi
           echo "mac_arm=$(sha256sum moon-aarch64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
           echo "mac_intel=$(sha256sum moon-x86_64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
           echo "linux_arm=$(sha256sum moon-aarch64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT

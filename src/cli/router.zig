@@ -114,6 +114,37 @@ pub const CommandNode = struct {
                                 } };
                                 return reportAndStop(args, ctx, cmd, error.UnknownFlag);
                             }
+                        } else if (!stop_parsing_flags and std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
+                            const short_flag = arg[1..];
+                            var matched = false;
+
+                            inline for (std.meta.fields(CmdType)) |field| {
+                                if (!std.mem.eql(u8, field.name, "positionals")) {
+                                    if (field.name.len > 0 and short_flag.len == 1 and field.name[0] == short_flag[0]) {
+                                        matched = true;
+                                        if (field.type == bool) {
+                                            @field(cmd, field.name) = true;
+                                        } else if (field.type == ?[]const u8) {
+                                            i += 1;
+                                            if (i >= args.len) {
+                                                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                                                ctx.error_detail = .{ .missing_argument = .{ .flag = try ctx.allocator.dupe(u8, short_flag) } };
+                                                return reportAndStop(args, ctx, cmd, error.MissingArgument);
+                                            }
+                                            @field(cmd, field.name) = args[i];
+                                        }
+                                    }
+                                }
+                            }
+                            if (!matched) {
+                                const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
+                                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                                ctx.error_detail = .{ .unknown_flag = .{
+                                    .flag = try ctx.allocator.dupe(u8, short_flag),
+                                    .command = try ctx.allocator.dupe(u8, cmd_name),
+                                } };
+                                return reportAndStop(args, ctx, cmd, error.UnknownFlag);
+                            }
                         } else {
                             try positionals.append(ctx.allocator, arg);
                             if (comptime @hasDecl(CmdType, "name") and (std.mem.eql(u8, CmdType.name, "exec") or std.mem.eql(u8, CmdType.name, "run"))) {

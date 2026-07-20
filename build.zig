@@ -1,6 +1,11 @@
 const std = @import("std");
 const zon = @import("build.zig.zon");
 
+pub const InstallationOwnership = enum {
+    self_managed,
+    external,
+};
+
 pub fn build(b: *std.Build) void {
 
     // 1. Build Options
@@ -9,15 +14,39 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     const default_registry_url = b.option([]const u8, "default_registry_url", "Default registry URL") orelse "https://registry.moonstone.sh/registry/v0";
-    const distribution_channel = (b.option([]const u8, "distribution-channel", "Distribution channel (standalone, homebrew, aur, nix, apt, alpine, custom)"))
-        orelse (b.option([]const u8, "distribution_channel", "Distribution channel alias"))
-        orelse "standalone";
+    const default_homepage_url = b.option([]const u8, "default_homepage_url", "Default homepage URL") orelse "https://moonstone.sh";
+    const default_installer_url = (b.option([]const u8, "default-installer-url", "Default Moonstone installer script URL")) orelse (b.option([]const u8, "default_installer_url", "Default Moonstone installer script URL alias")) orelse "https://moonstone.sh/install";
+
+    if (std.mem.indexOfAny(u8, default_installer_url, " \t\r\n'\"$`;&|<>") != null or
+        (!std.mem.startsWith(u8, default_installer_url, "http://") and !std.mem.startsWith(u8, default_installer_url, "https://")))
+    {
+        @panic("default_installer_url must be a plain HTTP(S) URL without whitespace or shell metacharacters");
+    }
+
+    const installation_ownership = (b.option(
+        InstallationOwnership,
+        "installation-ownership",
+        "Whether Moonstone manages its own installation lifecycle (self-managed, external)",
+    )) orelse (b.option(
+        InstallationOwnership,
+        "installation_ownership",
+        "Installation ownership alias",
+    )) orelse .self_managed;
+
+    const distribution_label = (b.option([]const u8, "distribution-label", "Distribution channel (standalone, homebrew, custom)")) orelse (b.option([]const u8, "distribution_label", "Distribution channel alias")) orelse "standalone";
+
+    const distribution_hint = (b.option([]const u8, "distribution-hint", "Message shown when update or uninstall is attempted on externally managed installation.")) orelse (b.option([]const u8, "distribution_hint", "Distribution hint alias")) orelse "This Moonstone installation is managed by an external package manager. Use that package manager to install or update Moonstone.";
 
     const options = b.addOptions();
     options.addOption([]const u8, "name", @tagName(zon.name));
     options.addOption([]const u8, "version", zon.version);
     options.addOption([]const u8, "default_registry_url", default_registry_url);
-    options.addOption([]const u8, "distribution_channel", distribution_channel);
+    options.addOption([]const u8, "default_homepage_url", default_homepage_url);
+    options.addOption([]const u8, "default_installer_url", default_installer_url);
+    options.addOption(InstallationOwnership, "installation_ownership", installation_ownership);
+    options.addOption([]const u8, "distribution_label", distribution_label);
+    options.addOption([]const u8, "distribution_hint", distribution_hint);
+
     const build_options_mod = options.createModule();
 
     // 2. Canonical Executable (`zig build` / `zig build -Dtarget=...`)
@@ -44,33 +73,6 @@ pub fn build(b: *std.Build) void {
 
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
-
-    // 4. Release Target Matrix Step (`zig build release`)
-    // -------------------------------------------------------------------------
-    const release_step = b.step("release", "Build the complete versioned target matrix for release");
-
-    const target_triples = [_][]const u8{
-        "aarch64-freebsd",
-        "x86_64-freebsd",
-        "aarch64-macos",
-        "x86_64-macos",
-        "aarch64-linux-gnu",
-        "x86_64-linux-gnu",
-        "x86_64-linux-musl",
-        "aarch64-linux-musl",
-        "arm-linux-gnueabihf",
-        "riscv64-linux-gnu",
-    };
-
-    for (target_triples) |triple| {
-        const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch @panic("Invalid triple");
-        const resolved_target = b.resolveTargetQuery(query);
-        const bin_name = b.fmt("moon-{s}-{s}", .{ zon.version, triple });
-
-        const matrix_exe = createMoonExecutable(b, bin_name, resolved_target, optimize, build_options_mod);
-        const install_matrix = b.addInstallArtifact(matrix_exe, .{});
-        release_step.dependOn(&install_matrix.step);
-    }
 }
 
 fn createMoonExecutable(

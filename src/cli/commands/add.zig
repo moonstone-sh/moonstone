@@ -43,11 +43,10 @@ fn appendCachedManifestCompletions(allocator: std.mem.Allocator, io: std.Io, env
     }
 
     for (entries) |entry| {
-        if (!entry.fresh) continue;
         const payload = std.Io.Dir.cwd().readFileAlloc(io, entry.metadata.payload_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch continue;
         defer allocator.free(payload);
         switch (entry.metadata.source) {
-            .luarocks => if (std.mem.startsWith(u8, prefix, "rocks:") or prefix.len == 0) appendLuaRocksCompletions(allocator, payload, list, prefix) catch {},
+            .luarocks => if (std.mem.startsWith(u8, prefix, "rocks:") or prefix.len == 0 or std.mem.startsWith(u8, "rocks:", prefix)) appendLuaRocksCompletions(allocator, payload, list, prefix) catch {},
             .registry => if (!std.mem.startsWith(u8, prefix, "rocks:")) appendRegistryCompletions(allocator, payload, list, prefix) catch {},
         }
     }
@@ -113,8 +112,22 @@ fn appendLuaRocksCompletions(allocator: std.mem.Allocator, payload: []const u8, 
 fn appendRegistryCompletions(allocator: std.mem.Allocator, payload: []const u8, list: *std.ArrayList([]const u8), prefix: []const u8) !void {
     var idx = moonstone.domain.manifest.RemotePackageStoreIndex.parse(allocator, payload) catch return;
     defer idx.deinit(allocator);
+
+    const is_moonstone_scheme = std.mem.startsWith(u8, prefix, "moonstone:");
+    const query = if (is_moonstone_scheme) prefix["moonstone:".len..] else prefix;
+
     for (idx.package) |pkg| {
-        try appendCompletionIfMatches(allocator, list, pkg.name, prefix);
+        if (is_moonstone_scheme) {
+            if (query.len == 0 or std.mem.startsWith(u8, pkg.name, query)) {
+                const suggestion = try std.fmt.allocPrint(allocator, "moonstone:{s}", .{pkg.name});
+                defer allocator.free(suggestion);
+                try appendCompletionUnique(allocator, list, suggestion);
+            }
+        } else {
+            if (query.len == 0 or std.mem.startsWith(u8, pkg.name, query)) {
+                try appendCompletionUnique(allocator, list, pkg.name);
+            }
+        }
     }
 }
 
@@ -199,7 +212,15 @@ pub const add_command = struct {
 
         var list = std.ArrayList([]const u8).empty;
 
-        if (std.mem.startsWith(u8, prefix, "rocks:")) {
+        // 1. Suggest scheme prefixes (moonstone:, rocks:, path:, link:) if prefix is empty or matches prefix start
+        const scheme_prefixes = [_][]const u8{ "moonstone:", "rocks:", "path:", "link:" };
+        for (scheme_prefixes) |scheme| {
+            if (prefix.len == 0 or (prefix.len < scheme.len and std.mem.startsWith(u8, scheme, prefix))) {
+                try appendCompletionUnique(allocator, &list, scheme);
+            }
+        }
+
+        if (std.mem.startsWith(u8, prefix, "rocks:") or std.mem.startsWith(u8, prefix, "moonstone:")) {
             appendCachedManifestCompletions(allocator, io, env, &list, prefix);
             return list.toOwnedSlice(allocator);
         }
@@ -220,7 +241,7 @@ pub const add_command = struct {
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
-        // 1. Suggest links
+        // 2. Suggest links
         const lr = moonstone.store.links.LinkStore.init(&idx);
         const entries = try lr.list();
         defer {
@@ -233,7 +254,7 @@ pub const add_command = struct {
             try appendCompletionIfMatches(allocator, &list, suggestion, prefix);
         }
 
-        // 2. Suggest known packages in artifacts
+        // 3. Suggest known packages in artifacts
         const c = moonstone.store.driver.c;
         const sql = "SELECT DISTINCT name FROM artifacts;";
         var stmt: ?*c.sqlite3_stmt = null;
@@ -245,7 +266,7 @@ pub const add_command = struct {
             }
         }
 
-        // 3. Suggest fresh cached remote metadata. This must never hit network.
+        // 4. Suggest cached remote metadata.
         appendCachedManifestCompletions(allocator, io, env, &list, prefix);
 
         return list.toOwnedSlice(allocator);

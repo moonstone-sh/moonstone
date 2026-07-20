@@ -3,8 +3,8 @@ const std = @import("std");
 // Top-level commands
 pub const add = @import("add.zig").add_command;
 pub const sync = @import("sync.zig").sync_command;
-pub const install = @import("self_install.zig").SelfInstallCommand;
-pub const uninstall = @import("uninstall.zig").UninstallCommand;
+pub const install = @import("install_deprecated.zig").InstallDeprecatedCommand;
+pub const uninstall = @import("uninstall_deprecated.zig").UninstallDeprecatedCommand;
 pub const init = @import("init.zig").init_command;
 pub const setup = @import("setup.zig").SetupCommand;
 pub const link = @import("link.zig").LinkCommand;
@@ -17,6 +17,12 @@ pub const doctor = @import("doctor.zig").DoctorCommand;
 pub const version = @import("version.zig").VersionCommand;
 pub const env = @import("env.zig").EnvCommand;
 
+// Self group
+pub const self_cmd = struct {
+    pub const install = @import("self_install.zig").SelfInstallCommand;
+    pub const uninstall = @import("self_uninstall.zig").SelfUninstallCommand;
+};
+
 // Store group
 pub const store = struct {
     pub const gc = @import("store_gc.zig").StoreGcCommand;
@@ -24,6 +30,7 @@ pub const store = struct {
     pub const path = @import("store_path.zig").StorePathCommand;
     pub const list = @import("store_list.zig").StoreListCommand;
     pub const query = @import("store_query.zig").StoreQueryCommand;
+    pub const purge = @import("store_purge.zig").StorePurgeCommand;
 };
 
 // StoreDriver group
@@ -42,12 +49,18 @@ pub const registry = struct {
 };
 
 pub const cache = struct {
+    pub const clean = @import("cache_clean.zig").CacheCleanCommand;
     pub const manifest = struct {
         pub const list = @import("cache_manifest.zig").CacheManifestListCommand;
         pub const refresh = @import("cache_manifest.zig").CacheManifestRefreshCommand;
         pub const path = @import("cache_manifest.zig").CacheManifestPathCommand;
         pub const clear = @import("cache_manifest.zig").CacheManifestClearCommand;
     };
+};
+
+pub const config = struct {
+    pub const show = @import("config_show.zig").ConfigShowCommand;
+    pub const reset = @import("config_reset.zig").ConfigResetCommand;
 };
 
 // Interpreter group

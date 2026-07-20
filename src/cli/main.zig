@@ -49,12 +49,18 @@ pub fn main(init: std.process.Init) !void {
         router.CommandNode.from(command_mod.env),
         router.CommandNode.from(@import("commands/completions.zig").CompletionsCommand),
 
+        router.CommandNode.group("self", "Manage Moonstone installation and lifecycle", &.{
+            router.CommandNode.from(command_mod.self_cmd.install),
+            router.CommandNode.from(command_mod.self_cmd.uninstall),
+        }),
+
         router.CommandNode.group("store", "Manage content store", &.{
             router.CommandNode.from(command_mod.store.gc),
             router.CommandNode.from(command_mod.store.verify),
             router.CommandNode.from(command_mod.store.path),
             router.CommandNode.from(command_mod.store.list),
             router.CommandNode.from(command_mod.store.query),
+            router.CommandNode.from(command_mod.store.purge),
         }),
 
         router.CommandNode.group("index", "Manage metadata index", &.{
@@ -75,12 +81,18 @@ pub fn main(init: std.process.Init) !void {
         }),
 
         router.CommandNode.group("cache", "Manage Moonstone caches", &.{
+            router.CommandNode.from(command_mod.cache.clean),
             router.CommandNode.group("manifest", "Manage cached package manifests and indexes", &.{
                 router.CommandNode.from(command_mod.cache.manifest.list),
                 router.CommandNode.from(command_mod.cache.manifest.refresh),
                 router.CommandNode.from(command_mod.cache.manifest.path),
                 router.CommandNode.from(command_mod.cache.manifest.clear),
             }),
+        }),
+
+        router.CommandNode.group("config", "Manage Moonstone configuration", &.{
+            router.CommandNode.from(command_mod.config.show),
+            router.CommandNode.from(command_mod.config.reset),
         }),
 
         router.CommandNode.group("interpreter", "Manage Lua interpreters", &.{
@@ -119,6 +131,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Final flush, ignore WriteFailed which is usually BrokenPipe at exit
     stdout.flush() catch |err| {
+        if (err != error.WriteFailed) return err;
+    };
+    stderr.flush() catch |err| {
         if (err != error.WriteFailed) return err;
     };
 }
