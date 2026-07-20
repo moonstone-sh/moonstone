@@ -33,7 +33,7 @@ jobs:
       - name: Auto-tag on main merge
         if: github.ref == 'refs/heads/main'
         run: |
-          VERSION=$(grep -oE 'version = "[^"]+"' build.zig.zon | cut -d'"' -f2)
+          VERSION=$(grep -oE '^\s*\.version\s*=\s*"[^"]+"' build.zig.zon | head -n 1 | cut -d'"' -f2)
           TAG_NAME="v${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
