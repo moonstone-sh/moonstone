@@ -3,7 +3,7 @@ const zon = @import("build.zig.zon");
 
 pub const InstallationOwnership = enum {
     self_managed,
-    external,
+    externally_managed,
 };
 
 pub fn build(b: *std.Build) void {
@@ -13,9 +13,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
-    const default_registry_url = b.option([]const u8, "default_registry_url", "Default registry URL") orelse "https://registry.moonstone.sh/registry/v0";
-    const default_homepage_url = b.option([]const u8, "default_homepage_url", "Default homepage URL") orelse "https://moonstone.sh";
-    const default_installer_url = (b.option([]const u8, "default-installer-url", "Default Moonstone installer script URL")) orelse (b.option([]const u8, "default_installer_url", "Default Moonstone installer script URL alias")) orelse "https://moonstone.sh/install";
+    const default_registry_url = b.option([]const u8, "default-registry-url", "Default registry URL") orelse "https://registry.moonstone.sh/registry/v0";
+    const default_homepage_url = b.option([]const u8, "default-homepage-url", "Default homepage URL") orelse "https://moonstone.sh";
+    const default_installer_url = b.option([]const u8, "default-installer-url", "Default Moonstone installer script URL") orelse "https://moonstone.sh/install";
 
     if (std.mem.indexOfAny(u8, default_installer_url, " \t\r\n'\"$`;&|<>") != null or
         (!std.mem.startsWith(u8, default_installer_url, "http://") and !std.mem.startsWith(u8, default_installer_url, "https://")))
@@ -23,19 +23,13 @@ pub fn build(b: *std.Build) void {
         @panic("default_installer_url must be a plain HTTP(S) URL without whitespace or shell metacharacters");
     }
 
-    const installation_ownership = (b.option(
+    const installation_ownership = b.option(
         InstallationOwnership,
         "installation-ownership",
         "Whether Moonstone manages its own installation lifecycle (self-managed, external)",
-    )) orelse (b.option(
-        InstallationOwnership,
-        "installation_ownership",
-        "Installation ownership alias",
-    )) orelse .self_managed;
+    ) orelse .self_managed;
 
-    const distribution_label = (b.option([]const u8, "distribution-label", "Distribution channel (standalone, homebrew, custom)")) orelse (b.option([]const u8, "distribution_label", "Distribution channel alias")) orelse "standalone";
-
-    const distribution_hint = (b.option([]const u8, "distribution-hint", "Message shown when update or uninstall is attempted on externally managed installation.")) orelse (b.option([]const u8, "distribution_hint", "Distribution hint alias")) orelse "This Moonstone installation is managed by an external package manager. Use that package manager to install or update Moonstone.";
+    const distribution_label = (b.option([]const u8, "distribution-label", "Distribution channel (standalone, homebrew, custom)")) orelse "standalone";
 
     const options = b.addOptions();
     options.addOption([]const u8, "name", @tagName(zon.name));
@@ -45,7 +39,6 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "default_installer_url", default_installer_url);
     options.addOption(InstallationOwnership, "installation_ownership", installation_ownership);
     options.addOption([]const u8, "distribution_label", distribution_label);
-    options.addOption([]const u8, "distribution_hint", distribution_hint);
 
     const build_options_mod = options.createModule();
 

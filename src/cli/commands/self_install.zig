@@ -81,14 +81,12 @@ pub fn validateReleaseVersion(version: []const u8) !void {
 }
 
 pub fn ensureSelfManaged(ctx: *router.Context, is_json: bool) !void {
-    if (build_options.installation_ownership == .external) {
-        const hint = if (build_options.distribution_hint.len > 0)
-            build_options.distribution_hint
-        else
-            "This Moonstone installation is managed by an external package manager. Use that package manager to install or update Moonstone.";
-
+    if (build_options.installation_ownership == .externally_managed) {
         if (!is_json) {
-            try ctx.stdout.print("\n{s}\n\n", .{hint});
+            try ctx.stdout.print(
+                "\nThis Moonstone installation is managed by {s}. Use {s} to update or reinstall Moonstone.\n\n",
+                .{ build_options.distribution_label, build_options.distribution_label },
+            );
         }
         return error.ManagedDistributionChannel;
     }

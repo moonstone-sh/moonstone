@@ -32,14 +32,12 @@ pub const SelfUninstallCommand = struct {
         const io = ctx.io;
         const stdout = ctx.stdout;
 
-        if (build_options.installation_ownership == .external) {
-            const hint = if (build_options.distribution_hint.len > 0)
-                build_options.distribution_hint
-            else
-                "This Moonstone installation is managed by an external package manager. Use that package manager to install or update Moonstone.";
-
+        if (build_options.installation_ownership == .externally_managed) {
             if (!self.json) {
-                try stdout.print("\n{s}\n\n", .{hint});
+                try stdout.print(
+                    "\nThis Moonstone installation is managed by {s}. Use {s} to uninstall Moonstone.\n\n",
+                    .{ build_options.distribution_label, build_options.distribution_label },
+                );
             }
             return error.ManagedDistributionChannel;
         }
