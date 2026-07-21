@@ -66,6 +66,20 @@ pub fn build(b: *std.Build) void {
 
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+
+    // 4. Official Release Matrix (`zig build release`)
+    // -------------------------------------------------------------------------
+    const release_step = b.step("release", "Outputs all the targets to be uploaded into moonstone.sh and the official homebrew tap.");
+    inline for (official_release_targets) |release_target| {
+        const resolved_target = b.resolveTargetQuery(release_target.query());
+        const triple = release_target.triple();
+
+        const binary_name = b.fmt("moon-{s}-{s}", .{ zon.version, triple });
+
+        const release_exe = createMoonExecutable(b, binary_name, resolved_target, optimize, build_options_mod);
+        const install_release = b.addInstallArtifact(release_exe, .{});
+        release_step.dependOn(&install_release.step);
+    }
 }
 
 fn createMoonExecutable(
@@ -172,3 +186,37 @@ fn createMoonTest(
 
     return t;
 }
+
+const ReleaseTarget = struct {
+    cpu_arch: std.Target.Cpu.Arch,
+    os_tag: std.Target.Os.Tag,
+    abi: std.Target.Abi = .none,
+
+    pub fn query(self: @This()) std.Target.Query {
+        return .{
+            .cpu_arch = self.cpu_arch,
+            .os_tag = self.os_tag,
+            .abi = self.abi,
+        };
+    }
+
+    pub fn triple(comptime self: @This()) []const u8 {
+        return comptime switch (self.abi) {
+            std.Target.Abi.none => std.fmt.comptimePrint("{s}-{s}", .{ @tagName(self.cpu_arch), @tagName(self.os_tag) }),
+            else => std.fmt.comptimePrint("{s}-{s}-{s}", .{ @tagName(self.cpu_arch), @tagName(self.os_tag), @tagName(self.abi) }),
+        };
+    }
+};
+
+const official_release_targets: []const ReleaseTarget = &.{
+    .{ .cpu_arch = .aarch64, .os_tag = .freebsd },
+    .{ .cpu_arch = .x86_64, .os_tag = .freebsd },
+    .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    .{ .cpu_arch = .x86_64, .os_tag = .macos },
+    .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
+    .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl },
+    .{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabihf },
+    .{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .gnu },
+};
