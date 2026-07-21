@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*.*.*'
 
@@ -30,18 +28,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Auto-tag on main merge
-        if: github.ref == 'refs/heads/main'
+      - name: Extract version from tag
         run: |
-          VERSION=$(grep -oE '^\s*\.version\s*=\s*"[^"]+"' build.zig.zon | head -n 1 | cut -d'"' -f2)
-          TAG_NAME="v${VERSION}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Tag ${TAG_NAME} does not exist. Creating and pushing tag..."
-            git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
-            git push origin "${TAG_NAME}" || true
-          fi
+          VERSION="${GITHUB_REF#refs/tags/v}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       - name: Setup Zig
