@@ -55,26 +55,13 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/v}"
           fi
 
-          triples=(
-            "aarch64-freebsd"
-            "x86_64-freebsd"
-            "aarch64-macos"
-            "x86_64-macos"
-            "aarch64-linux-gnu"
-            "x86_64-linux-gnu"
-            "x86_64-linux-musl"
-            "aarch64-linux-musl"
-            "arm-linux-gnueabihf"
-            "riscv64-linux-gnu"
-          )
+          echo "Building Moonstone release target matrix via 'zig build release'..."
+          zig build release -Doptimize=ReleaseSafe
 
           mkdir -p dist_archives
-          for triple in "${triples[@]}"; do
-            echo "Building target: ${triple}"
-            rm -rf zig-out/bin/moon
-            zig build -Dtarget="${triple}" -Doptimize=ReleaseSafe
-
-            normalized="${triple}"
+          for bin in zig-out/bin/moon-${VERSION}-*; do
+            target="${bin#zig-out/bin/moon-${VERSION}-}"
+            normalized="${target}"
             if [[ "$normalized" == "aarch64-linux-gnu" ]]; then
               normalized="aarch64-linux"
             elif [[ "$normalized" == "x86_64-linux-gnu" ]]; then
@@ -83,7 +70,10 @@ jobs:
               normalized="riscv64-linux"
             fi
 
-            (cd zig-out/bin && tar -czf "../../dist_archives/moon-${normalized}.tar.gz" moon)
+            tmp_dir=$(mktemp -d)
+            cp "$bin" "$tmp_dir/moon"
+            (cd "$tmp_dir" && tar -czf "$GITHUB_WORKSPACE/dist_archives/moon-${normalized}.tar.gz" moon)
+            rm -rf "$tmp_dir"
           done
 
           cp dist_archives/*.tar.gz zig-out/bin/
