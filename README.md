@@ -54,10 +54,10 @@ Project environments are synchronized separately from the Moonstone binary:
 
 ```bash
 moon sync                         # Synchronize the current project environment
-moon install --latest             # Install the latest Moonstone CLI release
-moon install --version 0.1.1      # Install an exact CLI release
+moon self install --latest        # Install the latest Moonstone CLI release
+moon self install --version 0.3.26 # Install an exact CLI release
 moon setup                        # Configure or repair global shims
-moon uninstall --preserve-store   # Remove the CLI while retaining artifacts and index metadata
+moon self uninstall              # Remove Moonstone user data, store, and shims
 moon interpreter remove lua@5.4.7 # Remove one unreferenced interpreter artifact
 ```
 

@@ -29,13 +29,6 @@ if "$MOON_BIN" self install --latest --version 0.3.24 >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "━━━ 3. Testing top-level deprecated commands ━━━"
-DEP_INSTALL_ERR=$("$MOON_BIN" install --latest 2>&1 || true)
-echo "$DEP_INSTALL_ERR" | grep "warning: 'moon install' is deprecated. Use 'moon self install' instead."
-
-DEP_UNINSTALL_ERR=$("$MOON_BIN" uninstall -y 2>&1 || true)
-echo "$DEP_UNINSTALL_ERR" | grep "warning: 'moon uninstall' is deprecated. Use 'moon self uninstall' instead."
-
 echo "━━━ 4. Testing store purge, cache clean, config show/reset ━━━"
 "$MOON_BIN" store purge
 "$MOON_BIN" cache clean

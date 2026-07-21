@@ -3,8 +3,6 @@ const std = @import("std");
 // Top-level commands
 pub const add = @import("add.zig").add_command;
 pub const sync = @import("sync.zig").sync_command;
-pub const install = @import("install_deprecated.zig").InstallDeprecatedCommand;
-pub const uninstall = @import("uninstall_deprecated.zig").UninstallDeprecatedCommand;
 pub const init = @import("init.zig").init_command;
 pub const setup = @import("setup.zig").SetupCommand;
 pub const link = @import("link.zig").LinkCommand;

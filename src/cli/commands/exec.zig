@@ -18,16 +18,23 @@ pub const ExecCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon exec [flags] <command> [args...]
+            \\Usage: moon exec [options] <command> [args...]
             \\
-            \\Executes an arbitrary command in the project environment.
+            \\Executes an arbitrary command inside the project environment.
             \\
-            \\Flags:
+            \\All Moonstone options must appear BEFORE <command>. Once <command> is
+            \\encountered, ownership of all remaining arguments—including any later '--'—
+            \\transfers to the child process unchanged.
+            \\
+            \\An optional '--' may appear before <command> to explicitly terminate Moonstone
+            \\option parsing (e.g. when <command> itself starts with a hyphen).
+            \\
+            \\Options:
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
             \\  --interpreter <i> Override interpreter
             \\  --target <t>     Override target
-            \\  --json           Output results as JSON (bloated protocol)
+            \\  --json           Output results as JSON
             \\  --global         Run command from the global tools environment
             \\
         , .{});

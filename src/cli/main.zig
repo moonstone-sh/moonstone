@@ -35,8 +35,6 @@ pub fn main(init: std.process.Init) !void {
     const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management", &.{
         router.CommandNode.from(command_mod.add),
         router.CommandNode.from(command_mod.sync),
-        router.CommandNode.from(command_mod.install),
-        router.CommandNode.from(command_mod.uninstall),
         router.CommandNode.from(command_mod.init),
         router.CommandNode.from(command_mod.setup),
         router.CommandNode.from(@import("commands/link.zig").LinkCommand),
