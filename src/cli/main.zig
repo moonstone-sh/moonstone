@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
         }),
 
         router.CommandNode.group("store", "Manage content store", &.{
-            router.CommandNode.from(command_mod.store.gc),
+            router.CommandNode.from(command_mod.store.prune),
             router.CommandNode.from(command_mod.store.verify),
             router.CommandNode.from(command_mod.store.path),
             router.CommandNode.from(command_mod.store.list),

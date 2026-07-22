@@ -41,7 +41,7 @@ pub fn run(allocator: std.mem.Allocator, command: Command, io: std.Io, stdout: *
                 \\  exec            Run arbitrary command inside environment
                 \\  env             Print env / shell activation
                 \\  interpreter     Manage Lua interpreters
-                \\  store           Inspect/verify/gc content store
+                \\  store           Inspect/verify/prune content store
                 \\  index           Rebuild/check SQLite index
                 \\  registry        Manage registries
                 \\  help            Print this help message

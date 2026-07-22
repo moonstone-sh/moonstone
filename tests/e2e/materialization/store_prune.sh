@@ -38,8 +38,8 @@ INSPECT_HASH=$(grep -A 10 'name = "inspect"' moonstone.lock | grep artifact_hash
 echo "━━━ remove inspect ━━━"
 moon remove inspect
 
-echo "━━━ run gc ━━━"
-moon store gc
+echo "━━━ run prune ━━━"
+moon store prune
 
 echo "━━━ verify artifact gone from store ━━━"
 ! moon store path "$INSPECT_HASH"

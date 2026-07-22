@@ -2,15 +2,15 @@ const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
 
-pub const StoreGcCommand = struct {
-    pub const name = "gc";
-    pub const description = "Garbage collect unreferenced store artifacts";
+pub const StorePruneCommand = struct {
+    pub const name = "prune";
+    pub const description = "Prune unreferenced store artifacts";
 
     dry_run: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon store gc [flags]
+            \\Usage: moon store prune [flags]
             \\
             \\Identify and remove artifacts from the store that are not referenced
             \\by any local project's moonstone.lock.
@@ -21,7 +21,7 @@ pub const StoreGcCommand = struct {
         , .{});
     }
 
-    pub fn run(self: StoreGcCommand, ctx: *router.Context) !void {
+    pub fn run(self: StorePruneCommand, ctx: *router.Context) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;

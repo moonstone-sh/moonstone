@@ -23,7 +23,7 @@ pub const self_cmd = struct {
 
 // Store group
 pub const store = struct {
-    pub const gc = @import("store_gc.zig").StoreGcCommand;
+    pub const prune = @import("store_prune.zig").StorePruneCommand;
     pub const verify = @import("store_verify.zig").StoreVerifyCommand;
     pub const path = @import("store_path.zig").StorePathCommand;
     pub const list = @import("store_list.zig").StoreListCommand;
