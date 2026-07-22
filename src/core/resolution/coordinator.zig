@@ -68,9 +68,19 @@ pub const Coordinator = struct {
             return cand;
         }
 
+        return self.resolveFromRegistries(pkg_name, constraint, registries, options, environ_map);
+    }
+
+    fn resolveFromRegistries(
+        self: Coordinator,
+        pkg_name: []const u8,
+        constraint: []const u8,
+        registries: []const registry.ResolvedRegistry,
+        options: options_mod.ResolveOptions,
+        environ_map: *std.process.Environ.Map,
+    ) !candidate_mod.Candidate {
         if (options.offline) return error.OfflineMode;
 
-        // 2. Try Remote Registries
         for (registries) |reg| {
             const res = moonstone_resolver.resolve_remote(self.allocator, self.io, pkg_name, constraint, reg.url, reg.token, options, environ_map) catch |err| {
                 if (err == error.PackageNotFound) continue;
@@ -264,7 +274,7 @@ pub const Coordinator = struct {
         }
 
         return switch (kind) {
-            .moonstone => self.resolve(pkg_name, constraint, index, registries, options, environ_map),
+            .moonstone => self.resolveFromRegistries(pkg_name, constraint, registries, options, environ_map),
             .rocks => rocks_resolver.resolve(self.allocator, self.io, pkg_name, constraint, options, environ_map),
             .path => path_resolver.resolve(self.allocator, self.io, pkg_name, constraint, options),
             .link => link_resolver.resolve(self.allocator, self.io, pkg_name, constraint, index, options, environ_map),
