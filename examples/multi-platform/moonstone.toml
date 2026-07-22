@@ -1,0 +1,8 @@
+[project]
+name = "multi-platform-demo"
+version = "0.1.0"
+kind = "application"
+lua_abi = "5.4"
+
+[dependencies]
+"rocks:inspect" = "3.1.3"

@@ -4,6 +4,8 @@ pub const domain = struct {
     pub const manifest = @import("domain/manifest.zig");
     pub const semver = @import("domain/semver.zig");
     pub const lockfile = @import("domain/lockfile.zig");
+    pub const locked_package = @import("domain/locked_package.zig");
+    pub const resolution_profile = @import("domain/resolution_profile.zig");
     pub const package_spec = @import("domain/package_spec.zig");
 };
 
@@ -50,8 +52,18 @@ pub const runtime = struct {
 
 pub const resolution = @import("resolution/root.zig");
 
+pub const artifacts = struct {
+    pub const provider = @import("artifacts/provider.zig");
+    pub const transport = @import("artifacts/transport.zig");
+    pub const publisher = @import("artifacts/publisher.zig");
+    pub const retention = @import("artifacts/retention.zig");
+};
+
 pub const materialization = struct {
     pub const materializer = @import("materialization/materializer.zig");
+    pub const plan = @import("materialization/plan.zig");
+    pub const executor = @import("materialization/executor.zig");
+    pub const adapter = @import("materialization/adapter.zig");
     pub const materializers = struct {
         pub const cmake = @import("materialization/materializers/cmake.zig");
         pub const copy_lua = @import("materialization/materializers/copy_lua.zig");

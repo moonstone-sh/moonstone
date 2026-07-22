@@ -1517,8 +1517,6 @@ fn commit_synthetic_artifact(
             .bins = bins,
         },
     });
-    defer allocator.free(recipe_hash);
-
     const art_hash = try compute_dir_hash(allocator, io, build_out_dir);
     defer allocator.free(art_hash);
 
