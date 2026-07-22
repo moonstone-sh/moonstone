@@ -45,6 +45,30 @@ test "replay contract v2 lockfile parse and roundtrip" {
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "replay_mode = \"declared_host\"") != null);
 }
 
+test "legacy binary registry entries require their exact artifact" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\[[package]]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.18"
+        \\kind = "bin"
+        \\recipe_hash = "b3:recipe"
+        \\artifact_hash = "b3:artifact"
+        \\runtime = "5.4"
+        \\lua_abi = "5.1"
+        \\target = "native"
+        \\source_kind = "bin"
+        \\resolver = "store"
+        \\
+    ;
+
+    var lf = try lockfile_mod.LockFile.parse(allocator, content);
+    defer lf.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), lf.packages.items.len);
+    try std.testing.expectEqual(replay_mod.ReplayMode.artifact_only, lf.packages.items[0].replay_mode);
+}
+
 test "canonical plan hash stability and tamper detection" {
     const allocator = std.testing.allocator;
     var plan = plan_mod.MaterializationPlan{

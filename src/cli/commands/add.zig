@@ -930,7 +930,10 @@ pub const add_command = struct {
                     if (std.mem.eql(u8, sk, "zig_cc") or std.mem.eql(u8, sk, "cmake") or std.mem.eql(u8, sk, "native_cmodule")) {
                         break :blk moonstone.domain.replay_contract.ReplayMode.declared_host;
                     }
-                    break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
+                    if (moonstone.resolution.locked_realizer.assessMaterializerCapability(sk) == .source_replay_supported) {
+                        break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
+                    }
+                    break :blk moonstone.domain.replay_contract.ReplayMode.artifact_only;
                 },
             });
         }

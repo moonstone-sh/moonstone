@@ -298,14 +298,16 @@ pub fn reportError(
                     try stdout.print("No compatible artifact was found in the local store.\n", .{});
                 },
                 .locked_artifact_missing => |lam| {
-                    try stdout.print("Error: Locked artifact is missing from the local store.\n\n", .{});
+                    try stdout.print("Error: Artifact pinned by moonstone.lock could not be restored.\n\n", .{});
                     try stdout.print("Package:\n  ", .{});
                     try formatMaybeResolverPrefix(lam.resolver, lam.name, stdout);
                     try stdout.print("@{s}\n\n", .{lam.version});
                     try stdout.print("Expected artifact:\n  {s}\n\n", .{lam.artifact_hash});
-                    try stdout.print("The lockfile requires this exact artifact, but it was not found.\n", .{});
-                    try stdout.print("Run without --locked to resolve/rebuild, or restore the\n", .{});
-                    try stdout.print("artifact into the local store.\n", .{});
+                    try stdout.print("A matching lockfile makes 'moon sync' replay its pinned resolution;\n", .{});
+                    try stdout.print("the --locked flag is not required. Moonstone checked the local store\n", .{});
+                    try stdout.print("and configured registries, but could not restore this exact artifact.\n", .{});
+                    try stdout.print("Run 'moon sync --update'\n", .{});
+                    try stdout.print("to create a new lockfile, or restore/publish the locked artifact.\n", .{});
                 },
                 .orbit_not_found => |onf| {
                     try stdout.print("Error: orbit '{s}' not found.\n", .{onf.orbit});

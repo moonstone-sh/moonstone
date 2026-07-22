@@ -172,7 +172,6 @@ pub const RegistryProvider = struct {
                     }
                 }
             }
-            return null;
         }
 
         // 2. Check pinned/remote-resolved artifacts
@@ -198,6 +197,9 @@ pub const RegistryProvider = struct {
                         art.runtime_artifact_hash = try arena.dupe(u8, selected_artifact.runtime_artifact_hash);
                         art.remote_desc = try desc.clone(arena);
                         desc.deinit(self.allocator);
+                    }
+                    if (request.artifact_hash) |expected_hash| {
+                        if (!std.mem.eql(u8, art.artifact_hash, expected_hash)) continue;
                     }
                     var artifact = art.*;
                     return try artifact.clone(self.allocator);
@@ -247,6 +249,9 @@ pub const RegistryProvider = struct {
 
         for (candidates) |c| {
             if (candidateHasMalformedRuntimeMetadata(c)) continue;
+            if (request.artifact_hash) |expected_hash| {
+                if (!std.mem.eql(u8, c.artifact_hash, expected_hash)) continue;
+            }
             if (resolver_str) |rs| {
                 if (c.resolver) |cr| {
                     if (cr.len == 0 and !std.mem.eql(u8, rs, "moonstone")) continue;
@@ -310,6 +315,9 @@ pub const RegistryProvider = struct {
 
                             const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
                             const selected_artifact = desc.artifact[selected_artifact_idx];
+                            if (request.artifact_hash) |expected_hash| {
+                                if (!std.mem.eql(u8, selected_artifact.hash, expected_hash)) continue;
+                            }
 
                             return candidate_mod.Candidate{
                                 .name = try self.allocator.dupe(u8, pkg.name),

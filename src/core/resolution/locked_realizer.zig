@@ -73,47 +73,9 @@ pub fn ensureLockedArtifact(
         }
     }
 
-    // 2. Remote artifact provider check if enabled and online
-    if (!policy.offline and policy.allow_remote_artifacts and entry.artifact_hash.len > 0) {
-        const art_provider = @import("../artifacts/provider.zig");
-        const build_options = @import("build_options");
-        const prov = art_provider.RemoteArtifactProvider.init("registry", build_options.default_registry_url);
-        const req = art_provider.ArtifactRequest{
-            .artifact_hash = entry.artifact_hash,
-            .target = if (entry.target.len > 0) entry.target else "native",
-        };
-
-        const platform_fs = @import("../platform/fs.zig");
-        var paths = try platform_fs.resolve_moonstone(allocator, env, io);
-        defer paths.deinit(allocator);
-
-        const staging_dir = try std.fs.path.join(allocator, &.{ paths.tmp, "remote-staging" });
-        defer allocator.free(staging_dir);
-
-        var res = prov.fetchArtifact(allocator, io, env, req, staging_dir) catch null;
-        if (res) |*r| {
-            defer r.deinit(allocator);
-            if (r.status == .found and r.local_staging_path != null) {
-                const cand_origin = candidate_mod.Origin{ .artifact_hash = try allocator.dupe(u8, entry.artifact_hash) };
-                const cand = candidate_mod.Candidate{
-                    .name = try allocator.dupe(u8, entry.name),
-                    .version = try allocator.dupe(u8, entry.version),
-                    .kind = entry.kind,
-                    .artifact_hash = try allocator.dupe(u8, entry.artifact_hash),
-                    .recipe_hash = try allocator.dupe(u8, entry.recipe_hash),
-                    .local_path = try allocator.dupe(u8, r.local_staging_path.?),
-                    .origin = cand_origin,
-                    .location = .local_store,
-                };
-                return RealizeResult{
-                    .candidate = cand,
-                    .method = .remote_artifact,
-                };
-            }
-        }
-    }
-
-    // 3. Assess materializer capability and ReplayContract
+    // 2. Assess materializer capability and ReplayContract. The provider above
+    // searches the configured registries for an exact remote artifact, so do
+    // not fall back to an unrelated default registry here.
     if (entry.replay_mode == .artifact_only) {
         return error.ExactArtifactRequired;
     }
