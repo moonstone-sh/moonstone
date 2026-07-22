@@ -1,5 +1,5 @@
 {
-  description = "Moonstone - A next-generation environment manager for Lua";
+  description = "Moonstone: Deterministic Lua project environments & multi-platform package realization";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -9,39 +9,79 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-        packages.default = pkgs.stdenv.mkDerivation {
+        pkgs = import nixpkgs { inherit system; };
+
+        zig = if builtins.hasAttr "zig_0_16" pkgs then pkgs.zig_0_16 else pkgs.zig;
+
+        moonstone = pkgs.stdenv.mkDerivation {
           pname = "moonstone";
-          version = "0.4.0"; # Controlled by git tags normally
+          version = "0.3.31";
 
           src = ./.;
 
-          nativeBuildInputs = [ pkgs.zig ];
+          nativeBuildInputs = [
+            zig
+            pkgs.pkg-config
+          ];
+
+          buildInputs = [
+            pkgs.sqlite
+            pkgs.zstd
+          ];
 
           buildPhase = ''
-            # Zig requires a writable cache directory
-            export XDG_CACHE_HOME=$(mktemp -d)
+            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
             zig build -Doptimize=ReleaseSafe --prefix $out
           '';
 
-          postInstall = ''
-            # Nixpkgs standardizes completions into these exact directories.
-            # Moonstone will dynamically generate them and inject them during installation.
-            $out/bin/moon completions bash > moon.bash
-            $out/bin/moon completions zsh > _moon
-            $out/bin/moon completions fish > moon.fish
-
-            install -Dm644 moon.bash $out/share/bash-completion/completions/moon
-            install -Dm644 _moon $out/share/zsh/site-functions/_moon
-            install -Dm644 moon.fish $out/share/fish/vendor_completions.d/moon.fish
+          installPhase = ''
+            mkdir -p $out/bin
+            cp zig-out/bin/moon $out/bin/
           '';
+
+          meta = with pkgs.lib; {
+            description = "Deterministic Lua project environments and package manager";
+            homepage = "https://moonstone.sh";
+            license = licenses.mit;
+            mainProgram = "moon";
+            platforms = platforms.unix;
+          };
+        };
+      in
+      {
+        packages = {
+          default = moonstone;
+          moonstone = moonstone;
         };
 
-        # This provides a ready-to-go development environment for contributors
+        apps.default = flake-utils.lib.mkApp {
+          drv = moonstone;
+          name = "moon";
+        };
+
         devShells.default = pkgs.mkShell {
-          buildInputs = [ pkgs.zig pkgs.sqlite pkgs.zls ];
+          name = "moonstone-dev-shell";
+
+          nativeBuildInputs = with pkgs; [
+            zig
+            pkg-config
+            cmake
+            ninja
+            gnumake
+          ];
+
+          buildInputs = with pkgs; [
+            sqlite
+            zstd
+            lua5_4
+            luajit
+          ];
+
+          shellHook = ''
+            echo "🌙 Welcome to the Moonstone Development Shell (v0.3.31)"
+            echo "   Zig: $(zig version)"
+            echo "   Run 'zig build test' to execute all unit and integration tests."
+          '';
         };
       }
     );
