@@ -1,3 +1,5 @@
 .moonstone/
 .ballad/
 dist/
+/main.lua
+/cli.lua
