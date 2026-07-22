@@ -28,6 +28,12 @@ resolver = "rocks"
 role = "runtime"
 
 [[dependencies]]
+name = "argparse-tl-type"
+constraint = "*"
+resolver = "rocks"
+role = "tool"
+
+[[dependencies]]
 name = "moonstone/ballad"
 constraint = "^0.2.18"
 role = "tool"

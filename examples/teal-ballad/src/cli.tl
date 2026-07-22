@@ -1,14 +1,5 @@
 local argparse = require("argparse")
 
-local record Parser
-  option: function(Parser, string, string, string): Parser
-  flag: function(Parser, string, string): Parser
-  convert: function(Parser, function(string): any): Parser
-  parse: function(Parser, {string}): any
-end
-
-local type CliParserFn = function(string, string): Parser
-
 local record CliOptions
   name: string
   greeting: string
@@ -22,8 +13,7 @@ local record CLI
 end
 
 function CLI.parse(args: {string}): CliOptions
-  local new_parser = argparse as CliParserFn
-  local p = new_parser("teal-cli", "A modern Teal CLI application built with Moonstone and Ballad.")
+  local p = argparse("teal-cli", "A modern Teal CLI application built with Moonstone and Ballad.")
   
   p:option("-n --name", "Name of the person or subject to greet", "World")
   p:option("-g --greeting", "Custom greeting phrase to use", "Hello")
