@@ -2,7 +2,7 @@
 name = "teal-example"
 version = "0.1.0"
 kind = "script"
-description = "Teal CLI application built with Ballad and argparse"
+description = "Teal CLI application built with Cyan, Ballad, and argparse"
 
 [interpreter]
 name = "lua"
@@ -10,17 +10,16 @@ version = "5.4"
 abi = "5.4"
 
 [scripts]
-check = "tl check src/main.tl"
-build = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl"
-run = "tl run src/main.tl --"
-dev = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl && lua dist/main.lua"
-export = "moon exec ballad play partiture.lua"
+check = "moon exec cyan check src"
+build = "moon exec cyan build"
+run = "moon exec cyan run src/main.tl --"
+export = "moon exec cyan build && moon exec ballad play partiture.lua"
 
 [[dependencies]]
-name = "tl"
-constraint = "^0.24.8-1"
+name = "cyan"
+constraint = "^0.4.0-1"
 resolver = "rocks"
-role = "runtime"
+role = "tool"
 
 [[dependencies]]
 name = "argparse"

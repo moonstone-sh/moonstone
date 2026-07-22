@@ -10,7 +10,7 @@ return ballad.partiture(function(p)
 
 	local assets = moonstone:run("build", {
 		inputs = { "./src/*.tl", "./tlconfig.lua" },
-		outputs = { "./dist" },
+		outputs = { "./build" },
 	})
 
 	p.sink.none(assets)
@@ -18,7 +18,7 @@ return ballad.partiture(function(p)
 	local app = layout.exec(project, {
 		name = "teal-example",
 		bin = "teal-example",
-		entry = "main.lua",
+		entry = "build/main.lua",
 	})
 
 	p.sink.directory(app, {

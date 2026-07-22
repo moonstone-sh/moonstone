@@ -1,5 +1,5 @@
 return {
-  build_dir = "dist",
+  build_dir = "build",
   source_dir = "src",
   include_dir = { "src" },
   gen_compat = "off",
