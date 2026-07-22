@@ -12,7 +12,7 @@ abi = "5.4"
 [scripts]
 check = "moon exec cyan build --check-only"
 build = "moon exec cyan build"
-run = "moon exec cyan run src/main.tl --"
+run = "moon exec cyan run src/main.tl \"$@\""
 export = "moon exec cyan build && moon exec ballad play partiture.lua"
 
 [[dependencies]]
