@@ -1429,24 +1429,6 @@ pub const MoonstoneToml = struct {
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
 
-        // All dependencies are written as [[dependencies]] entries.
-        // This is the canonical format — no more [dependencies.<role>] table
-        // sections.  The parser still reads the old table format for backward
-        // compatibility, but the serializer always writes the array format.
-        for (self.dependencies.items) |dep| {
-            try writer.print("\n[[dependencies]]\n", .{});
-            try writer.print("name = ", .{});
-            try writeTomlString(writer, dep.name);
-            try writer.print("\nconstraint = ", .{});
-            try writeTomlString(writer, dep.constraint);
-            if (dep.resolver) |r| {
-                try writer.print("\nresolver = ", .{});
-                try writeTomlString(writer, r);
-            }
-            try writer.print("\nrole = \"{s}\"\n", .{dep.role.toString()});
-            if (dep.optional) try writer.print("optional = true\n", .{});
-        }
-
         if (self.scripts.count() > 0) {
             try writer.print("\n[scripts]\n", .{});
             var it = self.scripts.iterator();
@@ -1477,6 +1459,21 @@ pub const MoonstoneToml = struct {
                 try writer.print("\"{s}\"", .{o});
             }
             try writer.print("]\n", .{});
+        }
+
+        // Dependencies at the bottom
+        for (self.dependencies.items) |dep| {
+            try writer.print("\n[[dependencies]]\n", .{});
+            try writer.print("name = ", .{});
+            try writeTomlString(writer, dep.name);
+            try writer.print("\nconstraint = ", .{});
+            try writeTomlString(writer, dep.constraint);
+            if (dep.resolver) |r| {
+                try writer.print("\nresolver = ", .{});
+                try writeTomlString(writer, r);
+            }
+            try writer.print("\nrole = \"{s}\"\n", .{dep.role.toString()});
+            if (dep.optional) try writer.print("optional = true\n", .{});
         }
     }
 
