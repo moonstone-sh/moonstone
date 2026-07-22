@@ -402,7 +402,7 @@ fn translateCommandBuild(
 
 const TranslatedModule = struct {
     name: []const u8,
-    kind: enum { lua, c },
+    kind: enum { lua, c, data },
     dest_path: []const u8,
     source_path: ?[]const u8 = null,
     config: ?manifest.MaterializeConfig = null,
@@ -443,87 +443,51 @@ fn translateBuiltinBuild(
         try allocator.dupe(u8, lua_abi);
     defer allocator.free(lua_ver_dot);
 
-    const modules = rock.build.modules orelse return try list.toOwnedSlice(allocator);
-    if (modules != .object) return try list.toOwnedSlice(allocator);
+    if (rock.build.modules) |modules| if (modules == .object) {
+        var mod_it = modules.object.iterator();
+        while (mod_it.next()) |entry| {
+            const mod_name = entry.key_ptr.*;
+            const mod_val = entry.value_ptr.*;
 
-    var mod_it = modules.object.iterator();
-    while (mod_it.next()) |entry| {
-        const mod_name = entry.key_ptr.*;
-        const mod_val = entry.value_ptr.*;
+            const name_path = try std.mem.replaceOwned(u8, allocator, mod_name, ".", "/");
+            defer allocator.free(name_path);
 
-        const name_path = try std.mem.replaceOwned(u8, allocator, mod_name, ".", "/");
-        defer allocator.free(name_path);
+            if (mod_val == .string) {
+                const val = mod_val.string;
+                if (std.mem.endsWith(u8, val, ".lua")) {
+                    const dest_path = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, name_path });
+                    try list.append(allocator, .{
+                        .name = try allocator.dupe(u8, mod_name),
+                        .kind = .lua,
+                        .dest_path = dest_path,
+                        .source_path = try allocator.dupe(u8, val),
+                    });
+                } else if (is_c_file(val)) {
+                    // Single C file
+                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+                    var srcs = try allocator.alloc([]const u8, 1);
+                    srcs[0] = try allocator.dupe(u8, val);
 
-        if (mod_val == .string) {
-            const val = mod_val.string;
-            if (std.mem.endsWith(u8, val, ".lua")) {
-                const dest_path = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, name_path });
-                try list.append(allocator, .{
-                    .name = try allocator.dupe(u8, mod_name),
-                    .kind = .lua,
-                    .dest_path = dest_path,
-                    .source_path = try allocator.dupe(u8, val),
-                });
-            } else if (is_c_file(val)) {
-                // Single C file
-                const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
-                var srcs = try allocator.alloc([]const u8, 1);
-                srcs[0] = try allocator.dupe(u8, val);
-
-                const m_config = manifest.MaterializeConfig{
-                    .kind = "native-cmodule",
-                    .strategy = "rocks",
-                    .input = .{ .sources = srcs },
-                    .output = .{
-                        .module = try allocator.dupe(u8, mod_name),
-                        .path = try allocator.dupe(u8, dest_path),
-                    },
-                };
-                try list.append(allocator, .{
-                    .name = try allocator.dupe(u8, mod_name),
-                    .kind = .c,
-                    .dest_path = dest_path,
-                    .config = m_config,
-                });
-            }
-        } else if (mod_val == .array) {
-            // Bare array of source files — a common LuaRocks convention.
-            // e.g. lpeg = { 'lpcap.c', 'lpcode.c', ... }
-            // All entries must be C files; treat as a multi-source C module.
-            const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
-
-            var srcs_list = std.ArrayList([]const u8).empty;
-            errdefer {
-                for (srcs_list.items) |s| allocator.free(s);
-                srcs_list.deinit(allocator);
-            }
-
-            for (mod_val.array.items) |item| {
-                if (item == .string) {
-                    try srcs_list.append(allocator, try allocator.dupe(u8, item.string));
+                    const m_config = manifest.MaterializeConfig{
+                        .kind = "native-cmodule",
+                        .strategy = "rocks",
+                        .input = .{ .sources = srcs },
+                        .output = .{
+                            .module = try allocator.dupe(u8, mod_name),
+                            .path = try allocator.dupe(u8, dest_path),
+                        },
+                    };
+                    try list.append(allocator, .{
+                        .name = try allocator.dupe(u8, mod_name),
+                        .kind = .c,
+                        .dest_path = dest_path,
+                        .config = m_config,
+                    });
                 }
-            }
-
-            const m_config = manifest.MaterializeConfig{
-                .kind = "native-cmodule",
-                .strategy = "rocks",
-                .input = .{ .sources = try srcs_list.toOwnedSlice(allocator) },
-                .output = .{
-                    .module = try allocator.dupe(u8, mod_name),
-                    .path = try allocator.dupe(u8, dest_path),
-                },
-            };
-            try list.append(allocator, .{
-                .name = try allocator.dupe(u8, mod_name),
-                .kind = .c,
-                .dest_path = dest_path,
-                .config = m_config,
-            });
-        } else if (mod_val == .object) {
-            const m_obj = mod_val.object;
-            const sources_val = m_obj.get("sources") orelse m_obj.get("source");
-            if (sources_val) |sv| {
-                // C Module
+            } else if (mod_val == .array) {
+                // Bare array of source files — a common LuaRocks convention.
+                // e.g. lpeg = { 'lpcap.c', 'lpcode.c', ... }
+                // All entries must be C files; treat as a multi-source C module.
                 const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
 
                 var srcs_list = std.ArrayList([]const u8).empty;
@@ -532,48 +496,9 @@ fn translateBuiltinBuild(
                     srcs_list.deinit(allocator);
                 }
 
-                if (sv == .array) {
-                    for (sv.array.items) |s| try srcs_list.append(allocator, try allocator.dupe(u8, s.string));
-                } else if (sv == .string) {
-                    try srcs_list.append(allocator, try allocator.dupe(u8, sv.string));
-                }
-
-                var cflags = std.ArrayList([]const u8).empty;
-                errdefer {
-                    for (cflags.items) |f| allocator.free(f);
-                    cflags.deinit(allocator);
-                }
-                if (m_obj.get("defines")) |dv| {
-                    if (dv == .array) {
-                        for (dv.array.items) |d| try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}", .{d.string}));
-                    }
-                }
-                if (m_obj.get("incdirs")) |iv| {
-                    if (iv == .array) {
-                        for (iv.array.items) |i| try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, i.string, "/")}));
-                    } else if (iv == .string) {
-                        try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, iv.string, "/")}));
-                    }
-                }
-                if (m_obj.get("incdir")) |iv| {
-                    if (iv == .string) {
-                        try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, iv.string, "/")}));
-                    }
-                }
-
-                var ldflags = std.ArrayList([]const u8).empty;
-                errdefer {
-                    for (ldflags.items) |f| allocator.free(f);
-                    ldflags.deinit(allocator);
-                }
-                if (m_obj.get("libdirs")) |lv| {
-                    if (lv == .array) {
-                        for (lv.array.items) |l| try ldflags.append(allocator, try std.fmt.allocPrint(allocator, "-L{s}", .{l.string}));
-                    }
-                }
-                if (m_obj.get("libraries")) |lv| {
-                    if (lv == .array) {
-                        for (lv.array.items) |l| try ldflags.append(allocator, try std.fmt.allocPrint(allocator, "-l{s}", .{l.string}));
+                for (mod_val.array.items) |item| {
+                    if (item == .string) {
+                        try srcs_list.append(allocator, try allocator.dupe(u8, item.string));
                     }
                 }
 
@@ -585,8 +510,6 @@ fn translateBuiltinBuild(
                         .module = try allocator.dupe(u8, mod_name),
                         .path = try allocator.dupe(u8, dest_path),
                     },
-                    .args = try cflags.toOwnedSlice(allocator),
-                    .ldflags = try ldflags.toOwnedSlice(allocator),
                 };
                 try list.append(allocator, .{
                     .name = try allocator.dupe(u8, mod_name),
@@ -594,11 +517,112 @@ fn translateBuiltinBuild(
                     .dest_path = dest_path,
                     .config = m_config,
                 });
+            } else if (mod_val == .object) {
+                const m_obj = mod_val.object;
+                const sources_val = m_obj.get("sources") orelse m_obj.get("source");
+                if (sources_val) |sv| {
+                    // C Module
+                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+
+                    var srcs_list = std.ArrayList([]const u8).empty;
+                    errdefer {
+                        for (srcs_list.items) |s| allocator.free(s);
+                        srcs_list.deinit(allocator);
+                    }
+
+                    if (sv == .array) {
+                        for (sv.array.items) |s| try srcs_list.append(allocator, try allocator.dupe(u8, s.string));
+                    } else if (sv == .string) {
+                        try srcs_list.append(allocator, try allocator.dupe(u8, sv.string));
+                    }
+
+                    var cflags = std.ArrayList([]const u8).empty;
+                    errdefer {
+                        for (cflags.items) |f| allocator.free(f);
+                        cflags.deinit(allocator);
+                    }
+                    if (m_obj.get("defines")) |dv| {
+                        if (dv == .array) {
+                            for (dv.array.items) |d| try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}", .{d.string}));
+                        }
+                    }
+                    if (m_obj.get("incdirs")) |iv| {
+                        if (iv == .array) {
+                            for (iv.array.items) |i| try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, i.string, "/")}));
+                        } else if (iv == .string) {
+                            try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, iv.string, "/")}));
+                        }
+                    }
+                    if (m_obj.get("incdir")) |iv| {
+                        if (iv == .string) {
+                            try cflags.append(allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{std.mem.trim(u8, iv.string, "/")}));
+                        }
+                    }
+
+                    var ldflags = std.ArrayList([]const u8).empty;
+                    errdefer {
+                        for (ldflags.items) |f| allocator.free(f);
+                        ldflags.deinit(allocator);
+                    }
+                    if (m_obj.get("libdirs")) |lv| {
+                        if (lv == .array) {
+                            for (lv.array.items) |l| try ldflags.append(allocator, try std.fmt.allocPrint(allocator, "-L{s}", .{l.string}));
+                        }
+                    }
+                    if (m_obj.get("libraries")) |lv| {
+                        if (lv == .array) {
+                            for (lv.array.items) |l| try ldflags.append(allocator, try std.fmt.allocPrint(allocator, "-l{s}", .{l.string}));
+                        }
+                    }
+
+                    const m_config = manifest.MaterializeConfig{
+                        .kind = "native-cmodule",
+                        .strategy = "rocks",
+                        .input = .{ .sources = try srcs_list.toOwnedSlice(allocator) },
+                        .output = .{
+                            .module = try allocator.dupe(u8, mod_name),
+                            .path = try allocator.dupe(u8, dest_path),
+                        },
+                        .args = try cflags.toOwnedSlice(allocator),
+                        .ldflags = try ldflags.toOwnedSlice(allocator),
+                    };
+                    try list.append(allocator, .{
+                        .name = try allocator.dupe(u8, mod_name),
+                        .kind = .c,
+                        .dest_path = dest_path,
+                        .config = m_config,
+                    });
+                }
             }
         }
-    }
+    };
+
+    if (rock.build.install) |install| if (install.lua) |lua_files| {
+        switch (lua_files) {
+            .string => |source_path| try appendBuiltinInstalledLuaFile(allocator, &list, lua_ver_dot, source_path),
+            .array => |paths| for (paths.items) |path| {
+                if (path == .string) try appendBuiltinInstalledLuaFile(allocator, &list, lua_ver_dot, path.string);
+            },
+            else => {},
+        }
+    };
 
     return try list.toOwnedSlice(allocator);
+}
+
+fn appendBuiltinInstalledLuaFile(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(TranslatedModule),
+    lua_ver_dot: []const u8,
+    source_path: []const u8,
+) !void {
+    const dest_path = try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, source_path });
+    try list.append(allocator, .{
+        .name = try allocator.dupe(u8, source_path),
+        .kind = .data,
+        .dest_path = dest_path,
+        .source_path = try allocator.dupe(u8, source_path),
+    });
 }
 
 fn find_manifest_package(repository: std.json.Value, pkg_name: []const u8) ?std.json.Value {

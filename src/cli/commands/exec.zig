@@ -128,6 +128,9 @@ pub const ExecCommand = struct {
                     }
                     try lua_path_list.appendSlice(allocator, ";;");
                     try run_env.env_map.put("LUA_PATH", lua_path_list.items);
+                    const lua_path_key = try std.fmt.allocPrint(allocator, "LUA_PATH_{s}", .{run_env.lua_ver_suffix});
+                    defer allocator.free(lua_path_key);
+                    try run_env.env_map.put(lua_path_key, lua_path_list.items);
                 }
 
                 if (env_table.get("lua_cpath")) |lp| {
@@ -146,6 +149,9 @@ pub const ExecCommand = struct {
                     }
                     try lua_cpath_list.appendSlice(allocator, ";;");
                     try run_env.env_map.put("LUA_CPATH", lua_cpath_list.items);
+                    const lua_cpath_key = try std.fmt.allocPrint(allocator, "LUA_CPATH_{s}", .{run_env.lua_ver_suffix});
+                    defer allocator.free(lua_cpath_key);
+                    try run_env.env_map.put(lua_cpath_key, lua_cpath_list.items);
                 }
             }
         } else |_| {}

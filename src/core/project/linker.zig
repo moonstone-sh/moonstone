@@ -190,7 +190,13 @@ fn writeLiveLinkScope(
         scoped_runtime_bin_path = try allocator.dupe(u8, project_runtime_bin_path.?);
     }
 
-    try writeScopedPathPrepend(&aw.writer, bin_dir_path, scoped_runtime_bin_path);
+    if (scoped_runtime_bin_path) |runtime_path| {
+        const paths = [_][]const u8{ bin_dir_path, runtime_path };
+        try writeScopedPathPrepend(&aw.writer, &paths);
+    } else {
+        const paths = [_][]const u8{bin_dir_path};
+        try writeScopedPathPrepend(&aw.writer, &paths);
+    }
 
     const src_lua_path = try std.fs.path.join(allocator, &.{ source_path, "src", "?.lua" });
     defer allocator.free(src_lua_path);
@@ -251,16 +257,177 @@ fn runtimeBinPathFromHash(
     return try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin" });
 }
 
-fn writeScopedPathPrepend(
-    writer: *std.Io.Writer,
-    tool_bin_dir: []const u8,
-    runtime_bin_dir: ?[]const u8,
-) !void {
-    try writer.print("path_prepend = [", .{});
-    if (runtime_bin_dir) |runtime_path| {
-        try writer.print("\"{s}\", ", .{runtime_path});
+fn appendUniqueOwnedPath(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), path: []const u8) !void {
+    for (paths.items) |existing| {
+        if (std.mem.eql(u8, existing, path)) {
+            allocator.free(path);
+            return;
+        }
     }
-    try writer.print("\"{s}\"]\n", .{tool_bin_dir});
+    errdefer allocator.free(path);
+    try paths.append(allocator, path);
+}
+
+fn deinitProvisions(allocator: std.mem.Allocator, provisions: anytype) void {
+    for (provisions.bins) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.bin_luas) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.headers) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.libs) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.lua_modules) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.lua_cmodules) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    allocator.free(provisions.bins);
+    allocator.free(provisions.bin_luas);
+    allocator.free(provisions.headers);
+    allocator.free(provisions.libs);
+    allocator.free(provisions.lua_modules);
+    allocator.free(provisions.lua_cmodules);
+}
+
+fn luaAbiDigits(abi: []const u8) ?u32 {
+    var result: u32 = 0;
+    var found_digit = false;
+    for (abi) |ch| {
+        if (std.ascii.isDigit(ch)) {
+            found_digit = true;
+            result = result * 10 + (ch - '0');
+        }
+    }
+    return if (found_digit) result else null;
+}
+
+fn luaAbisCompatible(left: ?[]const u8, right: ?[]const u8) bool {
+    const left_abi = left orelse return true;
+    const right_abi = right orelse return true;
+    if (left_abi.len == 0 or right_abi.len == 0) return true;
+    if (std.ascii.eqlIgnoreCase(left_abi, right_abi)) return true;
+    const left_digits = luaAbiDigits(left_abi) orelse return false;
+    const right_digits = luaAbiDigits(right_abi) orelse return false;
+    return left_digits == right_digits;
+}
+
+fn provisionModuleRoot(allocator: std.mem.Allocator, provision: manifest.FeatureProvision) !?[]const u8 {
+    const module_relative_path = try std.mem.replaceOwned(u8, allocator, provision.name, ".", "/");
+    defer allocator.free(module_relative_path);
+    const extension = std.fs.path.extension(provision.path);
+    const direct_suffix = try std.fmt.allocPrint(allocator, "{s}{s}", .{ module_relative_path, extension });
+    defer allocator.free(direct_suffix);
+    const init_suffix = try std.fmt.allocPrint(allocator, "{s}/init{s}", .{ module_relative_path, extension });
+    defer allocator.free(init_suffix);
+
+    const suffix = if (std.mem.endsWith(u8, provision.path, direct_suffix)) direct_suffix else if (std.mem.endsWith(u8, provision.path, init_suffix)) init_suffix else return null;
+    var root_end = provision.path.len - suffix.len;
+    if (root_end > 0 and provision.path[root_end - 1] == std.fs.path.sep) root_end -= 1;
+    return try allocator.dupe(u8, provision.path[0..root_end]);
+}
+
+fn findProjectedArtifact(
+    projected_artifacts: []const ProjectedArtifact,
+    artifact_hash: []const u8,
+) ?*const ProjectedArtifact {
+    for (projected_artifacts) |*artifact| {
+        if (std.mem.eql(u8, artifact.artifact_hash, artifact_hash)) return artifact;
+    }
+    return null;
+}
+
+fn findResolvedDependency(
+    projected_artifacts: []const ProjectedArtifact,
+    dependency: manifest.StoreDependency,
+) ?*const ProjectedArtifact {
+    for (projected_artifacts) |*artifact| {
+        if (!std.ascii.eqlIgnoreCase(artifact.name, dependency.name)) continue;
+        return artifact;
+    }
+    return null;
+}
+
+fn appendScopeClosure(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    index: driver_mod.StoreDriver,
+    projected_artifacts: []const ProjectedArtifact,
+    owner_abi: ?[]const u8,
+    artifact: *const ProjectedArtifact,
+    visited: *std.StringHashMapUnmanaged(void),
+    closure: *std.ArrayList(*const ProjectedArtifact),
+) !void {
+    const result = try visited.getOrPut(allocator, artifact.artifact_hash);
+    if (result.found_existing) return;
+    try closure.append(allocator, artifact);
+
+    const artifact_path = try index.get_artifact_path(artifact.artifact_hash) orelse return;
+    defer allocator.free(artifact_path);
+    const manifest_path = try std.fs.path.join(allocator, &.{ artifact_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer allocator.free(content);
+
+    var store_manifest = try manifest.StoreManifest.parse(allocator, content);
+    defer store_manifest.deinit(allocator);
+
+    for (store_manifest.dependencies) |dependency| {
+        if (dependency.optional) continue;
+        const resolved_dependency = findResolvedDependency(projected_artifacts, dependency) orelse return error.ScopeDependencyNotResolved;
+        if (!luaAbisCompatible(owner_abi, resolved_dependency.lua_abi)) return error.ScopeDependencyAbiMismatch;
+        try appendScopeClosure(allocator, io, index, projected_artifacts, owner_abi, resolved_dependency, visited, closure);
+    }
+}
+
+fn collectScopeClosure(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    index: driver_mod.StoreDriver,
+    projected_artifacts: []const ProjectedArtifact,
+    artifact_hash: []const u8,
+) !std.ArrayList(*const ProjectedArtifact) {
+    const owner = findProjectedArtifact(projected_artifacts, artifact_hash) orelse return error.ScopeOwnerNotResolved;
+    var closure = std.ArrayList(*const ProjectedArtifact).empty;
+    errdefer closure.deinit(allocator);
+    var visited = std.StringHashMapUnmanaged(void).empty;
+    defer visited.deinit(allocator);
+    try appendScopeClosure(allocator, io, index, projected_artifacts, owner.lua_abi, owner, &visited, &closure);
+    return closure;
+}
+
+fn writeScopedPathPrepend(writer: *std.Io.Writer, paths: []const []const u8) !void {
+    try writer.print("path_prepend = [", .{});
+    var index = paths.len;
+    while (index > 0) {
+        index -= 1;
+        if (index != paths.len - 1) try writer.print(", ", .{});
+        try writer.print("\"{s}\"", .{paths[index]});
+    }
+    try writer.print("]\n", .{});
+}
+
+fn writeTomlPathList(writer: *std.Io.Writer, key: []const u8, paths: []const []const u8) !void {
+    try writer.print("{s} = [", .{key});
+    for (paths, 0..) |path, path_index| {
+        if (path_index > 0) try writer.print(", ", .{});
+        try writer.print("\"{s}\"", .{path});
+    }
+    try writer.print("]\n", .{});
 }
 
 fn writeRuntimeScope(
@@ -274,6 +441,7 @@ fn writeRuntimeScope(
     artifact_hash: []const u8,
     include_module_paths: bool,
     runtime_bin_path: ?[]const u8,
+    projected_artifacts: []const ProjectedArtifact,
 ) !void {
     const scope_dir_rel = try std.fs.path.join(allocator, &.{ scope_root, bin_name });
     defer allocator.free(scope_dir_rel);
@@ -294,81 +462,64 @@ fn writeRuntimeScope(
         break :blk computed_runtime_bin_path;
     };
 
-    try writeScopedPathPrepend(&scope_aw.writer, bin_dir_path, effective_runtime_bin_path);
+    var scope_closure = try collectScopeClosure(allocator, io, index, projected_artifacts, artifact_hash);
+    defer scope_closure.deinit(allocator);
 
-    if (include_module_paths) {
-        const art_path = try index.get_artifact_path(artifact_hash) orelse return;
+    var path_prepend = std.ArrayList([]const u8).empty;
+    defer {
+        for (path_prepend.items) |path| allocator.free(path);
+        path_prepend.deinit(allocator);
+    }
+    try appendUniqueOwnedPath(allocator, &path_prepend, try allocator.dupe(u8, bin_dir_path));
+
+    var lua_paths = std.ArrayList([]const u8).empty;
+    defer {
+        for (lua_paths.items) |path| allocator.free(path);
+        lua_paths.deinit(allocator);
+    }
+    var lua_cpaths = std.ArrayList([]const u8).empty;
+    defer {
+        for (lua_cpaths.items) |path| allocator.free(path);
+        lua_cpaths.deinit(allocator);
+    }
+
+    for (scope_closure.items) |scope_artifact| {
+        const art_path = try index.get_artifact_path(scope_artifact.artifact_hash) orelse continue;
         defer allocator.free(art_path);
+        const provisions = try index.get_provisions(scope_artifact.artifact_hash);
+        defer deinitProvisions(allocator, provisions);
 
-        const provs = try index.get_provisions(artifact_hash);
-        defer {
-            for (provs.bins) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.bin_luas) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.headers) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.libs) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.lua_modules) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            for (provs.lua_cmodules) |p| {
-                var mut_p = p;
-                mut_p.deinit(allocator);
-            }
-            allocator.free(provs.bins);
-            allocator.free(provs.bin_luas);
-            allocator.free(provs.headers);
-            allocator.free(provs.libs);
-            allocator.free(provs.lua_modules);
-            allocator.free(provs.lua_cmodules);
+        for (provisions.bins) |provision| {
+            const bin_dir = std.fs.path.dirname(provision.path) orelse continue;
+            try appendUniqueOwnedPath(allocator, &path_prepend, try std.fs.path.join(allocator, &.{ art_path, "files", bin_dir }));
         }
+        if (!include_module_paths) continue;
 
-        if (provs.lua_modules.len > 0) {
-            try scope_aw.writer.print("lua_path = [", .{});
-            var first = true;
-            for (provs.lua_modules) |m| {
-                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
-                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
-                defer allocator.free(abs_mod_dir);
-                const lua_file_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.lua" });
-                defer allocator.free(lua_file_pattern);
-                const lua_init_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?", "init.lua" });
-                defer allocator.free(lua_init_pattern);
-                if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ lua_file_pattern, lua_init_pattern });
-                first = false;
-            }
-            try scope_aw.writer.print("]\n", .{});
+        for (provisions.lua_modules) |provision| {
+            const module_root = try provisionModuleRoot(allocator, provision) orelse continue;
+            defer allocator.free(module_root);
+            const absolute_module_root = try std.fs.path.join(allocator, &.{ art_path, "files", module_root });
+            defer allocator.free(absolute_module_root);
+            try appendUniqueOwnedPath(allocator, &lua_paths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?.lua" }));
+            try appendUniqueOwnedPath(allocator, &lua_paths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?", "init.lua" }));
         }
-        if (provs.lua_cmodules.len > 0) {
-            try scope_aw.writer.print("lua_cpath = [", .{});
-            var first = true;
-            for (provs.lua_cmodules) |m| {
-                const mod_dir = std.fs.path.dirname(m.path) orelse continue;
-                const abs_mod_dir = try std.fs.path.join(allocator, &.{ art_path, "files", mod_dir });
-                defer allocator.free(abs_mod_dir);
-                const cmod_so_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.so" });
-                defer allocator.free(cmod_so_pattern);
-                const cmod_dylib_pattern = try std.fs.path.join(allocator, &.{ abs_mod_dir, "?.dylib" });
-                defer allocator.free(cmod_dylib_pattern);
-                if (!first) try scope_aw.writer.print(", ", .{});
-                try scope_aw.writer.print("\"{s}\", \"{s}\"", .{ cmod_so_pattern, cmod_dylib_pattern });
-                first = false;
-            }
-            try scope_aw.writer.print("]\n", .{});
+        for (provisions.lua_cmodules) |provision| {
+            const module_root = try provisionModuleRoot(allocator, provision) orelse continue;
+            defer allocator.free(module_root);
+            const absolute_module_root = try std.fs.path.join(allocator, &.{ art_path, "files", module_root });
+            defer allocator.free(absolute_module_root);
+            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?.so" }));
+            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?.dylib" }));
         }
     }
+    if (effective_runtime_bin_path) |runtime_path| {
+        try appendUniqueOwnedPath(allocator, &path_prepend, try allocator.dupe(u8, runtime_path));
+    }
+
+    try writeScopedPathPrepend(&scope_aw.writer, path_prepend.items);
+
+    if (lua_paths.items.len > 0) try writeTomlPathList(&scope_aw.writer, "lua_path", lua_paths.items);
+    if (lua_cpaths.items.len > 0) try writeTomlPathList(&scope_aw.writer, "lua_cpath", lua_cpaths.items);
 
     try scope_aw.writer.flush();
     const scope_toml_file = try scope_dir.createFile(io, "env.toml", .{});
@@ -880,7 +1031,7 @@ pub fn link_project_env_at(
             break :blk true;
         } else false;
         if (needs_isolated_scope) {
-            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, false, scoped_runtime_bin_path);
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
         }
     }
 
@@ -889,7 +1040,7 @@ pub fn link_project_env_at(
     while (tit.next()) |entry| {
         const bin_name = entry.key_ptr.*;
         const bin_info = entry.value_ptr.*;
-        try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", bin_name, bin_info.path, bin_info.artifact_hash, true, null);
+        try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", bin_name, bin_info.path, bin_info.artifact_hash, true, null, projected_artifacts);
     }
 
     // 4a-bis. Create helper scope directories
@@ -897,7 +1048,7 @@ pub fn link_project_env_at(
     while (hit.next()) |entry| {
         const bin_name = entry.key_ptr.*;
         const bin_info = entry.value_ptr.*;
-        try writeRuntimeScope(allocator, io, env_dir, index, "bin-helper", bin_name, bin_info.path, bin_info.artifact_hash, false, null);
+        try writeRuntimeScope(allocator, io, env_dir, index, "bin-helper", bin_name, bin_info.path, bin_info.artifact_hash, true, null, projected_artifacts);
     }
 
     // 4b. Link C modules from store artifacts
@@ -1125,6 +1276,37 @@ pub fn link_project_env_at(
 
         const art_path = try index.get_artifact_path(hash) orelse continue;
         defer allocator.free(art_path);
+
+        const share_lua_files_path = try std.fs.path.join(allocator, &.{ art_path, "files", "share", "lua", lua_ver_dot });
+        defer allocator.free(share_lua_files_path);
+        if (std.Io.Dir.openDirAbsolute(io, share_lua_files_path, .{ .iterate = true })) |share_lua_dir| {
+            defer share_lua_dir.close(io);
+            var it = share_lua_dir.iterate();
+            while (try it.next(io)) |sub_entry| {
+                const mod_dest = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, sub_entry.name });
+                defer allocator.free(mod_dest);
+                const full_dest = try std.fs.path.join(allocator, &.{ env_path, mod_dest });
+                defer allocator.free(full_dest);
+
+                if (std.Io.Dir.cwd().access(io, full_dest, .{})) |_| {
+                    continue;
+                } else |_| {
+                    const mod_src = try std.fs.path.join(allocator, &.{ share_lua_files_path, sub_entry.name });
+                    defer allocator.free(mod_src);
+                    if (sub_entry.kind == .directory) {
+                        try env_dir.createDirPath(io, mod_dest);
+                        var ddir = try env_dir.openDir(io, mod_dest, .{});
+                        defer ddir.close(io);
+                        try symlinkTree(allocator, io, ddir, mod_src);
+                    } else if (sub_entry.kind == .file) {
+                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                    }
+                }
+            }
+            continue;
+        } else |err| {
+            if (err != error.FileNotFound) return err;
+        }
 
         // Try files/lua/ first
         const lua_files_path = try std.fs.path.join(allocator, &.{ art_path, "files", "lua" });
@@ -1444,4 +1626,22 @@ test "shim generation does not hardcode lua versions" {
     // Should NOT contain the old hardcoded versions
     try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.1/") == null);
     try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.4/") == null);
+}
+
+test "scope module roots preserve dotted Lua module paths" {
+    const allocator = std.testing.allocator;
+
+    const lua_root = (try provisionModuleRoot(allocator, .{
+        .name = "compiler.frontend.parse",
+        .path = "share/lua/5.4/compiler/frontend/parse.lua",
+    })).?;
+    defer allocator.free(lua_root);
+    try std.testing.expectEqualStrings("share/lua/5.4", lua_root);
+
+    const c_root = (try provisionModuleRoot(allocator, .{
+        .name = "platform.core",
+        .path = "lib/lua/5.4/platform/core.so",
+    })).?;
+    defer allocator.free(c_root);
+    try std.testing.expectEqualStrings("lib/lua/5.4", c_root);
 }

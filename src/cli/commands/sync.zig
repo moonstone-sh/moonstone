@@ -37,6 +37,15 @@ fn projectedArtifactFromPkg(
             break;
         }
     }
+    if (resolver == null) {
+        resolver = try allocator.dupe(u8, switch (pkg.origin) {
+            .luarocks => "rocks",
+            .moonstone_registry => "moonstone",
+            .link => "link",
+            .path => "path",
+            .artifact_hash => "store",
+        });
+    }
     const pa_path = if (art_path) |p| try allocator.dupe(u8, p) else null;
     return .{
         .name = try allocator.dupe(u8, pkg.name),
@@ -1433,6 +1442,38 @@ pub const SyncCommand = struct {
                 const is_path = std.mem.eql(u8, pkg.artifact_hash, "path");
 
                 if (is_link or is_path) {
+                    var entry_roles = std.ArrayList([]const u8).empty;
+                    defer {
+                        for (entry_roles.items) |group| allocator.free(group);
+                        entry_roles.deinit(allocator);
+                    }
+                    if (package_roles.get(pkg.name)) |groups| {
+                        for (groups.items) |group| {
+                            try entry_roles.append(allocator, try allocator.dupe(u8, group));
+                        }
+                    }
+                    try next_lock.packages.append(allocator, .{
+                        .name = try allocator.dupe(u8, pkg.name),
+                        .version = try allocator.dupe(u8, pkg.version),
+                        .kind = pkg.kind,
+                        .source_hash = &.{},
+                        .recipe_hash = &.{},
+                        .artifact_hash = try allocator.dupe(u8, pkg.artifact_hash),
+                        .runtime = try allocator.dupe(u8, active_lua_abi),
+                        .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
+                        .target = try allocator.dupe(u8, "native"),
+                        .constellation = try allocator.dupe(u8, "default"),
+                        .resolver = try allocator.dupe(u8, if (is_link) "link" else "path"),
+                        .source = try allocator.dupe(u8, lp),
+                        .source_kind = try allocator.dupe(u8, if (is_link) "live_link" else "local_path"),
+                        .source_payload = &.{},
+                        .source_url = &.{},
+                        .rockspec = &.{},
+                        .rockspec_hash = &.{},
+                        .rockspec_payload = &.{},
+                        .replay_mode = .artifact_only,
+                        .roles = try entry_roles.toOwnedSlice(allocator),
+                    });
                     try live_links.append(allocator, .{
                         .name = try allocator.dupe(u8, pkg_name_sol),
                         .source_path = try allocator.dupe(u8, lp),
