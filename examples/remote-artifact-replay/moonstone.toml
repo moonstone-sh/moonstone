@@ -1,0 +1,8 @@
+[project]
+name = "remote-artifact-replay-demo"
+version = "0.1.0"
+kind = "application"
+lua_abi = "5.4"
+
+[dependencies]
+"rocks:lpeg" = "1.0.2"
