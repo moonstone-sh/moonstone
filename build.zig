@@ -60,12 +60,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native tests");
     const core_tests = createMoonTest(b, "src/core/root.zig", target, optimize, build_options_mod);
     const cli_tests = createMoonTest(b, "src/cli/main.zig", target, optimize, build_options_mod);
+    const profile_plan_tests = createMoonTest(b, "tests/unit/multi_profile_plan_test.zig", target, optimize, build_options_mod);
+    const artifact_provider_tests = createMoonTest(b, "tests/unit/artifact_provider_test.zig", target, optimize, build_options_mod);
+    const artifact_publication_tests = createMoonTest(b, "tests/unit/artifact_publication_test.zig", target, optimize, build_options_mod);
+    const closure_assurance_tests = createMoonTest(b, "tests/unit/closure_assurance_test.zig", target, optimize, build_options_mod);
 
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_cli_tests = b.addRunArtifact(cli_tests);
+    const run_profile_plan_tests = b.addRunArtifact(profile_plan_tests);
+    const run_artifact_provider_tests = b.addRunArtifact(artifact_provider_tests);
+    const run_artifact_publication_tests = b.addRunArtifact(artifact_publication_tests);
+    const run_closure_assurance_tests = b.addRunArtifact(closure_assurance_tests);
 
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_profile_plan_tests.step);
+    test_step.dependOn(&run_artifact_provider_tests.step);
+    test_step.dependOn(&run_artifact_publication_tests.step);
+    test_step.dependOn(&run_closure_assurance_tests.step);
 
     // 4. Official Release Matrix (`zig build release`)
     // -------------------------------------------------------------------------

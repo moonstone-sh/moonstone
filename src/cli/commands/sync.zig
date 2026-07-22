@@ -831,23 +831,21 @@ pub const SyncCommand = struct {
                     continue;
                 }
 
-                const resolver_kind: ?moonstone.resolution.coordinator.CoordinatorKind = if (entry.resolver.len > 0)
-                    moonstone.resolution.coordinator.CoordinatorKind.fromString(entry.resolver) catch null
-                else
-                    null;
-
-                const req = moonstone.resolution.provider.package_provider.ArtifactRequest{
-                    .name = entry.name,
-                    .version = entry.version,
-                    .resolver = resolver_kind,
-                    .artifact_hash = if (entry.artifact_hash.len > 0) entry.artifact_hash else null,
-                    .runtime = if (entry.runtime.len > 0) entry.runtime else null,
-                    .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else null,
-                    .runtime_artifact_hash = null,
+                const replay_policy = moonstone.resolution.locked_realizer.ReplayPolicy{
+                    .offline = self.offline,
+                    .allow_remote_artifacts = true,
+                    .allow_source_rematerialization = true,
                 };
 
-                const maybe_art = try provider_impl.get_artifact(req);
-                const art = maybe_art orelse {
+                var real_res = moonstone.resolution.locked_realizer.ensureLockedArtifact(
+                    allocator,
+                    io,
+                    env,
+                    &entry,
+                    provider_impl,
+                    &idx,
+                    replay_policy,
+                ) catch |err| {
                     if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
                     ctx.error_detail = .{
                         .locked_artifact_missing = .{
@@ -857,11 +855,11 @@ pub const SyncCommand = struct {
                             .artifact_hash = try ctx.allocator.dupe(u8, entry.artifact_hash),
                         },
                     };
-                    return error.LockedArtifactMissing;
+                    return err;
                 };
-                errdefer art.deinit(allocator);
+                defer real_res.deinit(allocator);
 
-                try solution.put(allocator, try allocator.dupe(u8, entry.name), try art.clone(allocator));
+                try solution.put(allocator, try allocator.dupe(u8, entry.name), try real_res.candidate.clone(allocator));
             }
 
             report.requested_targets = existing_lock.packages.items.len;
@@ -1495,7 +1493,17 @@ pub const SyncCommand = struct {
                                 .moonstone_registry => "moonstone",
                                 .link => "link",
                                 .path => "path",
-                                else => "store",
+                                .artifact_hash => blk: {
+                                    if (existing_lock.find(pkg.name)) |ex_pkg| {
+                                        if (ex_pkg.resolver.len > 0 and !std.mem.eql(u8, ex_pkg.resolver, "store")) {
+                                            break :blk ex_pkg.resolver;
+                                        }
+                                    }
+                                    if (store_rockspec.len > 0 or store_rockspec_hash.len > 0) {
+                                        break :blk "rocks";
+                                    }
+                                    break :blk "store";
+                                },
                             }),
                             .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (pkg.origin) {
                                 .moonstone_registry => if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},

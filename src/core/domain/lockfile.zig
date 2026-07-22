@@ -9,6 +9,8 @@ pub const LockEntry = struct {
     kind: Kind = .script,
     source_hash: []const u8 = &.{},
     recipe_hash: []const u8 = &.{},
+    plan_schema: []const u8 = &.{},
+    plan_hash: []const u8 = &.{},
     artifact_hash: []const u8 = &.{},
     runtime: []const u8 = &.{},
     lua_abi: []const u8 = &.{},
@@ -31,6 +33,8 @@ pub const LockEntry = struct {
         if (self.version.len > 0) allocator.free(self.version);
         if (self.source_hash.len > 0) allocator.free(self.source_hash);
         if (self.recipe_hash.len > 0) allocator.free(self.recipe_hash);
+        if (self.plan_schema.len > 0) allocator.free(self.plan_schema);
+        if (self.plan_hash.len > 0) allocator.free(self.plan_hash);
         if (self.artifact_hash.len > 0) allocator.free(self.artifact_hash);
         if (self.runtime.len > 0) allocator.free(self.runtime);
         if (self.lua_abi.len > 0) allocator.free(self.lua_abi);
@@ -50,8 +54,11 @@ pub const LockEntry = struct {
     }
 };
 
+const res_profile = @import("resolution_profile.zig");
+
 pub const LockFile = struct {
     packages: std.ArrayList(LockEntry) = .empty,
+    profiles: std.ArrayList(res_profile.ResolutionProfile) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) LockFile {
@@ -65,6 +72,19 @@ pub const LockFile = struct {
             entry.deinit(self.allocator);
         }
         self.packages.deinit(self.allocator);
+        for (self.profiles.items) |p| {
+            p.deinit(self.allocator);
+        }
+        self.profiles.deinit(self.allocator);
+    }
+
+    pub fn findProfile(self: *const LockFile, target: []const u8, runtime: []const u8, lua_abi: ?[]const u8) ?*const res_profile.ResolutionProfile {
+        for (self.profiles.items) |*prof| {
+            if (res_profile.matchesProfile(prof, target, runtime, lua_abi)) {
+                return prof;
+            }
+        }
+        return null;
     }
 
     pub fn serialize(self: LockFile, allocator: std.mem.Allocator, writer: anytype) !void {

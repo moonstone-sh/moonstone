@@ -7,6 +7,7 @@ pub const options = @import("options.zig");
 pub const candidate = @import("candidate.zig");
 pub const selection = @import("selection.zig");
 pub const plan = @import("plan.zig");
+pub const locked_realizer = @import("locked_realizer.zig");
 
 pub const sources = struct {
     pub const source = @import("sources/source.zig");
