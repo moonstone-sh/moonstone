@@ -113,13 +113,41 @@ pub fn ensureLockedArtifact(
         }
     }
 
-    // 3. Assess materializer capability for source rematerialization
-    const capability = assessMaterializerCapability(entry.source_kind);
-    if (capability == .exact_artifact_required) {
+    // 3. Assess materializer capability and ReplayContract
+    if (entry.replay_mode == .artifact_only) {
         return error.ExactArtifactRequired;
     }
 
-    // 4. Source rematerialization for pure-Lua packages
+    const capability = assessMaterializerCapability(entry.source_kind);
+    if (capability == .exact_artifact_required and entry.replay_mode != .declared_host) {
+        return error.ExactArtifactRequired;
+    }
+
+    // 4. Host Tool Verification for declared_host replay mode
+    if (entry.replay_mode == .declared_host) {
+        const host_resolver = @import("../tools/host_resolver.zig");
+        const replay_mod = @import("../domain/replay_contract.zig");
+
+        const tool_name = if (std.mem.eql(u8, entry.source_kind, "cmake")) "cmake" else "zig";
+        const tool_kind: replay_mod.HostToolKind = if (std.mem.eql(u8, tool_name, "cmake")) .cmake else .zig;
+        var exec_names = [_][]const u8{tool_name};
+
+        var req = replay_mod.HostToolRequirement{
+            .id = try allocator.dupe(u8, tool_name),
+            .kind = tool_kind,
+            .executable_names = &exec_names,
+            .version_policy = .exact_observed,
+            .observed_version = if (entry.runtime.len > 0) try allocator.dupe(u8, entry.runtime) else null,
+        };
+        defer req.deinit(allocator);
+
+        var resolved_tool = host_resolver.resolveHostTool(allocator, io, env, &req) catch |err| {
+            return err;
+        };
+        defer resolved_tool.deinit(allocator);
+    }
+
+    // 5. Source rematerialization
     if (!policy.allow_source_rematerialization) {
         return error.LockedArtifactMissing;
     }
@@ -154,7 +182,12 @@ pub fn ensureLockedArtifact(
         .target = if (entry.target.len > 0) entry.target else "native",
     };
 
-    var cand = try luarocks_src.resolve(allocator, io, entry.name, entry.version, resolve_opts, env);
+    var cand = luarocks_src.resolve(allocator, io, entry.name, entry.version, resolve_opts, env) catch |err| {
+        if (policy.offline and (err == error.NetworkDenied or err == error.HttpFailed)) {
+            return error.OfflineReplayInputUnavailable;
+        }
+        return err;
+    };
     errdefer cand.deinit(allocator);
 
     // Validate plan hash if locked in entry

@@ -7,6 +7,11 @@ pub const domain = struct {
     pub const locked_package = @import("domain/locked_package.zig");
     pub const resolution_profile = @import("domain/resolution_profile.zig");
     pub const package_spec = @import("domain/package_spec.zig");
+    pub const replay_contract = @import("domain/replay_contract.zig");
+};
+
+pub const tools = struct {
+    pub const host_resolver = @import("tools/host_resolver.zig");
 };
 
 pub const identity = struct {

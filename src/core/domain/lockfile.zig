@@ -2,6 +2,7 @@ const std = @import("std");
 const toml = @import("toml");
 const manifest = @import("manifest.zig");
 const Kind = manifest.Kind;
+const replay_mod = @import("replay_contract.zig");
 
 pub const LockEntry = struct {
     name: []const u8 = &.{},
@@ -27,6 +28,8 @@ pub const LockEntry = struct {
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
     roles: []const []const u8 = &.{},
+    replay_mode: replay_mod.ReplayMode = .artifact_only,
+    replay_contract: ?replay_mod.ReplayContract = null,
 
     pub fn deinit(self: LockEntry, allocator: std.mem.Allocator) void {
         if (self.name.len > 0) allocator.free(self.name);
@@ -51,6 +54,10 @@ pub const LockEntry = struct {
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
         for (self.roles) |g| allocator.free(g);
         if (self.roles.len > 0) allocator.free(self.roles);
+        if (self.replay_contract) |rc| {
+            var mut_rc = rc;
+            mut_rc.deinit(allocator);
+        }
     }
 };
 
@@ -91,6 +98,7 @@ pub const LockFile = struct {
         // Manual serialization to avoid comptime branch limit in toml.serialize
         // when the LockEntry struct has many fields.
         _ = allocator;
+        try writer.print("lockfile_version = 2\n\n", .{});
         for (self.packages.items, 0..) |entry, i| {
             if (i > 0) try writer.print("\n", .{});
             try writer.print("[[package]]\n", .{});
@@ -99,7 +107,9 @@ pub const LockFile = struct {
             try writer.print("kind = \"{s}\"\n", .{@tagName(entry.kind)});
             if (entry.source_hash.len > 0) try writer.print("source_hash = \"{s}\"\n", .{entry.source_hash});
             try writer.print("recipe_hash = \"{s}\"\n", .{entry.recipe_hash});
+            if (entry.plan_hash.len > 0) try writer.print("plan_hash = \"{s}\"\n", .{entry.plan_hash});
             try writer.print("artifact_hash = \"{s}\"\n", .{entry.artifact_hash});
+            try writer.print("replay_mode = \"{s}\"\n", .{entry.replay_mode.toString()});
             try writer.print("runtime = \"{s}\"\n", .{entry.runtime});
             try writer.print("lua_abi = \"{s}\"\n", .{entry.lua_abi});
             try writer.print("target = \"{s}\"\n", .{entry.target});
@@ -160,12 +170,24 @@ pub const LockFile = struct {
                     break :blk true;
                 };
 
+                const source_kind = getStr(t, "source_kind") orelse "";
+                const parsed_replay_mode = if (getStr(t, "replay_mode")) |mode_str|
+                    replay_mod.ReplayMode.fromString(mode_str)
+                else if (std.mem.eql(u8, source_kind, "copy_lua") or
+                    std.mem.eql(u8, source_kind, "builtin") or
+                    std.mem.eql(u8, source_kind, "luarocks_src_rock") or
+                    std.mem.eql(u8, source_kind, "upstream_archive"))
+                    replay_mod.ReplayMode.portable_source
+                else
+                    replay_mod.ReplayMode.artifact_only;
+
                 try lf.packages.append(allocator, .{
                     .name = try allocator.dupe(u8, getStr(t, "name") orelse return error.MissingName),
                     .version = try allocator.dupe(u8, getStr(t, "version") orelse return error.MissingVersion),
                     .kind = try Kind.from_string(getStr(t, "kind") orelse return error.MissingKind),
                     .source_hash = if (getStr(t, "source_hash")) |s| try allocator.dupe(u8, s) else &.{},
                     .recipe_hash = try allocator.dupe(u8, getStr(t, "recipe_hash") orelse return error.MissingRecipeHash),
+                    .plan_hash = if (getStr(t, "plan_hash")) |p| try allocator.dupe(u8, p) else &.{},
                     .artifact_hash = try allocator.dupe(u8, getStr(t, "artifact_hash") orelse return error.MissingArtifactHash),
                     .runtime = try allocator.dupe(u8, getStr(t, "runtime") orelse return error.MissingRuntime),
                     .lua_abi = try allocator.dupe(u8, getStr(t, "lua_abi") orelse return error.MissingLuaAbi),
@@ -181,6 +203,7 @@ pub const LockFile = struct {
                     .resolver = if (getStr(t, "resolver")) |s| try allocator.dupe(u8, s) else &.{},
                     .link_mode = if (getStr(t, "link_mode")) |s| try allocator.dupe(u8, s) else &.{},
                     .reproducible = reproducible,
+                    .replay_mode = parsed_replay_mode,
                     .roles = blk: {
                         if (t.get("roles")) |g| {
                             if (g == .array) {

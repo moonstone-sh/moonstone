@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     const artifact_provider_tests = createMoonTest(b, "tests/unit/artifact_provider_test.zig", target, optimize, build_options_mod);
     const artifact_publication_tests = createMoonTest(b, "tests/unit/artifact_publication_test.zig", target, optimize, build_options_mod);
     const closure_assurance_tests = createMoonTest(b, "tests/unit/closure_assurance_test.zig", target, optimize, build_options_mod);
+    const replay_contract_tests = createMoonTest(b, "tests/unit/replay_contract_test.zig", target, optimize, build_options_mod);
 
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_cli_tests = b.addRunArtifact(cli_tests);
@@ -71,6 +72,7 @@ pub fn build(b: *std.Build) void {
     const run_artifact_provider_tests = b.addRunArtifact(artifact_provider_tests);
     const run_artifact_publication_tests = b.addRunArtifact(artifact_publication_tests);
     const run_closure_assurance_tests = b.addRunArtifact(closure_assurance_tests);
+    const run_replay_contract_tests = b.addRunArtifact(replay_contract_tests);
 
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
@@ -78,6 +80,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_artifact_provider_tests.step);
     test_step.dependOn(&run_artifact_publication_tests.step);
     test_step.dependOn(&run_closure_assurance_tests.step);
+    test_step.dependOn(&run_replay_contract_tests.step);
 
     // 4. Official Release Matrix (`zig build release`)
     // -------------------------------------------------------------------------

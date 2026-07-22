@@ -3,7 +3,7 @@ const plan_mod = @import("plan.zig");
 const MaterializationPlan = plan_mod.MaterializationPlan;
 
 pub fn validatePlan(plan: MaterializationPlan) !void {
-    // 1. Check relative paths and reject path traversal
+    // 1. Check relative paths and reject path traversal / escapes
     for (plan.inputs) |inp| {
         if (std.mem.startsWith(u8, inp.mount_path, "/") or std.mem.indexOf(u8, inp.mount_path, "..") != null) {
             return error.InvalidPlanPath;
@@ -46,6 +46,21 @@ pub fn executePlan(
 ) !void {
     try validatePlan(plan);
 
+    // Build bounded environment map
+    var bounded_env = std.process.Environ.Map.init(allocator);
+    defer bounded_env.deinit();
+
+    // Preserve minimum essentials
+    if (env.get("PATH")) |p| try bounded_env.put("PATH", p);
+    if (env.get("TMPDIR")) |t| try bounded_env.put("TMPDIR", t);
+    if (env.get("HOME")) |h| try bounded_env.put("HOME", h);
+    if (env.get("LANG")) |l| try bounded_env.put("LANG", l);
+
+    // Apply explicit plan environment variables
+    for (plan.environment) |e| {
+        try bounded_env.put(e.key, e.value);
+    }
+
     // 1. Execute plan steps sequentially
     for (plan.steps) |step| {
         // Resolve tool executable
@@ -69,17 +84,25 @@ pub fn executePlan(
         try argv_list.append(allocator, exec_cmd);
         for (step.argv) |arg| try argv_list.append(allocator, arg);
 
-        const res = std.process.run(allocator, io, .{
-            .argv = argv_list.items,
-            .cwd = step_cwd,
-        }) catch |err| {
-            _ = env;
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
+        // Apply step environment overrides to bounded environment
+        var step_env = try bounded_env.clone(allocator);
+        defer step_env.deinit();
+        for (step.environment) |se| {
+            try step_env.put(se.key, se.value);
+        }
 
-        if (res.term != .exited or res.term.exited != 0) {
+        var child = std.process.Child.init(argv_list.items, allocator);
+        child.cwd = step_cwd;
+        child.env_map = &step_env;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+
+        child.spawn() catch {
+            return error.ExecutionStepFailed;
+        };
+
+        const term = child.wait() catch return error.ExecutionStepFailed;
+        if (term != .Exited or term.Exited != 0) {
             return error.ExecutionStepFailed;
         }
     }
