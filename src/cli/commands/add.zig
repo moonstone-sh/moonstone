@@ -925,6 +925,13 @@ pub const add_command = struct {
                 .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (resolved.rockspec.len > 0) try allocator.dupe(u8, resolved.rockspec) else &.{},
                 .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (resolved.rockspec_hash.len > 0) try allocator.dupe(u8, resolved.rockspec_hash) else &.{},
                 .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
+                .replay_mode = blk: {
+                    const sk = if (store_source_kind.len > 0) store_source_kind else "";
+                    if (std.mem.eql(u8, sk, "zig_cc") or std.mem.eql(u8, sk, "cmake") or std.mem.eql(u8, sk, "native_cmodule")) {
+                        break :blk moonstone.domain.replay_contract.ReplayMode.declared_host;
+                    }
+                    break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
+                },
             });
         }
         profiler.spanCount("add.materialize", profile_span, "packages", solution.count());

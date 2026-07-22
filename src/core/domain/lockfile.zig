@@ -176,7 +176,8 @@ pub const LockFile = struct {
                 else if (std.mem.eql(u8, source_kind, "copy_lua") or
                     std.mem.eql(u8, source_kind, "builtin") or
                     std.mem.eql(u8, source_kind, "luarocks_src_rock") or
-                    std.mem.eql(u8, source_kind, "upstream_archive"))
+                    std.mem.eql(u8, source_kind, "upstream_archive") or
+                    source_kind.len == 0)
                     replay_mod.ReplayMode.portable_source
                 else
                     replay_mod.ReplayMode.artifact_only;

@@ -152,8 +152,8 @@ pub fn ensureLockedArtifact(
         return error.LockedArtifactMissing;
     }
 
-    // Must have a valid source URL or rockspec URL
-    const has_source_url = entry.source_url.len > 0 or entry.source.len > 0;
+    // Must have a valid source URL, rockspec URL, or package identity
+    const has_source_url = entry.source_url.len > 0 or entry.source.len > 0 or (entry.name.len > 0 and entry.version.len > 0);
     const has_rockspec_url = entry.rockspec.len > 0;
     if (!has_source_url and !has_rockspec_url) {
         return error.ReplayProvenanceMissing;
@@ -210,6 +210,26 @@ pub fn ensureLockedArtifact(
     // Verify artifact_hash match
     if (entry.artifact_hash.len > 0 and !std.mem.eql(u8, cand.artifact_hash, entry.artifact_hash)) {
         return error.ArtifactHashMismatch;
+    }
+
+    // Commit rebuilt candidate to CAS store on exact equality
+    if (cand.local_path) |lp| {
+        const store_facade = @import("../store.zig");
+        const manifest_mod = @import("../domain/manifest.zig");
+        const remote_desc = manifest_mod.RemotePackageDescriptor{
+            .package = .{ .name = cand.name, .version = cand.version, .kind = cand.kind },
+            .compat = .{},
+        };
+        const remote_art = manifest_mod.RemoteArtifact{
+            .target = if (entry.target.len > 0) entry.target else "native",
+            .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else "5.4",
+            .hash = cand.artifact_hash,
+            .recipe_hash = entry.recipe_hash,
+            .url = "",
+            .format = "tar.gz",
+            .provides = .{},
+        };
+        _ = store_facade.commit_to_store(allocator, io, env, lp, remote_desc, remote_art, entry.resolver, entry.source, &.{}) catch {};
     }
 
     return RealizeResult{
