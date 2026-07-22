@@ -9,6 +9,13 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
+[scripts]
+check = "tl check src/main.tl"
+build = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl"
+run = "tl run src/main.tl --"
+dev = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl && lua dist/main.lua"
+export = "moon exec ballad play partiture.lua"
+
 [[dependencies]]
 name = "tl"
 constraint = "^0.24.8-1"
@@ -25,10 +32,3 @@ role = "runtime"
 name = "moonstone/ballad"
 constraint = "^0.2.18"
 role = "tool"
-
-[scripts]
-check = "tl check src/main.tl"
-build = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl"
-run = "tl run src/main.tl --"
-dev = "mkdir -p dist && tl check src/main.tl && tl gen -o dist/main.lua src/main.tl && tl gen -o dist/cli.lua src/cli.tl && lua dist/main.lua"
-export = "moon exec ballad play partiture.lua"

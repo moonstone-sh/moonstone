@@ -1,0 +1,45 @@
+[package]
+name = "moonscript-example"
+version = "0.1.0"
+kind = "script"
+description = "MoonScript example project with busted testing and dkjson"
+
+[interpreter]
+name = "lua"
+version = "5.4"
+abi = "5.4"
+
+[scripts]
+"test" = "busted -p '_spec%.moon$' spec/"
+"build" = "moonc -t dist src/"
+"run" = "moon src/main.moon"
+"dev" = "moonc -t dist src/ && lua dist/src/main.lua"
+
+[[dependencies]]
+name = "dkjson"
+constraint = "^2.10-1"
+resolver = "rocks"
+role = "runtime"
+
+[[dependencies]]
+name = "busted"
+constraint = "^2.3.0-1"
+resolver = "rocks"
+role = "runtime"
+
+[[dependencies]]
+name = "moonscript"
+constraint = "^0.6.0-1"
+resolver = "rocks"
+role = "runtime"
+
+[[dependencies]]
+name = "moonstone/ballad"
+constraint = "^0.2.18"
+role = "tool"
+
+[[dependencies]]
+name = "tl"
+constraint = "^0.24.8-1"
+resolver = "rocks"
+role = "runtime"

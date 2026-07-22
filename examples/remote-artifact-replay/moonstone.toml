@@ -1,8 +1,8 @@
 [package]
-name = "multi-platform-demo"
+name = "remote-artifact-replay-demo"
 version = "0.1.0"
 kind = "script"
-description = "Multi-platform resolution profiles example"
+description = "Clean-store exact remote artifact replay example"
 
 [interpreter]
 name = "lua"
@@ -13,7 +13,7 @@ abi = "5.4"
 run = "lua main.lua \"$@\""
 
 [[dependencies]]
-name = "inspect"
-constraint = "^3.1"
+name = "ansicolors"
+constraint = "^1.0"
 resolver = "rocks"
 role = "runtime"
