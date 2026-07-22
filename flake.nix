@@ -4,14 +4,27 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        zig = if builtins.hasAttr "zig_0_16" pkgs then pkgs.zig_0_16 else pkgs.zig;
+        # Strictly enforce Zig 0.16 mandatory requirement from nixos-unstable or zig-overlay
+        zig =
+          if builtins.hasAttr "0.16.0" (zig-overlay.packages.${system} or {}) then
+            zig-overlay.packages.${system}."0.16.0"
+          else if builtins.hasAttr "zig_0_16" pkgs then
+            pkgs.zig_0_16
+          else if pkgs.lib.hasPrefix "0.16" (pkgs.zig.version or "") then
+            pkgs.zig
+          else
+            throw "Moonstone strictly requires Zig 0.16. Current nixpkgs provides '${pkgs.zig.version or "unknown"}'.";
 
         moonstone = pkgs.stdenv.mkDerivation {
           pname = "moonstone";
@@ -79,7 +92,7 @@
 
           shellHook = ''
             echo "🌙 Welcome to the Moonstone Development Shell (v0.3.31)"
-            echo "   Zig: $(zig version)"
+            echo "   Mandatory Compiler: Zig 0.16 ($(zig version))"
             echo "   Run 'zig build test' to execute all unit and integration tests."
           '';
         };
