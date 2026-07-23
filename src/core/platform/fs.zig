@@ -50,10 +50,26 @@ pub fn patch_config_path(
     return error.InvalidSetting;
 }
 
+pub fn resolve_config_file(allocator: std.mem.Allocator, env: *std.process.Environ.Map) ![]const u8 {
+    if (env.get("MOONSTONE_CONFIG_FILE")) |path| {
+        if (path.len != 0) return try allocator.dupe(u8, path);
+    }
+
+    const config_dir = try env_utils.get_config_dir(allocator, env);
+    defer allocator.free(config_dir);
+    return try std.fs.path.join(allocator, &.{ config_dir, "config.toml" });
+}
+
+fn configDirectoryForFile(allocator: std.mem.Allocator, config_file: []const u8) ![]const u8 {
+    const parent = std.fs.path.dirname(config_file) orelse return try allocator.dupe(u8, ".");
+    return try allocator.dupe(u8, parent);
+}
+
 pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ.Map, io: std.Io) !MOONSTONE_PATHS {
-    const config_dir = env_utils.get_config_dir(allocator, env) catch |err| {
-        return err;
-    };
+    const config_file_path = try resolve_config_file(allocator, env);
+    defer allocator.free(config_file_path);
+
+    const config_dir = try configDirectoryForFile(allocator, config_file_path);
     defer allocator.free(config_dir);
 
     const data_dir = env_utils.get_data_dir(allocator, env) catch |err| {
@@ -65,9 +81,6 @@ pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ
         return err;
     };
     defer allocator.free(cache_dir);
-
-    const config_file_path = try std.fs.path.join(allocator, &.{ config_dir, "config.toml" });
-    defer allocator.free(config_file_path);
 
     const config_content = std.Io.Dir.cwd().readFileAlloc(io, config_file_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| blk: {
         if (err != error.FileNotFound) {}
@@ -107,25 +120,59 @@ pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ
 
     if (res) |r| {
         const table = r.value;
-        if (table.get("store")) |n| {
-            const patched = try patch_config_path(allocator, n.string, HOME);
-            allocator.free(paths.store);
-            paths.store = patched;
+        const paths_table = if (table.get("paths")) |paths_value| switch (paths_value) {
+            .table => |value| value,
+            else => null,
+        } else null;
+
+        if (paths_table) |configured_paths| {
+            if (configured_paths.get("home_directory")) |n| {
+                const home_directory = try patch_config_path(allocator, n.string, HOME);
+                defer allocator.free(home_directory);
+
+                allocator.free(paths.data);
+                allocator.free(paths.bin);
+                allocator.free(paths.store);
+                allocator.free(paths.index);
+                allocator.free(paths.tmp);
+                allocator.free(paths.cache);
+                allocator.free(paths.shims);
+                allocator.free(paths.downloads);
+                allocator.free(paths.projects);
+
+                paths.data = try std.fs.path.join(allocator, &.{ home_directory, "data" });
+                paths.bin = try std.fs.path.join(allocator, &.{ paths.data, "bin" });
+                paths.store = try std.fs.path.join(allocator, &.{ paths.data, "store", major_v });
+                paths.index = try std.fs.path.join(allocator, &.{ paths.data, "index", major_v });
+                paths.tmp = try std.fs.path.join(allocator, &.{ paths.data, "tmp" });
+                paths.cache = try std.fs.path.join(allocator, &.{ home_directory, "cache" });
+                paths.shims = try std.fs.path.join(allocator, &.{ paths.data, major_v, "shims" });
+                paths.downloads = try std.fs.path.join(allocator, &.{ paths.cache, "downloads" });
+                paths.projects = try std.fs.path.join(allocator, &.{ paths.data, "projects" });
+            }
         }
-        if (table.get("cache")) |n| {
-            const patched = try patch_config_path(allocator, n.string, HOME);
-            allocator.free(paths.cache);
-            paths.cache = patched;
-        }
-        if (table.get("shims")) |n| {
-            const patched = try patch_config_path(allocator, n.string, HOME);
-            allocator.free(paths.shims);
-            paths.shims = patched;
-        }
-        if (table.get("downloads")) |n| {
-            const patched = try patch_config_path(allocator, n.string, HOME);
-            allocator.free(paths.downloads);
-            paths.downloads = patched;
+
+        if (paths_table) |configured_paths| {
+            if (configured_paths.get("store")) |n| {
+                const patched = try patch_config_path(allocator, n.string, HOME);
+                allocator.free(paths.store);
+                paths.store = patched;
+            }
+            if (configured_paths.get("cache")) |n| {
+                const patched = try patch_config_path(allocator, n.string, HOME);
+                allocator.free(paths.cache);
+                paths.cache = patched;
+            }
+            if (configured_paths.get("shims")) |n| {
+                const patched = try patch_config_path(allocator, n.string, HOME);
+                allocator.free(paths.shims);
+                paths.shims = patched;
+            }
+            if (configured_paths.get("downloads")) |n| {
+                const patched = try patch_config_path(allocator, n.string, HOME);
+                allocator.free(paths.downloads);
+                paths.downloads = patched;
+            }
         }
     }
 
@@ -178,7 +225,7 @@ pub fn get_network_config(allocator: std.mem.Allocator, env: *std.process.Enviro
         p.deinit(allocator);
     }
 
-    const config_file_path = std.fs.path.join(allocator, &.{ paths.config, "config.toml" }) catch return .{};
+    const config_file_path = resolve_config_file(allocator, env) catch return .{};
     defer allocator.free(config_file_path);
 
     const config_content = std.Io.Dir.cwd().readFileAlloc(io, config_file_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch return .{};

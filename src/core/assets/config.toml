@@ -5,10 +5,11 @@ auto_update_shims = true
 
 [paths]
 # Custom locations for store, cache, and shims (Unix/XDG defaults)
-store = "~/.local/share/moonstone/v0/store"
-cache = "~/.cache/moonstone"
-shims = "~/.local/share/moonstone/v0/shims"
-downloads = "~/.cache/moonstone/downloads"
+# home_directory = "~/.local/share/moonstone"
+# store = "~/.local/share/moonstone/v0/store"
+# cache = "~/.cache/moonstone"
+# shims = "~/.local/share/moonstone/v0/shims"
+# downloads = "~/.cache/moonstone/downloads"
 
 [cli]
 # Behavior toggles for UX and diagnostics

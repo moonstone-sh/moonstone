@@ -67,7 +67,7 @@ pub fn resolve(
     if (do_trace) trace("config_dir={s} data_dir={s}", .{ paths.config, paths.data });
 
     // ── 1. Read config.toml registries ────────────────────────────────────
-    const config_file_path = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
+    const config_file_path = try fs.resolve_config_file(allocator, environ_map);
     defer allocator.free(config_file_path);
 
     const config_content = std.Io.Dir.cwd().readFileAlloc(io, config_file_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| blk: {

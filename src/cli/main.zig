@@ -6,6 +6,43 @@ const router = @import("router.zig");
 const command_mod = @import("commands/command.zig");
 const profiler = moonstone.diagnostics.profiler;
 
+fn applyGlobalConfigFile(
+    allocator: std.mem.Allocator,
+    raw_args: []const []const u8,
+    env: *std.process.Environ.Map,
+) ![]const []const u8 {
+    var args = std.ArrayList([]const u8).empty;
+    errdefer args.deinit(allocator);
+
+    if (raw_args.len == 0) return try args.toOwnedSlice(allocator);
+    try args.append(allocator, raw_args[0]);
+
+    var index: usize = 1;
+    var parsing_global_flags = true;
+    while (index < raw_args.len) : (index += 1) {
+        const arg = raw_args[index];
+        if (parsing_global_flags and std.mem.startsWith(u8, arg, "--config-file=")) {
+            const path = arg["--config-file=".len..];
+            if (path.len == 0) return error.MissingArgument;
+            try env.put("MOONSTONE_CONFIG_FILE", path);
+            continue;
+        }
+        if (parsing_global_flags and std.mem.eql(u8, arg, "--config-file")) {
+            index += 1;
+            if (index >= raw_args.len) return error.MissingArgument;
+            try env.put("MOONSTONE_CONFIG_FILE", raw_args[index]);
+            continue;
+        }
+
+        try args.append(allocator, arg);
+        if (parsing_global_flags and !std.mem.startsWith(u8, arg, "-")) {
+            parsing_global_flags = false;
+        }
+    }
+
+    return try args.toOwnedSlice(allocator);
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
@@ -18,7 +55,8 @@ pub fn main(init: std.process.Init) !void {
     var stderr_writer = std.Io.File.stderr().writer(init.io, stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    const all_args = try init.minimal.args.toSlice(arena);
+    const raw_args = try init.minimal.args.toSlice(arena);
+    const all_args = try applyGlobalConfigFile(arena, raw_args, init.environ_map);
 
     profiler.init(init.environ_map);
 
@@ -90,6 +128,9 @@ pub fn main(init: std.process.Init) !void {
 
         router.CommandNode.group("config", "Manage Moonstone configuration", &.{
             router.CommandNode.from(command_mod.config.show),
+            router.CommandNode.from(command_mod.config.get),
+            router.CommandNode.from(command_mod.config.set),
+            router.CommandNode.from(command_mod.config.unset),
             router.CommandNode.from(command_mod.config.reset),
         }),
 

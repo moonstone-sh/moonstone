@@ -333,6 +333,46 @@ moon exec [options] <command> [args...]
 
 See [LÖVE + Moonstone](LOVE.md) for a complete `love-importer` workflow.
 
+## User Configuration Overrides
+
+Use a dedicated configuration file for an isolated invocation, CI job, or
+private registry profile:
+
+```bash
+moon --config-file ./ci/moonstone.toml sync
+moon --config-file ./ci/moonstone.toml registry internal: index rebuild
+```
+
+`--config-file` is applied before command dispatch and is inherited by spawned
+Moonstone processes. Its `[paths]`, `[network]`, and `[registries]` settings
+therefore affect the complete command invocation. `[paths].home_directory`
+derives isolated data and cache directories without changing the shell's
+`MOONSTONE_HOME`.
+
+Use typed configuration commands for supported settings; these preserve all
+unrelated TOML content, including registry declarations:
+
+```bash
+moon config get network.timeout
+moon config get network.timeout --default
+moon config set network.timeout 15
+moon config unset network.timeout
+```
+
+`moon config show` remains the broad diagnostics view. `get`, `set`, and
+`unset` complete supported setting names and validate their value type.
+
+Registry targets combine user `config.toml` and project `moonstone.toml`
+registries, with project entries taking precedence when names collide. Use a
+trailing colon for administrative operations:
+
+```bash
+moon registry init --file ./packages --name internal
+moon registry internal: index rebuild
+moon registry internal: publish --descriptor package.toml --artifact app.tar.gz
+moon registry internal: doctor
+```
+
 ## Where Global Tools Live
 
 By default, the global tools project lives at:

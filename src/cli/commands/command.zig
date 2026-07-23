@@ -59,6 +59,9 @@ pub const cache = struct {
 pub const config = struct {
     pub const show = @import("config_show.zig").ConfigShowCommand;
     pub const reset = @import("config_reset.zig").ConfigResetCommand;
+    pub const get = @import("config_settings.zig").ConfigGetCommand;
+    pub const set = @import("config_settings.zig").ConfigSetCommand;
+    pub const unset = @import("config_settings.zig").ConfigUnsetCommand;
 };
 
 // Interpreter group
@@ -269,6 +272,8 @@ pub fn reportError(
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes." });
             } else if (err == error.SQLiteCorrupt) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it." });
+            } else if (err == error.ConfigFileReadOnly) {
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "The active Moonstone config file is read-only or cannot be modified. Choose a writable --config-file, update its permissions, or use a writable MOONSTONE_CONFIG directory." });
             } else if (manifestErrorDetail(err)) |error_detail| {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = error_detail });
             } else {
@@ -336,6 +341,8 @@ pub fn reportError(
                 try stdout.print("Error: Moonstone's SQLite index is busy or locked by another process. Retry after the other Moonstone operation finishes.\n", .{});
             } else if (err == error.SQLiteCorrupt) {
                 try stdout.print("Error: Moonstone's SQLite index is corrupt or is not a SQLite database. Run 'moon index rebuild' to recreate it.\n", .{});
+            } else if (err == error.ConfigFileReadOnly) {
+                try stdout.print("Error: the active Moonstone config file is read-only or cannot be modified. Choose a writable --config-file, update its permissions, or use a writable MOONSTONE_CONFIG directory.\n", .{});
             } else if (err == error.OrbitMissingInterpreter) {
                 try stdout.print("Error: orbit is missing an [interpreter] block in its moonstone.toml.\n", .{});
             } else if (manifestErrorDetail(err)) |error_detail| {

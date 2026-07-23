@@ -30,10 +30,11 @@ pub fn resetConfig(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Wri
     var paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
     defer paths.deinit(allocator);
 
-    const config_file = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
+    const config_file = try moonstone.platform.fs.resolve_config_file(allocator, env);
     defer allocator.free(config_file);
 
     std.Io.Dir.cwd().deleteFile(io, config_file) catch |err| {
+        if (err == error.PermissionDenied) return error.ConfigFileReadOnly;
         if (err != error.FileNotFound) return err;
     };
 

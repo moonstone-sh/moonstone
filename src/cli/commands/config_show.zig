@@ -28,7 +28,7 @@ pub const ConfigShowCommand = struct {
         var paths = try moonstone.platform.fs.resolve_moonstone(allocator, ctx.env, io);
         defer paths.deinit(allocator);
 
-        const config_file = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
+        const config_file = try moonstone.platform.fs.resolve_config_file(allocator, ctx.env);
         defer allocator.free(config_file);
 
         if (self.json) {
