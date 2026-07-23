@@ -1,5 +1,6 @@
 const std = @import("std");
 const manifest = @import("../../domain/manifest.zig");
+const error_context = @import("../../diagnostics/error_context.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
 
@@ -22,6 +23,12 @@ pub fn resolve(
     else
         try std.fs.path.join(allocator, &.{ try std.process.currentPathAlloc(io, allocator), path });
     defer allocator.free(abs_path);
+
+    var source_dir = std.Io.Dir.cwd().openDir(io, abs_path, .{}) catch {
+        error_context.setFmt(allocator, "Local path dependency at '{s}' is unavailable. Restore the directory or update the dependency path, then run 'moon sync --update'.", .{abs_path});
+        return error.LocalSourceUnavailable;
+    };
+    source_dir.close(io);
 
     const mt_path = try std.fs.path.join(allocator, &.{ abs_path, "moonstone.toml" });
     defer allocator.free(mt_path);

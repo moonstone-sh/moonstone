@@ -1,13 +1,11 @@
 const std = @import("std");
+const error_context = @import("../diagnostics/error_context.zig");
 const lockfile_mod = @import("../domain/lockfile.zig");
 const LockEntry = lockfile_mod.LockEntry;
 const locked_pkg = @import("../domain/locked_package.zig");
-const manifest = @import("../domain/manifest.zig");
-const store = @import("../store.zig");
 const store_driver = @import("../store/driver.zig").StoreDriver;
 const package_provider = @import("provider/package_provider.zig");
 const candidate_mod = @import("candidate.zig");
-const hash_mod = @import("../identity/hash.zig");
 
 pub const RealizationMethod = enum {
     local_cas,
@@ -165,34 +163,20 @@ pub fn ensureLockedArtifact(
         defer allocator.free(computed_plan_hash);
 
         if (!std.mem.eql(u8, computed_plan_hash, entry.plan_hash)) {
+            error_context.setFmt(allocator, "Locked materialization plan mismatch for {s}@{s}. Expected plan {s}, but the current plan is {s}. Restore the matching toolchain or run 'moon sync --update' to create a new lockfile.", .{ entry.name, entry.version, entry.plan_hash, computed_plan_hash });
             return error.PlanHashMismatch;
         }
     }
 
     // Verify artifact_hash match
     if (entry.artifact_hash.len > 0 and !std.mem.eql(u8, cand.artifact_hash, entry.artifact_hash)) {
+        error_context.setFmt(allocator, "Locked artifact hash mismatch for {s}@{s}. Expected {s}, but resolution produced {s}. Restore the exact artifact or run 'moon sync --update' to create a new lockfile.", .{ entry.name, entry.version, entry.artifact_hash, cand.artifact_hash });
         return error.ArtifactHashMismatch;
     }
 
-    // Commit rebuilt candidate to CAS store on exact equality
-    if (cand.local_path) |lp| {
-        const store_facade = @import("../store.zig");
-        const manifest_mod = @import("../domain/manifest.zig");
-        const remote_desc = manifest_mod.RemotePackageDescriptor{
-            .package = .{ .name = cand.name, .version = cand.version, .kind = cand.kind },
-            .compat = .{},
-        };
-        const remote_art = manifest_mod.RemoteArtifact{
-            .target = if (entry.target.len > 0) entry.target else "native",
-            .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else "5.4",
-            .hash = cand.artifact_hash,
-            .recipe_hash = entry.recipe_hash,
-            .url = "",
-            .format = "tar.gz",
-            .provides = .{},
-        };
-        _ = store_facade.commit_to_store(allocator, io, env, lp, remote_desc, remote_art, entry.resolver, entry.source, &.{}) catch {};
-    }
+    // LuaRocks resolution materializes the package and commits it to the CAS
+    // before returning its candidate. Replaying that commit would rename the
+    // returned store path into its own `files` directory on macOS.
 
     return RealizeResult{
         .candidate = cand,

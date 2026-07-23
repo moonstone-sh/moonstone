@@ -12,11 +12,32 @@ MOCK_DIR="${WORKDIR}/mock-rocks"
 RANDOM_PORT=$(((RANDOM % 1000) + 8300))
 mkdir -p "$MOCK_DIR" "$WORKDIR/parent/src" "$WORKDIR/app"
 
-"${PROJECT_ROOT}/tests/run_lua_tool.sh" generate-mock-rocks "$MOCK_DIR" "$RANDOM_PORT" &
-MOCK_PID=$!
-trap 'kill "$MOCK_PID" 2>/dev/null || true; rm -rf "$WORKDIR"' EXIT
+mkdir -p "$MOCK_DIR/child-1.0"
+cat >"$MOCK_DIR/child-1.0/child.lua" <<'LUA'
+return { hello = "from child" }
+LUA
+tar -czf "$MOCK_DIR/child-1.0.tar.gz" -C "$MOCK_DIR/child-1.0" .
+cat >"$MOCK_DIR/child-1.0-1.rockspec" <<TOML
+package = "child"
+version = "1.0-1"
+source = { url = "http://127.0.0.1:${RANDOM_PORT}/child-1.0.tar.gz" }
+build = { type = "builtin", modules = { child = "child.lua" } }
+dependencies = { "lua >= 5.1" }
+TOML
+cat >"$MOCK_DIR/manifest-5.4.json" <<'JSON'
+{"repository":{"child":{"1.0-1":[{"arch":"rockspec"}]}}}
+JSON
 
-export MOONSTONE_LUAROCKS_URL="http://localhost:${RANDOM_PORT}"
+(cd "$MOCK_DIR" && python3 -m http.server "$RANDOM_PORT" --bind 127.0.0.1) >/tmp/moonstone-link-rocks-transitive-server.log 2>&1 &
+MOCK_PID=$!
+cleanup() {
+  kill "$MOCK_PID" 2>/dev/null || true
+  wait "$MOCK_PID" 2>/dev/null || true
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+
+export MOONSTONE_LUAROCKS_URL="http://127.0.0.1:${RANDOM_PORT}"
 for _ in {1..60}; do
   if curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null 2>&1; then
     break

@@ -822,6 +822,7 @@ pub const SyncCommand = struct {
                 if (is_link or is_path) {
                     // Link/path entries are reconstructed directly from lockfile metadata
                     const source_path = if (entry.source.len > 0) entry.source else "";
+                    try checkLocalSourceAvailableForReplay(allocator, io, entry.name, entry.version, if (is_link) "link" else "path", source_path);
                     try checkLinkedRuntimeAbiForReplay(allocator, io, ctx, &mt, active_lua_abi, entry.name, entry.version, source_path);
                     const candidate = moonstone.resolution.candidate.Candidate{
                         .name = try allocator.dupe(u8, entry.name),
@@ -855,15 +856,17 @@ pub const SyncCommand = struct {
                     &idx,
                     replay_policy,
                 ) catch |err| {
-                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                    ctx.error_detail = .{
-                        .locked_artifact_missing = .{
-                            .name = try ctx.allocator.dupe(u8, entry.name),
-                            .version = try ctx.allocator.dupe(u8, entry.version),
-                            .resolver = if (entry.resolver.len > 0) try ctx.allocator.dupe(u8, entry.resolver) else null,
-                            .artifact_hash = try ctx.allocator.dupe(u8, entry.artifact_hash),
-                        },
-                    };
+                    if (err == error.LockedArtifactMissing) {
+                        if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                        ctx.error_detail = .{
+                            .locked_artifact_missing = .{
+                                .name = try ctx.allocator.dupe(u8, entry.name),
+                                .version = try ctx.allocator.dupe(u8, entry.version),
+                                .resolver = if (entry.resolver.len > 0) try ctx.allocator.dupe(u8, entry.resolver) else null,
+                                .artifact_hash = try ctx.allocator.dupe(u8, entry.artifact_hash),
+                            },
+                        };
+                    }
                     return err;
                 };
                 defer real_res.deinit(allocator);
@@ -2076,6 +2079,26 @@ fn checkLinkedRuntimeAbiForReplay(
         }
         return error.LinkedRuntimeAbiMismatch;
     }
+}
+
+fn checkLocalSourceAvailableForReplay(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    pkg_name: []const u8,
+    pkg_version: []const u8,
+    resolver: []const u8,
+    source_path: []const u8,
+) !void {
+    if (source_path.len == 0) {
+        moonstone.diagnostics.error_context.setFmt(allocator, "Locked local {s} dependency {s}@{s} has no source path. Restore the source or update the dependency, then run 'moon sync --update'.", .{ resolver, pkg_name, pkg_version });
+        return error.LocalSourceUnavailable;
+    }
+
+    var source_dir = std.Io.Dir.cwd().openDir(io, source_path, .{}) catch {
+        moonstone.diagnostics.error_context.setFmt(allocator, "Locked local {s} dependency {s}@{s} is unavailable at '{s}'. Restore the source or update the dependency, then run 'moon sync --update'.", .{ resolver, pkg_name, pkg_version, source_path });
+        return error.LocalSourceUnavailable;
+    };
+    source_dir.close(io);
 }
 
 fn runtimeSpecFromLinkedPackage(

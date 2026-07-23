@@ -354,6 +354,18 @@ pub fn commit_to_store_with_sources(
     const files_path = try std.fs.path.join(allocator, &.{ final_art_path, "files" });
     defer allocator.free(files_path);
 
+    if (try isCompleteArtifact(allocator, io, final_art_path, remote_art.hash)) {
+        try registerCompleteArtifact(allocator, io, paths.index, final_art_path);
+        if (!isPathWithin(unpacked_path, final_art_path)) {
+            std.Io.Dir.cwd().deleteTree(io, unpacked_path) catch |err| {
+                if (err != error.FileNotFound) return err;
+            };
+        }
+        return try allocator.dupe(u8, final_art_path);
+    }
+
+    if (isPathWithin(unpacked_path, final_art_path)) return error.InvalidStoreCommitPath;
+
     // Atomic rename isn't possible across devices if store is elsewhere,
     // but in v0 we assume local tmp/store.
     std.Io.Dir.cwd().deleteTree(io, final_art_path) catch |err| {
@@ -480,6 +492,62 @@ pub fn commit_to_store_with_sources(
     return try allocator.dupe(u8, final_art_path);
 }
 
+fn isCompleteArtifact(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    artifact_path: []const u8,
+    expected_hash: []const u8,
+) !bool {
+    const files_path = try std.fs.path.join(allocator, &.{ artifact_path, "files" });
+    defer allocator.free(files_path);
+    var files_dir = std.Io.Dir.cwd().openDir(io, files_path, .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.NotDir) return false;
+        return err;
+    };
+    files_dir.close(io);
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ artifact_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return false;
+        return err;
+    };
+    defer allocator.free(content);
+
+    var stored_manifest = manifest.StoreManifest.parse(allocator, content) catch return false;
+    defer stored_manifest.deinit(allocator);
+    return std.mem.eql(u8, stored_manifest.artifact.artifact_hash, expected_hash);
+}
+
+fn registerCompleteArtifact(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    index_path: []const u8,
+    artifact_path: []const u8,
+) !void {
+    const manifest_path = try std.fs.path.join(allocator, &.{ artifact_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(content);
+    var stored_manifest = try manifest.StoreManifest.parse(allocator, content);
+    defer stored_manifest.deinit(allocator);
+
+    try std.Io.Dir.cwd().createDirPath(io, index_path);
+    const index_db_path = try std.fs.path.join(allocator, &.{ index_path, "index.sqlite" });
+    defer allocator.free(index_db_path);
+    const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
+    defer allocator.free(index_db_path_z);
+
+    var idx = try driver_mod.StoreDriver.init(allocator, index_db_path_z);
+    defer idx.deinit();
+    try idx.register_artifact(allocator, stored_manifest, artifact_path, manifest_path);
+}
+
+fn isPathWithin(path: []const u8, parent: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, parent)) return false;
+    return path.len == parent.len or path[parent.len] == std.fs.path.sep;
+}
+
 fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
     if (runtime_spec.len == 0) return false;
     if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
@@ -533,4 +601,97 @@ test "computeRecipeHash differs by inputs" {
     });
     defer allocator.free(h2);
     try std.testing.expect(!std.mem.eql(u8, h1, h2));
+}
+
+test "commit_to_store reuses complete artifacts without deleting staging or itself" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", tmp_path);
+    try env.put("MOONSTONE_HOME", tmp_path);
+
+    const first_source = try std.fs.path.join(allocator, &.{ tmp_path, "first-source" });
+    defer allocator.free(first_source);
+    try std.Io.Dir.cwd().createDirPath(io, first_source);
+    const first_file = try std.fs.path.join(allocator, &.{ first_source, "module.lua" });
+    defer allocator.free(first_file);
+    const first_handle = try std.Io.Dir.cwd().createFile(io, first_file, .{});
+    defer first_handle.close(io);
+    try first_handle.writeStreamingAll(io, "return 'first'\n");
+
+    const second_source = try std.fs.path.join(allocator, &.{ tmp_path, "second-source" });
+    defer allocator.free(second_source);
+    try std.Io.Dir.cwd().createDirPath(io, second_source);
+    const second_file = try std.fs.path.join(allocator, &.{ second_source, "module.lua" });
+    defer allocator.free(second_file);
+    const second_handle = try std.Io.Dir.cwd().createFile(io, second_file, .{});
+    defer second_handle.close(io);
+    try second_handle.writeStreamingAll(io, "return 'second'\n");
+
+    const descriptor: manifest.RemotePackageDescriptor = .{
+        .package = .{
+            .name = "store-idempotence",
+            .version = "1.0.0",
+            .kind = .lib,
+        },
+        .compat = .{},
+    };
+    const artifact: manifest.RemoteArtifact = .{
+        .url = "",
+        .hash = "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        .format = "tar.gz",
+    };
+
+    const raw_hash = artifact.hash[3..];
+    const paths = try fs.resolve_moonstone(allocator, &env, io);
+    defer {
+        var owned_paths = paths;
+        owned_paths.deinit(allocator);
+    }
+    const partial_path = try std.fs.path.join(allocator, &.{
+        paths.store,
+        "b3",
+        raw_hash[0..2],
+        raw_hash[2..4],
+        raw_hash ++ "-store-idempotence-1.0.0",
+    });
+    defer allocator.free(partial_path);
+    try std.Io.Dir.cwd().createDirPath(io, partial_path);
+    const stale_path = try std.fs.path.join(allocator, &.{ partial_path, "stale" });
+    defer allocator.free(stale_path);
+    const stale_file = try std.Io.Dir.cwd().createFile(io, stale_path, .{});
+    defer stale_file.close(io);
+    try stale_file.writeStreamingAll(io, "incomplete");
+
+    const first_path = try commit_to_store(allocator, io, &env, first_source, descriptor, artifact, "moonstone", "test", &.{});
+    defer allocator.free(first_path);
+    const index_file = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
+    defer allocator.free(index_file);
+    try std.Io.Dir.cwd().deleteFile(io, index_file);
+    const second_path = try commit_to_store(allocator, io, &env, second_source, descriptor, artifact, "moonstone", "test", &.{});
+    defer allocator.free(second_path);
+    try std.testing.expectEqualStrings(first_path, second_path);
+    const rebuilt_index = try std.Io.Dir.cwd().openFile(io, index_file, .{});
+    rebuilt_index.close(io);
+
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openDir(io, second_source, .{}));
+    const files_path = try std.fs.path.join(allocator, &.{ first_path, "files" });
+    defer allocator.free(files_path);
+    const nested_path = try commit_to_store(allocator, io, &env, files_path, descriptor, artifact, "moonstone", "test", &.{});
+    defer allocator.free(nested_path);
+    try std.testing.expectEqualStrings(first_path, nested_path);
+
+    const stored_file = try std.fs.path.join(allocator, &.{ files_path, "module.lua" });
+    defer allocator.free(stored_file);
+    const stored_content = try std.Io.Dir.cwd().readFileAlloc(io, stored_file, allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(stored_content);
+    try std.testing.expectEqualStrings("return 'first'\n", stored_content);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(io, stale_path, .{}));
 }
