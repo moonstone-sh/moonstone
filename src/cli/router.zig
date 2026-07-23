@@ -11,6 +11,8 @@ pub const CommandNode = struct {
     help_fn: *const fn (node: *const CommandNode, stdout: *std.Io.Writer) anyerror!void,
     complete_fn: ?*const fn (args: []const []const u8, ctx: *Context) anyerror![]const []const u8 = null,
     flags_fn: ?*const fn (allocator: std.mem.Allocator) anyerror![]const []const u8 = null,
+    fallback_dispatch_fn: ?*const fn (args: []const []const u8, ctx: *Context) anyerror!void = null,
+    fallback_complete_fn: ?*const fn (args: []const []const u8, ctx: *Context) anyerror![]const []const u8 = null,
     subcommands: []const CommandNode = &.{},
 
     pub fn group(name: []const u8, description: []const u8, subcommands: []const CommandNode) CommandNode {
@@ -35,6 +37,19 @@ pub const CommandNode = struct {
                 }
             }.help,
         };
+    }
+
+    pub fn groupWithFallback(
+        name: []const u8,
+        description: []const u8,
+        subcommands: []const CommandNode,
+        fallback_dispatch_fn: *const fn (args: []const []const u8, ctx: *Context) anyerror!void,
+        fallback_complete_fn: *const fn (args: []const []const u8, ctx: *Context) anyerror![]const []const u8,
+    ) CommandNode {
+        var node = group(name, description, subcommands);
+        node.fallback_dispatch_fn = fallback_dispatch_fn;
+        node.fallback_complete_fn = fallback_complete_fn;
+        return node;
     }
 
     pub fn from(comptime CmdType: type) CommandNode {
@@ -218,6 +233,10 @@ pub fn dispatch(root: CommandNode, args: []const []const u8, ctx: *Context) anye
         }
     }
 
+    if (root.fallback_dispatch_fn) |fallback| {
+        return fallback(args, ctx);
+    }
+
     if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
     ctx.error_detail = .{ .unknown_command = .{ .command = try ctx.allocator.dupe(u8, target) } };
     try command_mod.reportError(ctx.allocator, ctx.io, ctx.stdout, false, error.UnknownCommand, "moon", ctx.error_detail);
@@ -259,6 +278,10 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
             }
         }
 
+        if (root.fallback_complete_fn) |fallback| {
+            const fallback_items = try fallback(args, ctx);
+            try list.appendSlice(ctx.allocator, fallback_items);
+        }
         if (list.items.len > 0) return list.toOwnedSlice(ctx.allocator);
     }
 
@@ -304,6 +327,10 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
                 return complete(&sub, args[1..], ctx);
             }
         }
+    }
+
+    if (root.fallback_complete_fn) |fallback| {
+        return fallback(args, ctx);
     }
 
     return &.{};

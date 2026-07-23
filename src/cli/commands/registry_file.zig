@@ -386,10 +386,13 @@ pub const RegistryPushCommand = struct {
     registry: ?[]const u8 = null,
     descriptor: ?[]const u8 = null,
     blob: ?[]const u8 = null,
+    update: bool = false,
+    replace: bool = false,
+    yes: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon registry push [registry] --descriptor <package.toml> --blob <archive>
+            \\Usage: moon registry push [registry] --descriptor <package.toml> --blob <archive> [flags]
             \\
             \\Copy a package descriptor and blob into a local file registry,
             \\rewrite the artifact url to the local blob path when needed,
@@ -399,6 +402,9 @@ pub const RegistryPushCommand = struct {
             \\  --registry <path>       Local registry root
             \\  --descriptor <path>     package.toml descriptor
             \\  --blob <path>           Artifact/source archive
+            \\  --update                Idempotently accept an identical published version
+            \\  --replace               Replace an existing local version (requires --yes)
+            \\  --yes                   Confirm local replacement
             \\
         , .{});
     }
@@ -417,13 +423,29 @@ pub const RegistryPushCommand = struct {
         defer ctx.allocator.free(blob_hash);
         const blob_rel = try blobRelPath(ctx.allocator, blob_hash, fileExt(blob));
         defer ctx.allocator.free(blob_rel);
-        const blob_abs = try std.fs.path.join(ctx.allocator, &.{ registry, blob_rel });
-        defer ctx.allocator.free(blob_abs);
-        try copyFile(ctx.allocator, ctx.io, blob, blob_abs);
         const rewritten = try rewriteBlobMetadata(ctx.allocator, desc_bytes, blob_rel, blob_hash);
         defer ctx.allocator.free(rewritten);
         const desc_abs = try descriptorPath(ctx.allocator, registry, parsed.package.name, parsed.package.version);
         defer ctx.allocator.free(desc_abs);
+
+        const existing = readFile(ctx.allocator, ctx.io, desc_abs) catch |err| blk: {
+            if (err == error.FileNotFound) break :blk null;
+            return err;
+        };
+        defer if (existing) |bytes| ctx.allocator.free(bytes);
+        if (existing) |bytes| {
+            if (std.mem.eql(u8, bytes, rewritten)) {
+                if (!self.update) return error.PackageVersionAlreadyPublished;
+                try ctx.stdout.print("Package {s}@{s} is already published with identical content.\n", .{ parsed.package.name, parsed.package.version });
+                return;
+            }
+            if (!self.replace) return error.PackageVersionImmutable;
+            if (!self.yes) return error.ConfirmationRequired;
+        }
+
+        const blob_abs = try std.fs.path.join(ctx.allocator, &.{ registry, blob_rel });
+        defer ctx.allocator.free(blob_abs);
+        try copyFile(ctx.allocator, ctx.io, blob, blob_abs);
         try mkdirp(ctx.io, dirname(desc_abs));
         try writeFile(ctx.io, desc_abs, rewritten);
         try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, registry, "local");

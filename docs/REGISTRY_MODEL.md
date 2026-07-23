@@ -534,6 +534,26 @@ If the hash mismatches, the artifact is discarded and the install fails.
 
 ---
 
+## Registry CLI Targets
+
+Moonstone keeps registry transport separate from registry operations. A local
+filesystem registry is selected with `--file`; it is not a separate
+`moon registry file` command surface. Configure a named registry once, then
+use a trailing colon to make its target explicit:
+
+```bash
+moon registry init --file ./registry --name acme
+moon registry acme: publish --descriptor package.toml --artifact app.tar.gz
+moon registry acme: index rebuild
+moon registry acme: fetch --descriptor acme/app@1.2.0
+moon registry acme: doctor
+```
+
+The colon follows the same registry boundary as `acme:app` package selection,
+but remains unambiguous because the registry administration grammar consumes
+`acme:` as a complete argument before the operation. Shell completion includes
+registry aliases from both user configuration and the current project.
+
 ## Authentication & Access Control
 
 ### Public registries

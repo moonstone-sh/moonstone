@@ -106,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.index.vacuum),
         }),
 
-        router.CommandNode.group("registry", "Manage registries", &.{
+        router.CommandNode.groupWithFallback("registry", "Manage registries", &.{
             router.CommandNode.from(@import("commands/registry_list.zig").RegistryListCommand),
             router.CommandNode.from(@import("commands/registry_add.zig").RegistryAddCommand),
             router.CommandNode.from(@import("commands/registry_remove.zig").RegistryRemoveCommand),
@@ -114,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/registry_file.zig").RegistrySyncCommand),
             router.CommandNode.from(@import("commands/registry_file.zig").RegistryPushCommand),
             router.CommandNode.from(@import("commands/registry_file.zig").RegistryPurgeCommand),
-        }),
+        }, @import("commands/registry_target.zig").dispatch, @import("commands/registry_target.zig").complete),
 
         router.CommandNode.group("cache", "Manage Moonstone caches", &.{
             router.CommandNode.from(command_mod.cache.clean),
