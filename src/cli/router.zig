@@ -97,8 +97,10 @@ pub const CommandNode = struct {
                             inline for (std.meta.fields(CmdType)) |field| {
                                 if (!std.mem.eql(u8, field.name, "positionals")) {
                                     const expected_flag = comptime blk: {
-                                        var buf: [field.name.len]u8 = undefined;
-                                        for (field.name, 0..) |c, j| {
+                                        const suffix = "_arg";
+                                        const base_name = if (std.mem.endsWith(u8, field.name, suffix)) field.name[0 .. field.name.len - suffix.len] else field.name;
+                                        var buf: [base_name.len]u8 = undefined;
+                                        for (base_name, 0..) |c, j| {
                                             buf[j] = if (c == '_') '-' else c;
                                         }
                                         break :blk buf;

@@ -28,6 +28,7 @@ pub const RegistryAddCommand = struct {
     default: bool = false,
 
     pub fn run(self: RegistryAddCommand, allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, env: *std.process.Environ.Map) !void {
+        if (!moonstone.domain.registry_name.isValid(self.name)) return error.InvalidRegistryName;
         const toml_path = "moonstone.toml";
         const content = try std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(1024 * 1024));
         defer allocator.free(content);

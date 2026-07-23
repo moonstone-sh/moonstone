@@ -345,6 +345,10 @@ pub const RegistryCreateCommand = struct {
         if (self.positionals.len < 1) return error.MissingArgument;
         const path = self.positionals[0];
         const r_name = self.name_arg orelse if (self.positionals.len >= 2) self.positionals[1] else "local";
+        if (!moonstone.domain.registry_name.isValid(r_name)) {
+            ctx.error_detail = .{ .message = .{ .msg = try ctx.allocator.dupe(u8, "Registry names must use lowercase letters, digits, and internal hyphens (1-40 characters).") } };
+            return error.InvalidRegistryName;
+        }
         try mkdirp(ctx.io, path);
         const packages_path = try std.fs.path.join(ctx.allocator, &.{ path, "packages" });
         defer ctx.allocator.free(packages_path);
@@ -383,6 +387,10 @@ pub const RegistrySyncCommand = struct {
     pub fn run(self: RegistrySyncCommand, ctx: *router.Context) !void {
         if (self.positionals.len < 1) return error.MissingArgument;
         const r_name = self.name_arg orelse if (self.positionals.len >= 2) self.positionals[1] else "local";
+        if (!moonstone.domain.registry_name.isValid(r_name)) {
+            ctx.error_detail = .{ .message = .{ .msg = try ctx.allocator.dupe(u8, "Registry names must use lowercase letters, digits, and internal hyphens (1-40 characters).") } };
+            return error.InvalidRegistryName;
+        }
         var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-sync") else null;
         const emitter = if (emitter_obj) |*e| e else null;
         try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, emitter, self.positionals[0], r_name);

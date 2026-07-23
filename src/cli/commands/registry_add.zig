@@ -7,19 +7,24 @@ pub const RegistryAddCommand = struct {
     pub const description = "Add a new registry to the project";
 
     positionals: []const []const u8 = &.{},
+    name_arg: ?[]const u8 = null,
+    url: ?[]const u8 = null,
     default: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon registry add <name> <uri> [flags]
+            \\Usage: moon registry add --name <name> --url <uri> [flags]
+            \\       moon registry add <name> <uri> [flags]
             \\
             \\Add a Moonstone registry to the project configuration.
             \\
             \\Arguments:
-            \\  <name>        Local name for the registry
-            \\  <uri>         URL (http://...) or local path
+            \\  <name>        Local registry alias (legacy positional form)
+            \\  <uri>         URL or local path (legacy positional form)
             \\
             \\Flags:
+            \\  --name <name>  Registry alias: lowercase letters, digits, internal hyphens
+            \\  --url <uri>    Registry URL (http(s)://...) or local file path
             \\  --default     Set as the default registry for resolution
             \\
         , .{});
@@ -33,9 +38,12 @@ pub const RegistryAddCommand = struct {
         const project_root = try moonstone.project.discovery.enterRoot(allocator, io, ".");
         defer project_root.deinit(allocator);
 
-        if (self.positionals.len < 2) return error.MissingArgument;
-        const r_name = self.positionals[0];
-        const r_uri = self.positionals[1];
+        const r_name = self.name_arg orelse if (self.positionals.len >= 1) self.positionals[0] else return error.MissingArgument;
+        const r_uri = self.url orelse if (self.positionals.len >= 2) self.positionals[1] else return error.MissingArgument;
+        if (!moonstone.domain.registry_name.isValid(r_name)) {
+            ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "Registry names must use lowercase letters, digits, and internal hyphens (1-40 characters).") } };
+            return error.InvalidRegistryName;
+        }
 
         const toml_path = "moonstone.toml";
         const content = try std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(1024 * 1024));

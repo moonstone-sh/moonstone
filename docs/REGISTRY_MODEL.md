@@ -12,17 +12,18 @@ explains the *behavior* and *topology* those structures represent.
 
 1. [Design Principles](#design-principles)
 2. [Registry Topology](#registry-topology)
-3. [File Reference](#file-reference)
-4. [Basic Registry (Static)](#basic-registry-static)
-5. [Mature Registry (Web Service)](#mature-registry-web-service)
-6. [Registry API](#registry-api)
-7. [Publish Flow](#publish-flow)
-8. [Index Rebuild](#index-rebuild)
-9. [Blob Storage & Addressing](#blob-storage--addressing)
-10. [Authentication & Access Control](#authentication--access-control)
-11. [CDN & Edge Caching](#cdn--edge-caching)
-12. [Client Resolution Flow](#client-resolution-flow)
-13. [Migration Path: Basic → Mature](#migration-path-basic--mature)
+3. [Namespace Registry Exports](#namespace-registry-exports)
+4. [File Reference](#file-reference)
+5. [Basic Registry (Static)](#basic-registry-static)
+6. [Mature Registry (Web Service)](#mature-registry-web-service)
+7. [Registry API](#registry-api)
+8. [Publish Flow](#publish-flow)
+9. [Index Rebuild](#index-rebuild)
+10. [Blob Storage & Addressing](#blob-storage--addressing)
+11. [Authentication & Access Control](#authentication--access-control)
+12. [CDN & Edge Caching](#cdn--edge-caching)
+13. [Client Resolution Flow](#client-resolution-flow)
+14. [Migration Path: Basic → Mature](#migration-path-basic--mature)
 
 ---
 
@@ -71,6 +72,51 @@ registry/
   descriptor is cheap to fetch lazily.
 - **`blobs/`** uses sharding (`{algo}/{h0h1}/{h2h3}/`) to avoid putting millions of
   files in one directory.  This matters for S3, local ext4, and CDN origin pulls.
+
+---
+
+## Namespace Registry Exports
+
+A hosted registry keeps its mutable authoring tree separate from the static trees
+served to Moonstone clients:
+
+```
+registry/
+├── packages/                         # mutable authoring descriptors
+├── blobs/                            # upload storage
+└── exports/
+    ├── public/                       # enabled public package closure
+    └── private/{namespace-public-id}/ # enabled private namespace closure
+```
+
+The **public export root** is one registry containing every enabled public package.
+Each **private export root** belongs to one immutable namespace public ID, not its
+mutable display handle.  Renaming `acme` therefore cannot silently move, alias, or
+invalidate its private registry URL.
+
+Only Moonstone writes `registry.toml`, `index.toml`, and `index.sqlite.zst` inside
+an export root. The web service copies immutable descriptors and internal blobs into
+that root, then writes a rebuild request. A host or sidecar consumes it with
+`scripts/rebuild-registry-exports.sh`, which runs
+`moon registry --file <root> index rebuild`. This avoids a second, subtly
+incompatible index writer in the application layer.
+
+Clients choose a local alias that follows the registry-name grammar: **1–40 lowercase
+ASCII letters or digits, with optional internal hyphens**. That makes the target form
+unambiguous:
+
+```bash
+moon registry add --name moonstone-sh-acme --url https://moonstone.sh/registry/v0/private/ns_123
+moon registry moonstone-sh-acme: auth --file ./acme.auth.lua
+moon add moonstone-sh-acme:acme/internal-tool@^1.2
+```
+
+Namespace handles use the same grammar. Package coordinates remain
+`<namespace>/<package>`; `public:` and `private:` are not package resolvers.
+
+For a private static index, the credential must grant read access to the **entire
+namespace**. A package-restricted token must use a dynamic, filtered endpoint so a
+compact index cannot disclose package names outside its grant.
 
 ---
 
