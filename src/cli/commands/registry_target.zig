@@ -16,7 +16,7 @@ fn usage(stdout: *std.Io.Writer) !void {
         \\       moon registry init --file <path> [--name <name>]
         \\
         \\Target operations:
-        \\  publish --descriptor <package.toml> --artifact <archive> [--json]
+        \\  publish --descriptor <package.toml> [--artifact <archive>] [--json]
         \\  index rebuild [--no-compact] [--json]
         \\  fetch --descriptor <name>@<version> [--output <path>] [--json]
         \\  package delete <name>@<version> [--json]
@@ -175,7 +175,7 @@ fn dispatchImpl(args: []const []const u8, ctx: *router.Context) !void {
     const rest = args[resolved.operation_index + 1 ..];
     if (std.mem.eql(u8, operation, "publish")) {
         const descriptor = option(rest, "--descriptor") orelse return error.MissingArgument;
-        const artifact = option(rest, "--artifact") orelse option(rest, "--blob") orelse return error.MissingArgument;
+        const artifact = option(rest, "--artifact") orelse option(rest, "--blob");
         return (file_commands.RegistryPushCommand{
             .registry = resolved.target.path,
             .descriptor = descriptor,

@@ -14,8 +14,8 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     else \
         ARCH="x86_64"; \
     fi && \
-    # Remove the 'v' prefix if it exists in the version for the binary name (e.g., v0.4.0 -> 0.4.0)
-    curl -fsSL "https://github.com/moonstone-sh/moonstone/releases/download/${MOONSTONE_VERSION}/moon-${ARCH}-linux-musl.tar.gz" | tar -xz -C /usr/local/bin
+    VERSION="${MOONSTONE_VERSION#v}" && \
+    curl -fsSL "https://github.com/moonstone-sh/moonstone/releases/download/v${VERSION}/moon-v${VERSION}-${ARCH}-linux-musl.tar.gz" | tar -xz -C /usr/local/bin
 
 
 # Set Moonstone as the entrypoint

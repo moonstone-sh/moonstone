@@ -392,7 +392,7 @@ pub const RegistrySyncCommand = struct {
 
 pub const RegistryPushCommand = struct {
     pub const name = "push";
-    pub const description = "Push a descriptor and blob into a local registry";
+    pub const description = "Publish a descriptor into a local registry";
     positionals: []const []const u8 = &.{},
     registry: ?[]const u8 = null,
     descriptor: ?[]const u8 = null,
@@ -404,16 +404,17 @@ pub const RegistryPushCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon registry push [registry] --descriptor <package.toml> --blob <archive> [flags]
+            \\Usage: moon registry push [registry] --descriptor <package.toml> [--blob <archive>] [flags]
             \\
-            \\Copy a package descriptor and blob into a local file registry,
-            \\rewrite the artifact url to the local blob path when needed,
-            \\and regenerate index.toml.
+            \\Publish a package descriptor and regenerate the TOML and compact
+            \\indexes. Supplying --blob copies the archive into the local blob
+            \\store and rewrites its artifact metadata. Without --blob, every
+            \\artifact URL must be an absolute HTTPS URL.
             \\
             \\Flags:
             \\  --registry <path>       Local registry root
             \\  --descriptor <path>     package.toml descriptor
-            \\  --blob <path>           Artifact/source archive
+            \\  --blob <path>           Optional archive to copy into the local blob store
             \\  --update                Idempotently accept an identical published version
             \\  --replace               Replace an existing local version (requires --yes)
             \\  --yes                   Confirm local replacement
@@ -425,18 +426,26 @@ pub const RegistryPushCommand = struct {
     pub fn run(self: RegistryPushCommand, ctx: *router.Context) !void {
         const registry = self.registry orelse if (self.positionals.len >= 1) self.positionals[0] else return error.MissingArgument;
         const descriptor = self.descriptor orelse if (self.positionals.len >= 2) self.positionals[1] else return error.MissingArgument;
-        const blob = self.blob orelse if (self.positionals.len >= 3) self.positionals[2] else return error.MissingArgument;
+        const blob = self.blob orelse if (self.positionals.len >= 3) self.positionals[2] else null;
         const desc_bytes = try readFile(ctx.allocator, ctx.io, descriptor);
         defer ctx.allocator.free(desc_bytes);
         var parsed = try moonstone.domain.manifest.RemotePackageDescriptor.parse(ctx.allocator, desc_bytes);
         defer parsed.deinit(ctx.allocator);
-        const blob_bytes = try readFile(ctx.allocator, ctx.io, blob);
-        defer ctx.allocator.free(blob_bytes);
-        const blob_hash = try hashHexAlloc(ctx.allocator, blob_bytes);
-        defer ctx.allocator.free(blob_hash);
-        const blob_rel = try blobRelPath(ctx.allocator, blob_hash, fileExt(blob));
-        defer ctx.allocator.free(blob_rel);
-        const rewritten = try rewriteBlobMetadata(ctx.allocator, desc_bytes, blob_rel, blob_hash);
+        const rewritten = if (blob) |blob_path| blk: {
+            const blob_bytes = try readFile(ctx.allocator, ctx.io, blob_path);
+            defer ctx.allocator.free(blob_bytes);
+            const blob_hash = try hashHexAlloc(ctx.allocator, blob_bytes);
+            defer ctx.allocator.free(blob_hash);
+            const blob_rel = try blobRelPath(ctx.allocator, blob_hash, fileExt(blob_path));
+            defer ctx.allocator.free(blob_rel);
+            break :blk try rewriteBlobMetadata(ctx.allocator, desc_bytes, blob_rel, blob_hash);
+        } else blk: {
+            if (parsed.artifact.len == 0) return error.MissingArtifact;
+            for (parsed.artifact) |artifact| {
+                if (!std.mem.startsWith(u8, artifact.url, "https://")) return error.ExternalArtifactUrlRequired;
+            }
+            break :blk try ctx.allocator.dupe(u8, desc_bytes);
+        };
         defer ctx.allocator.free(rewritten);
         const desc_abs = try descriptorPath(ctx.allocator, registry, parsed.package.name, parsed.package.version);
         defer ctx.allocator.free(desc_abs);
@@ -459,9 +468,17 @@ pub const RegistryPushCommand = struct {
             if (!self.yes) return error.ConfirmationRequired;
         }
 
-        const blob_abs = try std.fs.path.join(ctx.allocator, &.{ registry, blob_rel });
-        defer ctx.allocator.free(blob_abs);
-        try copyFile(ctx.allocator, ctx.io, blob, blob_abs);
+        if (blob) |blob_path| {
+            const blob_bytes = try readFile(ctx.allocator, ctx.io, blob_path);
+            defer ctx.allocator.free(blob_bytes);
+            const blob_hash = try hashHexAlloc(ctx.allocator, blob_bytes);
+            defer ctx.allocator.free(blob_hash);
+            const blob_rel = try blobRelPath(ctx.allocator, blob_hash, fileExt(blob_path));
+            defer ctx.allocator.free(blob_rel);
+            const blob_abs = try std.fs.path.join(ctx.allocator, &.{ registry, blob_rel });
+            defer ctx.allocator.free(blob_abs);
+            try copyFile(ctx.allocator, ctx.io, blob_path, blob_abs);
+        }
         try mkdirp(ctx.io, dirname(desc_abs));
         try writeFile(ctx.io, desc_abs, rewritten);
         var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-push") else null;
@@ -616,6 +633,34 @@ test "registry authoring suite" {
         .blob = fake_blob_path,
     };
     try push_cmd.run(&ctx);
+
+    const external_desc_path = try std.fs.path.join(allocator, &.{ tmp_path, "external-package.toml" });
+    defer allocator.free(external_desc_path);
+    const external_desc =
+        \\[package]
+        \\name = "externalpkg"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\
+        \\[[artifacts]]
+        \\target = "any"
+        \\lua_abi = "lua54"
+        \\url = "https://github.com/moonstone-sh/example/releases/download/v1.0.0/externalpkg.tar.gz"
+        \\hash = "b3:externalhash"
+        \\format = "tar.gz"
+        \\bytes = 100
+        \\
+    ;
+    try writeFile(io, external_desc_path, external_desc);
+    try (RegistryPushCommand{
+        .registry = registry_path,
+        .descriptor = external_desc_path,
+    }).run(&ctx);
+    const stored_external_path = try descriptorPath(allocator, registry_path, "externalpkg", "1.0.0");
+    defer allocator.free(stored_external_path);
+    const stored_external = try readFile(allocator, io, stored_external_path);
+    defer allocator.free(stored_external);
+    try std.testing.expectEqualStrings(external_desc, stored_external);
 
     const sqlite_zst = try std.fs.path.join(allocator, &.{ registry_path, "index.sqlite.zst" });
     defer allocator.free(sqlite_zst);
