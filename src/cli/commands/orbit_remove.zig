@@ -1,12 +1,14 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const ndjson = @import("ndjson.zig");
 
 pub const OrbitRemoveCommand = struct {
     pub const name = "remove";
     pub const description = "Remove an orbit declaration by name";
 
     positionals: []const []const u8 = &.{},
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -51,7 +53,10 @@ pub const OrbitRemoveCommand = struct {
             ctx.allocator.free(removed.name);
             ctx.allocator.free(removed.path);
             try writeManifest(ctx, &manifest);
-            try ctx.stdout.print("Removed orbit '{s}'.\n", .{orbit_name});
+            if (self.json) {
+                var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "orbit-remove");
+                try emitter.terminate(ctx.io, orbit_name, "ok", .{ .name = orbit_name });
+            } else try ctx.stdout.print("Removed orbit '{s}'.\n", .{orbit_name});
             return;
         }
 

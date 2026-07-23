@@ -161,10 +161,11 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
             .update = hasFlag(rest, "--update"),
             .replace = hasFlag(rest, "--replace"),
             .yes = hasFlag(rest, "--yes"),
+            .json = hasFlag(rest, "--json"),
         }).run(ctx);
     }
     if (std.mem.eql(u8, operation, "index") and rest.len >= 1 and std.mem.eql(u8, rest[0], "rebuild")) {
-        return (file_commands.RegistrySyncCommand{ .positionals = &.{resolved.target.path} }).run(ctx);
+        return (file_commands.RegistrySyncCommand{ .positionals = &.{resolved.target.path}, .json = hasFlag(rest, "--json") }).run(ctx);
     }
     if (std.mem.eql(u8, operation, "package") and rest.len >= 2 and std.mem.eql(u8, rest[0], "delete")) {
         const package = try splitPackageSpec(rest[1]);
@@ -172,6 +173,7 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
             .registry = resolved.target.path,
             .p_name = package.name,
             .version = package.version,
+            .json = hasFlag(rest, "--json"),
         }).run(ctx);
     }
     if (std.mem.eql(u8, operation, "fetch")) {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const ndjson = @import("ndjson.zig");
 
 pub const OrbitAddCommand = struct {
     pub const command_name = "add";
@@ -8,6 +9,7 @@ pub const OrbitAddCommand = struct {
 
     name: ?[]const u8 = null,
     path: ?[]const u8 = null,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -106,7 +108,10 @@ pub const OrbitAddCommand = struct {
             .path = try ctx.allocator.dupe(u8, relative_path),
         });
         try writeManifest(ctx, &root_manifest);
-        try ctx.stdout.print("Added orbit '{s}' at {s}.\n", .{ orbit_name, relative_path });
+        if (self.json) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "orbit-add");
+            try emitter.terminate(ctx.io, orbit_name, "ok", .{ .name = orbit_name, .path = relative_path });
+        } else try ctx.stdout.print("Added orbit '{s}' at {s}.\n", .{ orbit_name, relative_path });
     }
 };
 

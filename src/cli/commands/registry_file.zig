@@ -1,6 +1,7 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const ndjson = @import("ndjson.zig");
 
 fn hashHexAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
     var hash: [32]u8 = undefined;
@@ -119,7 +120,7 @@ fn rewriteBlobUrlIfNeeded(allocator: std.mem.Allocator, descriptor: []const u8, 
     return try allocator.dupe(u8, descriptor);
 }
 
-fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, registry: []const u8, name_for_root: []const u8) !void {
+fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, emitter: ?*ndjson.Emitter, registry: []const u8, name_for_root: []const u8) !void {
     const packages_root = try std.fs.path.join(allocator, &.{ registry, "packages" });
     defer allocator.free(packages_root);
     try mkdirp(io, packages_root);
@@ -316,7 +317,7 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
     const root_path = try std.fs.path.join(allocator, &.{ registry, "registry.toml" });
     defer allocator.free(root_path);
     try writeFile(io, root_path, registry_toml);
-    try stdout.print("Synced registry {s}: {d} package versions (built index.toml & index.sqlite.zst).\n", .{ registry, index_entries.items.len });
+    if (emitter) |e| try e.emit(io, .STATUS, "registry", "synced", .{ .path = registry, .packages = index_entries.items.len }) else try stdout.print("Synced registry {s}: {d} package versions (built index.toml & index.sqlite.zst).\n", .{ registry, index_entries.items.len });
 }
 
 pub const RegistryCreateCommand = struct {
@@ -349,7 +350,7 @@ pub const RegistryCreateCommand = struct {
         defer ctx.allocator.free(blobs_path);
         try mkdirp(ctx.io, packages_path);
         try mkdirp(ctx.io, blobs_path);
-        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, path, r_name);
+        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, null, path, r_name);
     }
 };
 
@@ -358,6 +359,7 @@ pub const RegistrySyncCommand = struct {
     pub const description = "Regenerate a local registry index";
     positionals: []const []const u8 = &.{},
     name_arg: ?[]const u8 = null,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -375,7 +377,10 @@ pub const RegistrySyncCommand = struct {
     pub fn run(self: RegistrySyncCommand, ctx: *router.Context) !void {
         if (self.positionals.len < 1) return error.MissingArgument;
         const r_name = self.name_arg orelse if (self.positionals.len >= 2) self.positionals[1] else "local";
-        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, self.positionals[0], r_name);
+        var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-sync") else null;
+        const emitter = if (emitter_obj) |*e| e else null;
+        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, emitter, self.positionals[0], r_name);
+        if (emitter) |e| try e.terminate(ctx.io, "registry-sync", "ok", .{ .path = self.positionals[0] });
     }
 };
 
@@ -389,6 +394,7 @@ pub const RegistryPushCommand = struct {
     update: bool = false,
     replace: bool = false,
     yes: bool = false,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -436,7 +442,10 @@ pub const RegistryPushCommand = struct {
         if (existing) |bytes| {
             if (std.mem.eql(u8, bytes, rewritten)) {
                 if (!self.update) return error.PackageVersionAlreadyPublished;
-                try ctx.stdout.print("Package {s}@{s} is already published with identical content.\n", .{ parsed.package.name, parsed.package.version });
+                if (self.json) {
+                    var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-push");
+                    try emitter.terminate(ctx.io, parsed.package.name, "ok", .{ .version = parsed.package.version, .unchanged = true });
+                } else try ctx.stdout.print("Package {s}@{s} is already published with identical content.\n", .{ parsed.package.name, parsed.package.version });
                 return;
             }
             if (!self.replace) return error.PackageVersionImmutable;
@@ -448,8 +457,10 @@ pub const RegistryPushCommand = struct {
         try copyFile(ctx.allocator, ctx.io, blob, blob_abs);
         try mkdirp(ctx.io, dirname(desc_abs));
         try writeFile(ctx.io, desc_abs, rewritten);
-        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, registry, "local");
-        try ctx.stdout.print("Pushed {s}@{s} to {s}.\n", .{ parsed.package.name, parsed.package.version, registry });
+        var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-push") else null;
+        const emitter = if (emitter_obj) |*e| e else null;
+        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, emitter, registry, "local");
+        if (emitter) |e| try e.terminate(ctx.io, parsed.package.name, "ok", .{ .version = parsed.package.version, .path = registry }) else try ctx.stdout.print("Pushed {s}@{s} to {s}.\n", .{ parsed.package.name, parsed.package.version, registry });
     }
 };
 
@@ -462,6 +473,7 @@ pub const RegistryPurgeCommand = struct {
     version: ?[]const u8 = null,
     descriptor: ?[]const u8 = null,
     blob: ?[]const u8 = null,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -521,8 +533,10 @@ pub const RegistryPurgeCommand = struct {
         const target = if (p_version) |ver| try descriptorPath(ctx.allocator, registry, p_name, ver) else try std.fs.path.join(ctx.allocator, &.{ registry, "packages", p_name });
         defer ctx.allocator.free(target);
         std.Io.Dir.cwd().deleteTree(ctx.io, target) catch |err| if (err != error.FileNotFound) return err;
-        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, registry, "local");
-        try ctx.stdout.print("Purged {s}{s}{s} from {s}.\n", .{ p_name, if (p_version != null) "@" else "", p_version orelse "", registry });
+        var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-purge") else null;
+        const emitter = if (emitter_obj) |*e| e else null;
+        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, emitter, registry, "local");
+        if (emitter) |e| try e.terminate(ctx.io, p_name, "ok", .{ .version = p_version, .path = registry }) else try ctx.stdout.print("Purged {s}{s}{s} from {s}.\n", .{ p_name, if (p_version != null) "@" else "", p_version orelse "", registry });
     }
 };
 

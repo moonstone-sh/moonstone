@@ -1,6 +1,7 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const ndjson = @import("ndjson.zig");
 
 const ValueKind = enum { string, boolean, integer };
 
@@ -167,7 +168,8 @@ pub const ConfigGetCommand = struct {
     pub const name = "get";
     pub const description = "Read an effective Moonstone configuration setting";
     positionals: []const []const u8 = &.{},
-    @"default": bool = false,
+    default: bool = false,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -176,7 +178,7 @@ pub const ConfigGetCommand = struct {
             \\Read one typed setting. --default prints the built-in value rather
             \\than a value set in the active configuration file.
             \\
-            , .{});
+        , .{});
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) ![]const []const u8 {
@@ -195,14 +197,20 @@ pub const ConfigGetCommand = struct {
         const content = try readConfig(ctx.allocator, ctx.io, config_file);
         defer ctx.allocator.free(content);
 
-        if (!self.@"default") if (assignmentRange(content, setting.section, setting.field)) |assignment| {
-            try ctx.stdout.print("{s} = {s} (config)\n", .{ setting.key, assignment.value });
+        if (!self.default) if (assignmentRange(content, setting.section, setting.field)) |assignment| {
+            if (self.json) {
+                var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "config-get");
+                try emitter.terminate(ctx.io, setting.key, "ok", .{ .value = assignment.value, .source = "config" });
+            } else try ctx.stdout.print("{s} = {s} (config)\n", .{ setting.key, assignment.value });
             return;
         };
 
         const value = try defaultValue(ctx.allocator, ctx.io, ctx.env, setting);
         defer ctx.allocator.free(value);
-        try ctx.stdout.print("{s} = {s} (default)\n", .{ setting.key, value });
+        if (self.json) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "config-get");
+            try emitter.terminate(ctx.io, setting.key, "ok", .{ .value = value, .source = "default" });
+        } else try ctx.stdout.print("{s} = {s} (default)\n", .{ setting.key, value });
     }
 };
 
@@ -210,6 +218,7 @@ pub const ConfigSetCommand = struct {
     pub const name = "set";
     pub const description = "Set a typed Moonstone configuration setting";
     positionals: []const []const u8 = &.{},
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -218,7 +227,7 @@ pub const ConfigSetCommand = struct {
             \\Set one supported setting in the active configuration file.
             \\Use `moon config unset <setting>` to restore normal precedence.
             \\
-            , .{});
+        , .{});
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) ![]const []const u8 {
@@ -237,7 +246,10 @@ pub const ConfigSetCommand = struct {
         const updated = try setValue(ctx.allocator, content, setting, literal);
         defer ctx.allocator.free(updated);
         try writeConfig(ctx.io, config_file, updated);
-        try ctx.stdout.print("Set {s} in {s}.\n", .{ setting.key, config_file });
+        if (self.json) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "config-set");
+            try emitter.terminate(ctx.io, setting.key, "ok", .{ .config_file = config_file, .value = literal });
+        } else try ctx.stdout.print("Set {s} in {s}.\n", .{ setting.key, config_file });
     }
 };
 
@@ -245,6 +257,7 @@ pub const ConfigUnsetCommand = struct {
     pub const name = "unset";
     pub const description = "Remove a Moonstone configuration override";
     positionals: []const []const u8 = &.{},
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -252,7 +265,7 @@ pub const ConfigUnsetCommand = struct {
             \\
             \\Remove one override from the active configuration file.
             \\
-            , .{});
+        , .{});
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) ![]const []const u8 {
@@ -267,11 +280,17 @@ pub const ConfigUnsetCommand = struct {
         const content = try readConfig(ctx.allocator, ctx.io, config_file);
         defer ctx.allocator.free(content);
         const updated = try unsetValue(ctx.allocator, content, setting) orelse {
-            try ctx.stdout.print("{s} is already using its default.\n", .{setting.key});
+            if (self.json) {
+                var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "config-unset");
+                try emitter.terminate(ctx.io, setting.key, "ok", .{ .config_file = config_file, .changed = false });
+            } else try ctx.stdout.print("{s} is already using its default.\n", .{setting.key});
             return;
         };
         defer ctx.allocator.free(updated);
         try writeConfig(ctx.io, config_file, updated);
-        try ctx.stdout.print("Unset {s} in {s}.\n", .{ setting.key, config_file });
+        if (self.json) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "config-unset");
+            try emitter.terminate(ctx.io, setting.key, "ok", .{ .config_file = config_file, .changed = true });
+        } else try ctx.stdout.print("Unset {s} in {s}.\n", .{ setting.key, config_file });
     }
 };
