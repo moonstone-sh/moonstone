@@ -11,9 +11,9 @@ abi = "5.4"
 
 [scripts]
 "test" = "busted -p '_spec%.moon$' spec/"
-"build" = "moonc -t dist src/"
+"build" = "moonc -t build src/"
 "run" = "moon src/main.moon"
-"dev" = "moonc -t dist src/ && lua dist/src/main.lua"
+"dev" = "moonc -t build src/ && lua build/src/main.lua"
 
 [[dependencies]]
 name = "dkjson"

@@ -13,12 +13,14 @@ return ballad.partiture(function(p)
 		outputs = { "./build" },
 	})
 
-	p.sink.none(assets)
-
 	local app = layout.exec(project, {
 		name = "teal-example",
 		bin = "teal-example",
 		entry = "build/main.lua",
+		bundle_runtime = true,
+		include = { "build/**" },
+		lua_paths = { "build", "lua", "src" },
+		depends_on = assets,
 	})
 
 	p.sink.directory(app, {

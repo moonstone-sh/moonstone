@@ -10,14 +10,15 @@ return ballad.partiture(function(p)
 
 	local assets = moonstone:run("build", {
 		inputs = { "./src/*.moon" },
-		outputs = { "./dist/src" },
+		outputs = { "./build/src" },
 	})
 
-	p.sink.none(assets)
-
 	local app = layout.exec(project, {
-		entry = "src/main.lua",
+		entry = "build/src/main.lua",
 		bundle_runtime = true,
+		include = { "build/src/**" },
+		lua_paths = { "build/src", "lua", "src" },
+		depends_on = assets,
 	})
 
 	p.sink.directory(app, {

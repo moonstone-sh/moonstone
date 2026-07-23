@@ -19,13 +19,6 @@ if [[ $# -gt 0 ]]; then
     fi
 fi
 
-# 1. Prepare environment
-source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
-
-export PATH="${MOON_BIN%/*}:${PATH}"
-export SANDBOX_DIR
-export MOONSTONE_REAL_LUAROCKS="${MOONSTONE_REAL_LUAROCKS:-1}"
-
 PASS=0
 FAIL=0
 
@@ -39,7 +32,13 @@ run_test_file() {
     echo "  Running Test: [${suite_name}] ${label}"
     echo "═══════════════════════════════════════════════════════════════════"
     
-    if bash "${test_file}"; then
+    if (
+        source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
+        export PATH="${MOON_BIN%/*}:${PATH}"
+        export SANDBOX_DIR
+        export MOONSTONE_REAL_LUAROCKS="${MOONSTONE_REAL_LUAROCKS:-1}"
+        bash "${test_file}"
+    ); then
         echo "  ✓ ${label} passed"
         ((PASS+=1))
     else
