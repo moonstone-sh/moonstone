@@ -47,46 +47,28 @@ jobs:
           echo "Building Moonstone release target matrix via 'zig build release'..."
           zig build release -Doptimize=ReleaseSafe
 
-          mkdir -p dist_archives
-          for bin in zig-out/bin/moon-${VERSION}-*; do
-            target="${bin#zig-out/bin/moon-${VERSION}-}"
-            normalized="${target}"
-            if [[ "$normalized" == "aarch64-linux-gnu" ]]; then
-              normalized="aarch64-linux"
-            elif [[ "$normalized" == "x86_64-linux-gnu" ]]; then
-              normalized="x86_64-linux"
-            elif [[ "$normalized" == "riscv64-linux-gnu" ]]; then
-              normalized="riscv64-linux"
-            fi
-
-            tmp_dir=$(mktemp -d)
-            cp "$bin" "$tmp_dir/moon"
-            (cd "$tmp_dir" && tar -czf "$GITHUB_WORKSPACE/dist_archives/moon-${normalized}.tar.gz" moon)
-            rm -rf "$tmp_dir"
-          done
-
-          cp dist_archives/*.tar.gz zig-out/bin/
+          python3 -m pip install --user blake3
+          python3 release-tools/package-release.py --overwrite
 
       - name: Compute Hashes
         id: hashes
         run: |
-          cd zig-out/bin
-          sha256sum moon-*.tar.gz > SHA256SUMS
-          if command -v b3sum >/dev/null 2>&1; then
-            b3sum moon-*.tar.gz > B3SUMS
-          fi
-          echo "mac_arm=$(sha256sum moon-aarch64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "mac_intel=$(sha256sum moon-x86_64-macos.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "linux_arm=$(sha256sum moon-aarch64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "linux_intel=$(sha256sum moon-x86_64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "riscv_linux=$(sha256sum moon-riscv64-linux.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "freebsd_arm=$(sha256sum moon-aarch64-freebsd.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "freebsd_intel=$(sha256sum moon-x86_64-freebsd.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          release_dir="dist/releases/${VERSION}"
+          hash_for() {
+            awk -v name="$1" '$2 == name { print $1; exit }' "$release_dir/SHA256SUMS"
+          }
+          echo "mac_arm=$(hash_for "moon-v${VERSION}-aarch64-macos.tar.gz")" >> $GITHUB_OUTPUT
+          echo "mac_intel=$(hash_for "moon-v${VERSION}-x86_64-macos.tar.gz")" >> $GITHUB_OUTPUT
+          echo "linux_arm=$(hash_for "moon-v${VERSION}-aarch64-linux-gnu.tar.gz")" >> $GITHUB_OUTPUT
+          echo "linux_intel=$(hash_for "moon-v${VERSION}-x86_64-linux-gnu.tar.gz")" >> $GITHUB_OUTPUT
+          echo "riscv_linux=$(hash_for "moon-v${VERSION}-riscv64-linux-gnu.tar.gz")" >> $GITHUB_OUTPUT
+          echo "freebsd_arm=$(hash_for "moon-v${VERSION}-aarch64-freebsd.tar.gz")" >> $GITHUB_OUTPUT
+          echo "freebsd_intel=$(hash_for "moon-v${VERSION}-x86_64-freebsd.tar.gz")" >> $GITHUB_OUTPUT
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: zig-out/bin/*.tar.gz
+          files: dist/releases/${{ env.VERSION }}/*
           generate_release_notes: true
 
   homebrew-publish:
@@ -122,36 +104,36 @@ jobs:
             version "${{ env.VERSION }}"
             
             if OS.mac? && Hardware::CPU.arm?
-              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-aarch64-macos.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-aarch64-macos.tar.gz"
               sha256 "${{ env.MAC_ARM }}"
             end
 
             if OS.mac? && Hardware::CPU.intel?
-              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-x86_64-macos.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-x86_64-macos.tar.gz"
               sha256 "${{ env.MAC_INTEL }}"
             end
 
             if OS.linux? && Hardware::CPU.arm?
-              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-aarch64-linux.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-aarch64-linux-gnu.tar.gz"
               sha256 "${{ env.LINUX_ARM }}"
             end
 
             if OS.linux? && Hardware::CPU.intel?
-              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-x86_64-linux.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-x86_64-linux-gnu.tar.gz"
               sha256 "${{ env.LINUX_INTEL }}"
             end
 
             if OS.linux? && Hardware::CPU.riscv64?
-              url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-riscv64-linux.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-riscv64-linux-gnu.tar.gz"
               sha256 "${{ env.RISCV_LINUX }}"
             end
 
             if OS.respond_to?(:freebsd?) && OS.freebsd?
               if Hardware::CPU.arm?
-                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-aarch64-freebsd.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-aarch64-freebsd.tar.gz"
                 sha256 "${{ env.FREEBSD_ARM }}"
               else
-                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-x86_64-freebsd.tar.gz"
+                url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-x86_64-freebsd.tar.gz"
                 sha256 "${{ env.FREEBSD_INTEL }}"
               end
             end
