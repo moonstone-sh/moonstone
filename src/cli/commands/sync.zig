@@ -1496,7 +1496,7 @@ pub const SyncCommand = struct {
                     } else if (self.locked) {
                         const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
                         if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
-                        if (!std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) return error.LockfileOutOfSync;
+                        if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) return error.LockfileOutOfSync;
                         if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
                     } else {
                         const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
@@ -1618,7 +1618,7 @@ pub const SyncCommand = struct {
             if (self.locked) {
                 const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
                 if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
-                if (!std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) return error.LockfileOutOfSync;
+                if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) return error.LockfileOutOfSync;
                 if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
             } else if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
                 const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";

@@ -167,7 +167,7 @@ fn resolveFromCandidates(
 
         // 1. Try prebuilt match
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
                 const dp = try allocator.dupe(u8, c.descriptor);
                 return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
             }
@@ -175,7 +175,7 @@ fn resolveFromCandidates(
 
         // 2. Try source fallback
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(art, options) and std.mem.eql(u8, art.target, "source")) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and std.mem.eql(u8, art.target, "source")) {
                 const dp = try allocator.dupe(u8, c.descriptor);
                 return candidate_mod.RemoteResolveResult{ .desc = desc, .artifact_idx = i, .descriptor_path = dp };
             }
@@ -216,7 +216,9 @@ fn matches(version: []const u8, range: []const u8) bool {
     return semver.matches(version, range);
 }
 
-fn artifactMatchesRuntimeAbi(art: manifest.RemoteArtifact, options: options_mod.ResolveOptions) bool {
+fn artifactMatchesRuntimeAbi(kind: manifest.Kind, art: manifest.RemoteArtifact, options: options_mod.ResolveOptions) bool {
+    if (kind == .runtime) return true;
+
     // If the artifact declares its own isolated runtime, it doesn't need to match the project runtime
     if (isResolvableRuntimeSpec(art.runtime)) return true;
 

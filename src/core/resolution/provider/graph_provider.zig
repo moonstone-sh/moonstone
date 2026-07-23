@@ -8,6 +8,7 @@ const manifest = @import("../../domain/manifest.zig");
 const term_mod = @import("../solver/term.zig");
 const candidate_mod = @import("../candidate.zig");
 const rocks_resolver = @import("../sources/luarocks.zig");
+const moonstone_registry_resolver = @import("../sources/moonstone_registry.zig");
 const path_resolver = @import("../sources/path.zig");
 const links_mod = @import("../../store/links.zig");
 const package_spec = @import("../../domain/package_spec.zig");
@@ -219,19 +220,27 @@ pub const RegistryProvider = struct {
         }
 
         // 3. Check store index
-        var resolver_str: ?[]const u8 = null;
-        for (self.targets) |t| {
-            if (std.mem.eql(u8, t.name, request.name)) {
-                if (t.resolver) |r| {
-                    resolver_str = switch (r) {
-                        .moonstone => "moonstone",
-                        .rocks => "rocks",
-                        .artifact => null,
-                        .path => return null,
-                        .link => return null,
-                    };
+        var resolver_str: ?[]const u8 = if (request.resolver) |resolver| switch (resolver) {
+            .moonstone => "moonstone",
+            .rocks => "rocks",
+            .artifact => null,
+            .path => return null,
+            .link => return null,
+        } else null;
+        if (resolver_str == null) {
+            for (self.targets) |t| {
+                if (std.mem.eql(u8, t.name, request.name)) {
+                    if (t.resolver) |r| {
+                        resolver_str = switch (r) {
+                            .moonstone => "moonstone",
+                            .rocks => "rocks",
+                            .artifact => null,
+                            .path => return null,
+                            .link => return null,
+                        };
+                    }
+                    break;
                 }
-                break;
             }
         }
         if (resolver_str == null) {
@@ -239,7 +248,6 @@ pub const RegistryProvider = struct {
                 resolver_str = resolverKindToStoreString(origin.child_resolver);
             }
         }
-
         const query = storeQueryForName(request.name, resolver_str, self.options.target);
         const candidates = try self.index.findCandidates(query);
         defer {
@@ -298,53 +306,50 @@ pub const RegistryProvider = struct {
 
         // 4. Check remote registries as fallback for transitive dependencies
         if (!self.options.offline and (resolver_str == null or std.mem.eql(u8, resolver_str.?, "moonstone"))) {
+            const exact_version_constraint = try std.fmt.allocPrint(self.allocator, "={s}", .{request.version});
+            defer self.allocator.free(exact_version_constraint);
             for (self.registries) |reg| {
-                var client = registry.RegistryClient.init(self.allocator, self.io, reg.url, reg.token, self.env);
-                defer client.deinit();
-                const idx = client.fetch_index() catch continue;
-                defer idx.deinit(self.allocator);
-                const private_idx = client.fetch_private_index() catch null;
-                defer if (private_idx) |private| private.deinit(self.allocator);
+                var remote = moonstone_registry_resolver.resolve_remote(
+                    self.allocator,
+                    self.io,
+                    request.name,
+                    exact_version_constraint,
+                    reg.url,
+                    reg.token,
+                    self.options,
+                    self.env,
+                ) catch continue;
+                defer remote.desc.deinit(self.allocator);
+                defer self.allocator.free(remote.descriptor_path);
 
-                for (0..2) |index_number| {
-                    const packages = if (index_number == 0) idx.package else if (private_idx) |private| private.package else continue;
-                    for (packages) |pkg| {
-                        if (packageNamesMatch(pkg.name, request.name) and std.mem.eql(u8, pkg.version, request.version)) {
-                            var desc = try client.fetch_descriptor(pkg.descriptor);
-                            defer desc.deinit(self.allocator);
-
-                            const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
-                            const selected_artifact = desc.artifact[selected_artifact_idx];
-                            if (request.artifact_hash) |expected_hash| {
-                                if (!std.mem.eql(u8, selected_artifact.hash, expected_hash)) continue;
-                            }
-
-                            return candidate_mod.Candidate{
-                                .name = try self.allocator.dupe(u8, pkg.name),
-                                .version = try self.allocator.dupe(u8, pkg.version),
-                                .kind = pkg.kind,
-                                .artifact_hash = try self.allocator.dupe(u8, selected_artifact.hash),
-                                .lua_abi = try self.allocator.dupe(u8, selected_artifact.lua_abi),
-                                .lua_api = try self.allocator.dupe(u8, selected_artifact.lua_api),
-                                .runtime = try self.allocator.dupe(u8, selected_artifact.runtime),
-                                .runtime_artifact_hash = try self.allocator.dupe(u8, selected_artifact.runtime_artifact_hash),
-                                .remote_desc = try desc.clone(self.allocator),
-                                .registry_url = try self.allocator.dupe(u8, reg.url),
-                                .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
-                                .descriptor_path = try self.allocator.dupe(u8, pkg.descriptor),
-                                .artifact_idx = selected_artifact_idx,
-                                .origin = .{
-                                    .moonstone_registry = .{
-                                        .url = try self.allocator.dupe(u8, reg.url),
-                                        .token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
-                                        .descriptor_path = try self.allocator.dupe(u8, pkg.descriptor),
-                                        .artifact_idx = selected_artifact_idx,
-                                    },
-                                },
-                            };
-                        }
-                    }
+                const selected_artifact = remote.desc.artifact[remote.artifact_idx];
+                if (request.artifact_hash) |expected_hash| {
+                    if (!std.mem.eql(u8, selected_artifact.hash, expected_hash)) continue;
                 }
+
+                return candidate_mod.Candidate{
+                    .name = try self.allocator.dupe(u8, remote.desc.package.name),
+                    .version = try self.allocator.dupe(u8, remote.desc.package.version),
+                    .kind = remote.desc.package.kind,
+                    .artifact_hash = try self.allocator.dupe(u8, selected_artifact.hash),
+                    .lua_abi = try self.allocator.dupe(u8, selected_artifact.lua_abi),
+                    .lua_api = try self.allocator.dupe(u8, selected_artifact.lua_api),
+                    .runtime = try self.allocator.dupe(u8, selected_artifact.runtime),
+                    .runtime_artifact_hash = try self.allocator.dupe(u8, selected_artifact.runtime_artifact_hash),
+                    .remote_desc = try remote.desc.clone(self.allocator),
+                    .registry_url = try self.allocator.dupe(u8, reg.url),
+                    .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
+                    .descriptor_path = try self.allocator.dupe(u8, remote.descriptor_path),
+                    .artifact_idx = remote.artifact_idx,
+                    .origin = .{
+                        .moonstone_registry = .{
+                            .url = try self.allocator.dupe(u8, reg.url),
+                            .token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
+                            .descriptor_path = try self.allocator.dupe(u8, remote.descriptor_path),
+                            .artifact_idx = remote.artifact_idx,
+                        },
+                    },
+                };
             }
         }
 
@@ -489,6 +494,14 @@ pub const RegistryProvider = struct {
         }
 
         // 2. Check local store
+        var direct_target_range: ?semver.VersionRange = null;
+        for (self.targets) |target| {
+            if (packageNamesMatch(target.name, name)) {
+                direct_target_range = target.range;
+                break;
+            }
+        }
+        var local_target_satisfies_constraint = false;
         const may_check_store = if (res_constraint) |rc| rc != .path and rc != .link else true;
         if (may_check_store) {
             var resolver_filter: ?[]const u8 = null;
@@ -542,7 +555,25 @@ pub const RegistryProvider = struct {
                     return err;
                 };
 
+                // Store entries are usable only after their manifest has been
+                // committed. Prune interrupted/partial directories here so
+                // dependency expansion never fails on a missing manifest.
+                if (!std.mem.eql(u8, cand.artifact_hash, "link") and !std.mem.eql(u8, cand.artifact_hash, "path")) {
+                    const manifest_path = try std.fs.path.join(self.allocator, &.{ cand.path, "manifest.toml" });
+                    defer self.allocator.free(manifest_path);
+                    std.Io.Dir.cwd().access(self.io, manifest_path, .{}) catch |err| {
+                        if (err == error.FileNotFound) {
+                            self.index.delete_artifact(cand.artifact_hash) catch {};
+                            continue;
+                        }
+                        return err;
+                    };
+                }
+
                 const v = try semver.Version.parseCloned(arena, cand.version);
+                if (direct_target_range) |range| {
+                    local_target_satisfies_constraint = local_target_satisfies_constraint or range.contains(v);
+                }
                 const origin = if (std.mem.eql(u8, cand.artifact_hash, "link"))
                     candidate_mod.Origin{ .link = try arena.dupe(u8, cand.path) }
                 else if (std.mem.eql(u8, cand.artifact_hash, "path"))
@@ -568,7 +599,10 @@ pub const RegistryProvider = struct {
             }
         }
 
-        if (versions.items.len > 0 and self.options.prefer_local) {
+        // Prefer a local direct dependency only while it still satisfies the
+        // manifest constraint. This keeps existing locks stable without
+        // hiding a newer remote candidate required by a changed constraint.
+        if (self.options.prefer_local and local_target_satisfies_constraint) {
             return try versions.toOwnedSlice(self.allocator);
         }
 

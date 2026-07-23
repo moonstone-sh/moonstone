@@ -5,6 +5,7 @@ const lockfile_mod = moonstone.domain.lockfile;
 const plan_mod = moonstone.materialization.plan;
 const executor_mod = moonstone.materialization.executor;
 const host_resolver = moonstone.tools.host_resolver;
+const locked_realizer = moonstone.resolution.locked_realizer;
 
 test "replay contract v2 lockfile parse and roundtrip" {
     const allocator = std.testing.allocator;
@@ -67,6 +68,44 @@ test "legacy binary registry entries require their exact artifact" {
 
     try std.testing.expectEqual(@as(usize, 1), lf.packages.items.len);
     try std.testing.expectEqual(replay_mod.ReplayMode.artifact_only, lf.packages.items[0].replay_mode);
+}
+
+test "native locks select host artifacts without pinning one platform hash" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\[[package]]
+        \\name = "moonstone/luajit"
+        \\version = "2.1.0"
+        \\kind = "runtime"
+        \\recipe_hash = "b3:recipe-macos"
+        \\artifact_hash = "b3:artifact-macos"
+        \\replay_mode = "artifact_only"
+        \\runtime = "5.4"
+        \\lua_abi = "lua51"
+        \\target = "native"
+        \\source_kind = "runtime"
+        \\resolver = "moonstone"
+        \\
+        \\[[package]]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.24"
+        \\kind = "bin"
+        \\recipe_hash = "b3:recipe-any"
+        \\artifact_hash = "b3:artifact-any"
+        \\replay_mode = "artifact_only"
+        \\runtime = "5.4"
+        \\lua_abi = "5.1"
+        \\target = "any"
+        \\source_kind = "bin"
+        \\resolver = "moonstone"
+        \\
+    ;
+
+    var lf = try lockfile_mod.LockFile.parse(allocator, content);
+    defer lf.deinit();
+
+    try std.testing.expect(!locked_realizer.requiresExactArtifactHash(&lf.packages.items[0]));
+    try std.testing.expect(locked_realizer.requiresExactArtifactHash(&lf.packages.items[1]));
 }
 
 test "canonical plan hash stability and tamper detection" {

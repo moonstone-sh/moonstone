@@ -39,6 +39,14 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
     return .exact_artifact_required;
 }
 
+/// A `native` lock selects the artifact for the host that replays it. Its
+/// package identity and provenance remain locked, but its byte-level artifact
+/// hash is necessarily platform-specific (for example, macOS versus Linux
+/// runtimes and native Lua modules).
+pub fn requiresExactArtifactHash(entry: *const LockEntry) bool {
+    return !std.mem.eql(u8, entry.target, "native");
+}
+
 const graph_provider = @import("provider/graph_provider.zig");
 
 pub fn ensureLockedArtifact(
@@ -52,13 +60,15 @@ pub fn ensureLockedArtifact(
 ) !RealizeResult {
     _ = store_drv;
     const coordinator_mod = @import("coordinator.zig");
+    const exact_artifact_hash = if (requiresExactArtifactHash(entry)) entry.artifact_hash else "";
+    const requested_artifact_hash: ?[]const u8 = if (exact_artifact_hash.len > 0) exact_artifact_hash else null;
     // 1. Check local CAS index by artifact_hash
     if (entry.artifact_hash.len > 0 and !std.mem.eql(u8, entry.artifact_hash, "link") and !std.mem.eql(u8, entry.artifact_hash, "path")) {
         const req = package_provider.ArtifactRequest{
             .name = entry.name,
             .version = entry.version,
             .resolver = if (entry.resolver.len > 0) coordinator_mod.CoordinatorKind.fromString(entry.resolver) catch null else null,
-            .artifact_hash = entry.artifact_hash,
+            .artifact_hash = requested_artifact_hash,
             .runtime = if (entry.runtime.len > 0) entry.runtime else null,
             .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else null,
         };
@@ -75,11 +85,13 @@ pub fn ensureLockedArtifact(
     // searches the configured registries for an exact remote artifact, so do
     // not fall back to an unrelated default registry here.
     if (entry.replay_mode == .artifact_only) {
+        error_context.setFmt(allocator, "The locked artifact for {s}@{s} is unavailable for target `{s}`. This package is artifact-only; restore the matching registry artifact or update the lockfile.", .{ entry.name, entry.version, entry.target });
         return error.ExactArtifactRequired;
     }
 
     const capability = assessMaterializerCapability(entry.source_kind);
     if (capability == .exact_artifact_required and entry.replay_mode != .declared_host) {
+        error_context.setFmt(allocator, "The locked artifact for {s}@{s} has source kind `{s}`, which cannot be replayed from source. Restore the matching registry artifact or update the lockfile.", .{ entry.name, entry.version, entry.source_kind });
         return error.ExactArtifactRequired;
     }
 
@@ -142,7 +154,11 @@ pub fn ensureLockedArtifact(
         .target = if (entry.target.len > 0) entry.target else "native",
     };
 
-    var cand = luarocks_src.resolve(allocator, io, entry.name, entry.version, resolve_opts, env) catch |err| {
+    const rocks_lookup_name = try allocator.dupe(u8, entry.name);
+    defer allocator.free(rocks_lookup_name);
+    for (rocks_lookup_name) |*byte| byte.* = std.ascii.toLower(byte.*);
+
+    var cand = luarocks_src.resolve(allocator, io, rocks_lookup_name, entry.version, resolve_opts, env) catch |err| {
         if (policy.offline and (err == error.NetworkDenied or err == error.HttpFailed)) {
             return error.OfflineReplayInputUnavailable;
         }
@@ -169,7 +185,7 @@ pub fn ensureLockedArtifact(
     }
 
     // Verify artifact_hash match
-    if (entry.artifact_hash.len > 0 and !std.mem.eql(u8, cand.artifact_hash, entry.artifact_hash)) {
+    if (exact_artifact_hash.len > 0 and !std.mem.eql(u8, cand.artifact_hash, exact_artifact_hash)) {
         error_context.setFmt(allocator, "Locked artifact hash mismatch for {s}@{s}. Expected {s}, but resolution produced {s}. Restore the exact artifact or run 'moon sync --update' to create a new lockfile.", .{ entry.name, entry.version, entry.artifact_hash, cand.artifact_hash });
         return error.ArtifactHashMismatch;
     }
