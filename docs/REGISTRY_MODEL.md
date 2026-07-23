@@ -583,6 +583,25 @@ mst_v0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 The registry validates tokens against its internal database.  The client treats
 them as opaque strings.
 
+### Project credential providers
+
+Project manifests declare the exact registry transport and may reference a
+private executable credential provider. Moonstone never stores the provider's
+output in `moonstone.toml`, the lockfile, the store, or diagnostics:
+
+```toml
+[registries.company]
+url = "https://registry.company.internal/v0"
+credential_provider = "./company.auth.lua"
+```
+
+Configure the reference with `moon registry company: auth --file
+./company.auth.lua`. Moonstone adds `*.auth.lua` to `.gitignore`; the provider
+may read environment variables or call OS credential tools, but it must not
+print secrets to stderr. Providers negotiate a versioned JSON request/response
+protocol and currently serve read credentials only. Remote publication remains
+an external deployment concern for the static registry tree.
+
 ---
 
 ## CDN & Edge Caching

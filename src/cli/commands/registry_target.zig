@@ -25,7 +25,7 @@ fn usage(stdout: *std.Io.Writer) !void {
         \\are resolved from the user config and current project, with project
         \\entries taking precedence.
         \\
-        , .{});
+    , .{});
 }
 
 fn targetForName(ctx: *router.Context, name: []const u8) !Target {
@@ -71,6 +71,39 @@ fn splitPackageSpec(spec: []const u8) !struct { name: []const u8, version: []con
     return .{ .name = spec[0..at], .version = spec[at + 1 ..] };
 }
 
+fn configureCredentialProvider(ctx: *router.Context, registry_name: []const u8, provider_path: []const u8) !void {
+    const content = try std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer ctx.allocator.free(content);
+    var project = try moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content);
+    defer project.deinit(ctx.allocator);
+
+    const config = project.registries.getPtr(registry_name) orelse return error.RegistryNotFound;
+    if (config.credential_provider) |old| ctx.allocator.free(old);
+    config.credential_provider = try ctx.allocator.dupe(u8, provider_path);
+
+    const manifest_file = try std.Io.Dir.cwd().createFile(ctx.io, "moonstone.toml", .{});
+    defer manifest_file.close(ctx.io);
+    var writer = std.Io.Writer.Allocating.init(ctx.allocator);
+    defer writer.deinit();
+    try project.serialize(ctx.allocator, &writer.writer);
+    try writer.writer.flush();
+    try manifest_file.writeStreamingAll(ctx.io, writer.writer.buffer[0..writer.writer.end]);
+
+    const current_ignore = std.Io.Dir.cwd().readFileAlloc(ctx.io, ".gitignore", ctx.allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => try ctx.allocator.dupe(u8, ""),
+        else => return err,
+    };
+    defer ctx.allocator.free(current_ignore);
+    if (std.mem.indexOf(u8, current_ignore, "*.auth.lua") == null) {
+        const ignore_file = try std.Io.Dir.cwd().createFile(ctx.io, ".gitignore", .{});
+        defer ignore_file.close(ctx.io);
+        try ignore_file.writeStreamingAll(ctx.io, current_ignore);
+        if (current_ignore.len > 0 and current_ignore[current_ignore.len - 1] != '\n') try ignore_file.writeStreamingAll(ctx.io, "\n");
+        try ignore_file.writeStreamingAll(ctx.io, "*.auth.lua\n");
+    }
+    try ctx.stdout.print("Configured credential provider for registry '{s}'.\n", .{registry_name});
+}
+
 fn doctor(ctx: *router.Context, registry_path: []const u8) !void {
     const required = [_][]const u8{ "registry.toml", "index.toml", "index.sqlite.zst", "blobs/b3" };
     var missing = std.ArrayList([]const u8).empty;
@@ -104,6 +137,12 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
         const path = option(args[1..], "--file") orelse return error.MissingArgument;
         const name = option(args[1..], "--name") orelse "local";
         return (file_commands.RegistryCreateCommand{ .positionals = &.{path}, .name_arg = name }).run(ctx);
+    }
+
+    if (args.len >= 2 and std.mem.endsWith(u8, args[0], ":") and std.mem.eql(u8, args[1], "auth")) {
+        const registry_name = args[0][0 .. args[0].len - 1];
+        const provider_path = option(args[2..], "--file") orelse return error.MissingArgument;
+        return configureCredentialProvider(ctx, registry_name, provider_path);
     }
 
     const resolved = try targetFromArgs(ctx, args);
@@ -184,7 +223,7 @@ pub fn complete(args: []const []const u8, ctx: *router.Context) ![]const []const
     }
 
     if (std.mem.endsWith(u8, args[0], ":") or std.mem.eql(u8, args[0], "--file")) {
-        const verbs = [_][]const u8{ "publish", "index", "fetch", "package", "settings", "doctor" };
+        const verbs = [_][]const u8{ "publish", "index", "fetch", "package", "settings", "doctor", "auth" };
         for (verbs) |verb| if (std.mem.startsWith(u8, verb, prefix)) try suggestions.append(ctx.allocator, verb);
     }
     return suggestions.toOwnedSlice(ctx.allocator);

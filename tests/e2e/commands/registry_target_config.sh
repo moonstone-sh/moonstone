@@ -18,8 +18,6 @@ home_directory = "${WORKDIR}/configured-home"
 timeout = 7
 retries = 1
 
-[registries]
-user = { path = "${WORKDIR}/user-registry", priority = 5 }
 TOML
 
 cat > "${WORKDIR}/project/moonstone.toml" <<TOML
@@ -35,6 +33,8 @@ abi = "5.4"
 
 [registries]
 project = { path = "${WORKDIR}/project-registry", priority = 10 }
+user = { path = "${WORKDIR}/user-registry", priority = 5 }
+profiled = { path = "${WORKDIR}/profiled-registry", priority = 4 }
 TOML
 
 moon --config-file="${WORKDIR}/config.toml" config show > "${WORKDIR}/config-show.log"
@@ -42,8 +42,11 @@ grep -Fq "Config File:            ${WORKDIR}/config.toml" "${WORKDIR}/config-sho
 grep -Fq "Data Directory:         ${WORKDIR}/configured-home/data" "${WORKDIR}/config-show.log"
 
 moon --config-file="${WORKDIR}/config.toml" registry init --file "${WORKDIR}/user-registry" --name user
+cd "${WORKDIR}/project"
 moon --config-file="${WORKDIR}/config.toml" registry user: settings show | grep -Fq 'name = "user"'
 moon --config-file="${WORKDIR}/config.toml" registry user: doctor | grep -Fq 'is healthy'
+moon --config-file="${WORKDIR}/config.toml" registry init --file "${WORKDIR}/profiled-registry" --name profiled
+moon --config-file="${WORKDIR}/config.toml" registry profiled: doctor | grep -Fq 'is healthy'
 
 mkdir -p "${WORKDIR}/artifact"
 printf 'return "registry target"\n' > "${WORKDIR}/artifact/module.lua"
@@ -76,9 +79,12 @@ if moon --config-file="${WORKDIR}/config.toml" registry user: publish --descript
     exit 1
 fi
 
-cd "${WORKDIR}/project"
+moon registry project: auth --file ./project.auth.lua | grep -Fq "Configured credential provider"
+grep -Fq 'credential_provider = "./project.auth.lua"' moonstone.toml
+grep -Fxq '*.auth.lua' .gitignore
 moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry " > "${WORKDIR}/completions"
 grep -qx 'user:' "${WORKDIR}/completions"
+grep -qx 'profiled:' "${WORKDIR}/completions"
 grep -qx 'project:' "${WORKDIR}/completions"
 moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry project: " | grep -qx 'publish'
 

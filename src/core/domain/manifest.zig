@@ -1393,6 +1393,16 @@ pub const MoonstoneToml = struct {
             for (res.default_order) |o| allocator.free(o);
             allocator.free(res.default_order);
         }
+        if (self.build) |*build| {
+            var build_env_it = build.env.iterator();
+            while (build_env_it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                if (entry.value_ptr.value) |value| allocator.free(value);
+                if (entry.value_ptr.from) |from| allocator.free(from);
+                if (entry.value_ptr.default) |default| allocator.free(default);
+            }
+            build.env.deinit(allocator);
+        }
         for (self.orbits.items) |o| {
             allocator.free(o.name);
             allocator.free(o.path);
@@ -1406,7 +1416,6 @@ pub const MoonstoneToml = struct {
     /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match
     /// the library's expected structure more closely if automated serialization is desired.
     pub fn serialize(self: MoonstoneToml, allocator: std.mem.Allocator, writer: anytype) !void {
-        _ = allocator;
         try writer.print("[package]\n", .{});
         try writer.print("name = ", .{});
         try writeTomlString(writer, self.package.name);
@@ -1430,24 +1439,143 @@ pub const MoonstoneToml = struct {
         try writer.print("\n", .{});
 
         if (self.scripts.count() > 0) {
-            try writer.print("\n[scripts]\n", .{});
+            const ScriptEntry = struct {
+                key: []const u8,
+                value: []const u8,
+            };
+            var entries = std.ArrayList(ScriptEntry).empty;
+            defer entries.deinit(allocator);
+
             var it = self.scripts.iterator();
             while (it.next()) |entry| {
-                try writeTomlString(writer, entry.key_ptr.*);
+                try entries.append(allocator, .{
+                    .key = entry.key_ptr.*,
+                    .value = entry.value_ptr.*,
+                });
+            }
+            std.mem.sort(ScriptEntry, entries.items, {}, struct {
+                fn lessThan(_: void, left: ScriptEntry, right: ScriptEntry) bool {
+                    return std.mem.order(u8, left.key, right.key) == .lt;
+                }
+            }.lessThan);
+
+            try writer.print("\n[scripts]\n", .{});
+            for (entries.items) |entry| {
+                try writeTomlString(writer, entry.key);
                 try writer.print(" = ", .{});
-                try writeTomlString(writer, entry.value_ptr.*);
+                try writeTomlString(writer, entry.value);
                 try writer.print("\n", .{});
             }
         }
 
+        for (self.orbits.items) |orbit| {
+            try writer.print("\n[[orbits.member]]\n", .{});
+            try writer.print("name = ", .{});
+            try writeTomlString(writer, orbit.name);
+            try writer.print("\npath = ", .{});
+            try writeTomlString(writer, orbit.path);
+            try writer.print("\n", .{});
+        }
+
+        if (self.build) |build| {
+            if (build.env.count() > 0) {
+                const BuildEnvEntry = struct {
+                    key: []const u8,
+                    value: BuildEnvVar,
+                };
+                var entries = std.ArrayList(BuildEnvEntry).empty;
+                defer entries.deinit(allocator);
+
+                var it = build.env.iterator();
+                while (it.next()) |entry| {
+                    try entries.append(allocator, .{
+                        .key = entry.key_ptr.*,
+                        .value = entry.value_ptr.*,
+                    });
+                }
+                std.mem.sort(BuildEnvEntry, entries.items, {}, struct {
+                    fn lessThan(_: void, left: BuildEnvEntry, right: BuildEnvEntry) bool {
+                        return std.mem.order(u8, left.key, right.key) == .lt;
+                    }
+                }.lessThan);
+
+                try writer.print("\n[build.env]\n", .{});
+                for (entries.items) |entry| {
+                    try writeTomlString(writer, entry.key);
+                    try writer.print(" = ", .{});
+                    if (entry.value.value) |value| {
+                        try writeTomlString(writer, value);
+                    } else {
+                        try writer.writeAll("{ ");
+                        var wrote_field = false;
+                        if (entry.value.from) |from| {
+                            try writer.print("from = ", .{});
+                            try writeTomlString(writer, from);
+                            wrote_field = true;
+                        }
+                        if (entry.value.optional) {
+                            if (wrote_field) try writer.print(", ", .{});
+                            try writer.print("optional = true", .{});
+                            wrote_field = true;
+                        }
+                        if (entry.value.default) |default| {
+                            if (wrote_field) try writer.print(", ", .{});
+                            try writer.print("default = ", .{});
+                            try writeTomlString(writer, default);
+                        }
+                        try writer.writeAll(" }");
+                    }
+                    try writer.print("\n", .{});
+                }
+            }
+        }
+
         if (self.registries.count() > 0) {
+            const RegistryEntry = struct {
+                key: []const u8,
+                value: RegistryConfig,
+            };
+            var entries = std.ArrayList(RegistryEntry).empty;
+            defer entries.deinit(allocator);
+
             var it = self.registries.iterator();
             while (it.next()) |entry| {
-                try writer.print("\n[registries.\"{s}\"]\n", .{entry.key_ptr.*});
-                if (entry.value_ptr.url) |u| try writer.print("url = \"{s}\"\n", .{u});
-                if (entry.value_ptr.path) |p| try writer.print("path = \"{s}\"\n", .{p});
-                try writer.print("priority = {d}\n", .{entry.value_ptr.priority});
-                if (entry.value_ptr.token) |t| try writer.print("token = \"{s}\"\n", .{t});
+                try entries.append(allocator, .{
+                    .key = entry.key_ptr.*,
+                    .value = entry.value_ptr.*,
+                });
+            }
+            std.mem.sort(RegistryEntry, entries.items, {}, struct {
+                fn lessThan(_: void, left: RegistryEntry, right: RegistryEntry) bool {
+                    return std.mem.order(u8, left.key, right.key) == .lt;
+                }
+            }.lessThan);
+
+            for (entries.items) |entry| {
+                try writer.print("\n[registries.", .{});
+                try writeTomlString(writer, entry.key);
+                try writer.print("]\n", .{});
+                if (entry.value.url) |url| {
+                    try writer.print("url = ", .{});
+                    try writeTomlString(writer, url);
+                    try writer.print("\n", .{});
+                }
+                if (entry.value.path) |path| {
+                    try writer.print("path = ", .{});
+                    try writeTomlString(writer, path);
+                    try writer.print("\n", .{});
+                }
+                try writer.print("priority = {d}\n", .{entry.value.priority});
+                if (entry.value.token) |token| {
+                    try writer.print("token = ", .{});
+                    try writeTomlString(writer, token);
+                    try writer.print("\n", .{});
+                }
+                if (entry.value.credential_provider) |provider| {
+                    try writer.print("credential_provider = ", .{});
+                    try writeTomlString(writer, provider);
+                    try writer.print("\n", .{});
+                }
             }
         }
 
@@ -1461,8 +1589,12 @@ pub const MoonstoneToml = struct {
             try writer.print("]\n", .{});
         }
 
+        const ordered_dependencies = try allocator.dupe(StoreDependency, self.dependencies.items);
+        defer allocator.free(ordered_dependencies);
+        std.mem.sort(StoreDependency, ordered_dependencies, {}, dependencyLessThan);
+
         // Dependencies at the bottom
-        for (self.dependencies.items) |dep| {
+        for (ordered_dependencies) |dep| {
             try writer.print("\n[[dependencies]]\n", .{});
             try writer.print("name = ", .{});
             try writeTomlString(writer, dep.name);
@@ -1490,6 +1622,39 @@ pub const MoonstoneToml = struct {
             }
         }
         try writer.writeByte('"');
+    }
+
+    fn dependencyLessThan(_: void, left: StoreDependency, right: StoreDependency) bool {
+        const left_role_rank = dependencyRoleRank(left.role);
+        const right_role_rank = dependencyRoleRank(right.role);
+        if (left_role_rank != right_role_rank) return left_role_rank < right_role_rank;
+
+        if (std.mem.order(u8, left.name, right.name) != .eq) {
+            return std.mem.order(u8, left.name, right.name) == .lt;
+        }
+
+        const left_resolver = left.resolver orelse "";
+        const right_resolver = right.resolver orelse "";
+        if (std.mem.order(u8, left_resolver, right_resolver) != .eq) {
+            return std.mem.order(u8, left_resolver, right_resolver) == .lt;
+        }
+
+        if (std.mem.order(u8, left.constraint, right.constraint) != .eq) {
+            return std.mem.order(u8, left.constraint, right.constraint) == .lt;
+        }
+
+        return !left.optional and right.optional;
+    }
+
+    fn dependencyRoleRank(role: DependencyRole) u8 {
+        return switch (role) {
+            .tool => 0,
+            .dev => 1,
+            .runtime => 2,
+            .helper => 3,
+            .external => 4,
+            .optional => 5,
+        };
     }
 
     pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool) !void {
@@ -1574,11 +1739,13 @@ pub const RegistryConfig = struct {
     path: ?[]const u8 = null,
     priority: i32 = 0,
     token: ?[]const u8 = null,
+    credential_provider: ?[]const u8 = null,
 
     pub fn deinit(self: RegistryConfig, allocator: std.mem.Allocator) void {
         if (self.url) |u| allocator.free(u);
         if (self.path) |p| allocator.free(p);
         if (self.token) |t| allocator.free(t);
+        if (self.credential_provider) |provider| allocator.free(provider);
     }
 };
 
@@ -1606,6 +1773,7 @@ pub fn extractRegistriesFromToml(
                     .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
                     .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
                     .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
+                    .credential_provider = if (rt.get("credential_provider")) |provider| try allocator.dupe(u8, provider.string) else null,
                 });
             }
         },
@@ -1622,6 +1790,7 @@ pub fn extractRegistriesFromToml(
                     .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
                     .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
                     .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
+                    .credential_provider = if (rt.get("credential_provider")) |provider| try allocator.dupe(u8, provider.string) else null,
                 });
             }
         },
@@ -1754,6 +1923,213 @@ test "MoonstoneToml serializes simple dependencies as flat runtime roles" {
     try std.testing.expect(std.mem.indexOf(u8, serialized, "name = \"inspect\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"dependency\"") == null);
+}
+
+test "MoonstoneToml serializes dependencies by role then lexicographic name" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "ordered-dependencies"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[[dependencies]]
+        \\name = "zeta-runtime"
+        \\constraint = "^1.0.0"
+        \\role = "runtime"
+        \\
+        \\[[dependencies]]
+        \\name = "zeta-tool"
+        \\constraint = "^1.0.0"
+        \\role = "tool"
+        \\
+        \\[[dependencies]]
+        \\name = "alpha-runtime"
+        \\constraint = "^1.0.0"
+        \\role = "runtime"
+        \\
+        \\[[dependencies]]
+        \\name = "bravo-dev"
+        \\constraint = "^1.0.0"
+        \\role = "dev"
+        \\
+        \\[[dependencies]]
+        \\name = "alpha-tool"
+        \\constraint = "^1.0.0"
+        \\role = "tool"
+        \\
+        \\[[dependencies]]
+        \\name = "helper"
+        \\constraint = "^1.0.0"
+        \\role = "helper"
+        \\
+        \\[[dependencies]]
+        \\name = "external"
+        \\constraint = "^1.0.0"
+        \\role = "external"
+        \\
+        \\[[dependencies]]
+        \\name = "optional"
+        \\constraint = "^1.0.0"
+        \\role = "optional"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+
+    const serialized = out.writer.buffer[0..out.writer.end];
+    const expected_names = [_][]const u8{
+        "alpha-tool",
+        "zeta-tool",
+        "bravo-dev",
+        "alpha-runtime",
+        "zeta-runtime",
+        "helper",
+        "external",
+        "optional",
+    };
+    var previous_index: usize = 0;
+    for (expected_names) |name| {
+        const needle = try std.fmt.allocPrint(allocator, "name = \"{s}\"", .{name});
+        defer allocator.free(needle);
+        const index = std.mem.indexOfPos(u8, serialized, previous_index, needle) orelse return error.TestExpectedEqual;
+        try std.testing.expect(index >= previous_index);
+        previous_index = index + needle.len;
+    }
+}
+
+test "MoonstoneToml round-trips build environment configuration" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "build-environment"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[build.env]
+        \\OPENSSL_DIR = "/opt/homebrew/opt/openssl@3"
+        \\CC = { from = "CC", optional = true, default = "zig cc" }
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+
+    var round_tripped = try MoonstoneToml.parse(allocator, out.writer.buffer[0..out.writer.end]);
+    defer round_tripped.deinit(allocator);
+    const build = round_tripped.build orelse return error.TestExpectedEqual;
+    const openssl = build.env.get("OPENSSL_DIR") orelse return error.TestExpectedEqual;
+    const cc = build.env.get("CC") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("/opt/homebrew/opt/openssl@3", openssl.value.?);
+    try std.testing.expectEqualStrings("CC", cc.from.?);
+    try std.testing.expect(cc.optional);
+    try std.testing.expectEqualStrings("zig cc", cc.default.?);
+}
+
+test "MoonstoneToml round-trips every root configuration section" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "complete-manifest"
+        \\version = "1.2.3"
+        \\kind = "bin"
+        \\description = "round trip coverage"
+        \\
+        \\[interpreter]
+        \\name = "lua"
+        \\version = "5.4"
+        \\abi = "5.4"
+        \\
+        \\[scripts]
+        \\zeta = "lua zeta.lua"
+        \\alpha = "lua alpha.lua"
+        \\
+        \\[[orbits.member]]
+        \\name = "first"
+        \\path = "examples/first"
+        \\
+        \\[[orbits.member]]
+        \\name = "second"
+        \\path = "examples/second"
+        \\
+        \\[build.env]
+        \\OPENSSL_DIR = "/opt/openssl"
+        \\CC = { from = "CC", optional = true, default = "zig cc" }
+        \\
+        \\[registries."z-reg"]
+        \\url = "https://example.invalid/z"
+        \\priority = 20
+        \\
+        \\[registries."a-reg"]
+        \\path = "/tmp/a-reg"
+        \\priority = 10
+        \\token = "secret"
+        \\
+        \\[resolution]
+        \\default_order = ["rocks", "moonstone"]
+        \\
+        \\[[dependencies]]
+        \\name = "runtime-lib"
+        \\constraint = "^1.0.0"
+        \\resolver = "rocks"
+        \\role = "runtime"
+        \\
+        \\[[dependencies]]
+        \\name = "tooling"
+        \\constraint = "^2.0.0"
+        \\role = "tool"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+
+    const serialized = out.writer.buffer[0..out.writer.end];
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "\"alpha\" =") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "\"zeta\" =") orelse return error.TestExpectedEqual));
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "[registries.\"a-reg\"]") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "[registries.\"z-reg\"]") orelse return error.TestExpectedEqual));
+
+    var round_tripped = try MoonstoneToml.parse(allocator, serialized);
+    defer round_tripped.deinit(allocator);
+    try std.testing.expectEqualStrings("complete-manifest", round_tripped.package.name);
+    try std.testing.expectEqualStrings("round trip coverage", round_tripped.package.description.?);
+    try std.testing.expectEqualStrings("lua alpha.lua", round_tripped.scripts.get("alpha").?);
+    try std.testing.expectEqualStrings("lua zeta.lua", round_tripped.scripts.get("zeta").?);
+    try std.testing.expectEqual(@as(usize, 2), round_tripped.orbits.items.len);
+    try std.testing.expectEqualStrings("first", round_tripped.orbits.items[0].name);
+    try std.testing.expectEqualStrings("examples/second", round_tripped.orbits.items[1].path);
+
+    const build = round_tripped.build orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("/opt/openssl", build.env.get("OPENSSL_DIR").?.value.?);
+    try std.testing.expectEqualStrings("zig cc", build.env.get("CC").?.default.?);
+
+    const a_registry = round_tripped.registries.get("a-reg").?;
+    const z_registry = round_tripped.registries.get("z-reg").?;
+    try std.testing.expectEqualStrings("/tmp/a-reg", a_registry.path.?);
+    try std.testing.expectEqualStrings("secret", a_registry.token.?);
+    try std.testing.expectEqualStrings("https://example.invalid/z", z_registry.url.?);
+    try std.testing.expectEqual(@as(i32, 20), z_registry.priority);
+
+    const resolution = round_tripped.resolution orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("rocks", resolution.default_order[0]);
+    try std.testing.expectEqualStrings("moonstone", resolution.default_order[1]);
+    try std.testing.expectEqual(@as(usize, 2), round_tripped.dependencies.items.len);
+    try std.testing.expectEqual(DependencyRole.tool, round_tripped.dependencies.items[0].role);
+    try std.testing.expectEqual(DependencyRole.runtime, round_tripped.dependencies.items[1].role);
 }
 
 test "MoonstoneToml rejects legacy dependency role" {
