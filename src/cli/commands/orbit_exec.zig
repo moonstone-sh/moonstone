@@ -56,7 +56,9 @@ pub const OrbitExecCommand = struct {
         }
 
         const target = self.positionals[0];
-        const cmd_args = self.positionals[1..];
+        const remaining_args = self.positionals[1..];
+        const cmd_args = if (remaining_args.len > 0 and std.mem.eql(u8, remaining_args[0], "--")) remaining_args[1..] else remaining_args;
+        if (cmd_args.len == 0) return error.MissingArgument;
 
         const project_root = try moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".");
         defer project_root.deinit(ctx.allocator);

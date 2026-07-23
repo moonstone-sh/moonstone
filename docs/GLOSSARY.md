@@ -150,13 +150,32 @@ A package declares capabilities via `[[provides]]` entries in its descriptor.
 
 ## Orbits (Workspaces)
 
-An **Orbit** is a workspace setup where multiple local projects/packages are developed together under a single root project, sharing a unified deterministic environment and `moonstone.lock`.
+An **Orbit** is a workspace setup where multiple local projects/packages are
+managed from a single root project. Each child remains an independent
+Moonstone project with its own isolated environment and `moonstone.lock`.
 
 **Key Concepts:**
 - Defined using the `[[orbits.member]]` array in `moonstone.toml` of the root project.
 - A member specifies a `name` and a `path`.
-- When `moon sync` or `moon run` runs, it cascades environment resolution across all members of the orbit.
-- Execution machinery uses `moon exec`/`moon run` without introducing a separate executor.
+- An orbit path must be a child project directory with its own valid `moonstone.toml`.
+- Orbit names and paths are unique within the root project.
+- `moon orbit sync` synchronizes every configured child, or one selected child;
+  `moon sync` continues to synchronize only the current project.
+- `moon orbit exec` and `moon orbit run` execute within the selected child
+  environment without introducing a separate executor.
+
+**Managing Members:**
+```bash
+moon orbit add --name openresty --path bench/competitors/openresty
+moon orbit remove openresty
+moon orbit sync                 # all configured children
+moon orbit sync openresty       # one child
+```
+
+`moon orbit add --path` offers completion for descendant directories that
+contain `moonstone.toml`. It rejects paths outside the root project, the root
+project itself, missing or invalid child manifests, duplicate names, and a
+second orbit declaration for the same path.
 
 **Example Definition:**
 ```toml

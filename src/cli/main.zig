@@ -144,7 +144,9 @@ pub fn main(init: std.process.Init) !void {
         }),
 
         router.CommandNode.group("orbit", "Manage nested orbit projects", &.{
+            router.CommandNode.from(@import("commands/orbit_add.zig").OrbitAddCommand),
             router.CommandNode.from(@import("commands/orbit_list.zig").OrbitListCommand),
+            router.CommandNode.from(@import("commands/orbit_remove.zig").OrbitRemoveCommand),
             router.CommandNode.from(@import("commands/orbit_sync.zig").OrbitSyncCommand),
             router.CommandNode.from(@import("commands/orbit_exec.zig").OrbitExecCommand),
             router.CommandNode.from(@import("commands/orbit_run.zig").OrbitRunCommand),
