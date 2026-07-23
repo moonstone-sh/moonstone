@@ -12,7 +12,7 @@ pub const OrbitRemoveCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon orbit remove <name>
+            \\Usage: moon orbit remove <name> [--json]
             \\
             \\Remove an orbit declaration from the current project's moonstone.toml.
             \\

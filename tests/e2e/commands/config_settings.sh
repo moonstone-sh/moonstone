@@ -16,10 +16,11 @@ TOML
 
 moon --config-file "${WORKDIR}/config.toml" config get network.timeout | grep -Fx 'network.timeout = 30 (default)'
 moon --config-file "${WORKDIR}/config.toml" config get network.timeout --default | grep -Fx 'network.timeout = 30 (default)'
-moon --config-file "${WORKDIR}/config.toml" config set network.timeout 12
+moon --config-file "${WORKDIR}/config.toml" config get network.timeout --json | grep -Fq '"kind":"RESULT"'
+moon --config-file "${WORKDIR}/config.toml" config set network.timeout 12 --json | grep -Fq '"kind":"RESULT"'
 moon --config-file "${WORKDIR}/config.toml" config get network.timeout | grep -Fx 'network.timeout = 12 (config)'
-moon --config-file "${WORKDIR}/config.toml" config set cli.verbose true
-moon --config-file "${WORKDIR}/config.toml" config unset network.timeout
+moon --config-file "${WORKDIR}/config.toml" config set cli.verbose true --json | grep -Fq '"kind":"RESULT"'
+moon --config-file "${WORKDIR}/config.toml" config unset network.timeout --json | grep -Fq '"kind":"RESULT"'
 moon --config-file "${WORKDIR}/config.toml" config get network.timeout | grep -Fx 'network.timeout = 30 (default)'
 moon --config-file "${WORKDIR}/config.toml" completions --complete 'moon config set net' | grep -qx 'network.timeout'
 moon --config-file "${WORKDIR}/config.toml" completions --complete 'moon config unset cli.' | grep -qx 'cli.verbose'

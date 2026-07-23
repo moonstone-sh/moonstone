@@ -53,7 +53,7 @@ abi = "5.4"
 TOML
 
 cd "${WORKDIR}"
-moon orbit add --name child --path nested/child
+moon orbit add --name child --path nested/child --json | grep -Fq '"kind":"RESULT"'
 grep -q '\[\[orbits.member\]\]' moonstone.toml
 grep -q 'name = "child"' moonstone.toml
 grep -q 'path = "nested/child"' moonstone.toml
@@ -84,7 +84,7 @@ fi
 grep -q 'must be a subdirectory' /tmp/moonstone-orbit-outside.log
 
 moon orbit sync child
-moon orbit remove child
+moon orbit remove child --json | grep -Fq '"kind":"RESULT"'
 if grep -q '\[\[orbits.member\]\]' moonstone.toml; then
     echo "ERROR: orbit declaration remained after removal"
     exit 1

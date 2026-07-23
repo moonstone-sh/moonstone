@@ -325,6 +325,7 @@ pub const RegistryCreateCommand = struct {
     pub const description = "Create a local file registry";
     positionals: []const []const u8 = &.{},
     name_arg: ?[]const u8 = null,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -335,6 +336,7 @@ pub const RegistryCreateCommand = struct {
             \\
             \\Flags:
             \\  --name-arg <name>    Registry name when not passed positionally
+            \\  --json               Emit newline-delimited JSON events
             \\
         , .{});
     }
@@ -350,7 +352,10 @@ pub const RegistryCreateCommand = struct {
         defer ctx.allocator.free(blobs_path);
         try mkdirp(ctx.io, packages_path);
         try mkdirp(ctx.io, blobs_path);
-        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, null, path, r_name);
+        var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-create") else null;
+        const emitter = if (emitter_obj) |*e| e else null;
+        try syncRegistry(ctx.allocator, ctx.io, ctx.stdout, emitter, path, r_name);
+        if (emitter) |e| try e.terminate(ctx.io, "registry-create", "ok", .{ .name = r_name, .path = path });
     }
 };
 
@@ -370,6 +375,7 @@ pub const RegistrySyncCommand = struct {
             \\
             \\Flags:
             \\  --name-arg <name>    Registry name when not passed positionally
+            \\  --json               Emit newline-delimited JSON events
             \\
         , .{});
     }
@@ -411,6 +417,7 @@ pub const RegistryPushCommand = struct {
             \\  --update                Idempotently accept an identical published version
             \\  --replace               Replace an existing local version (requires --yes)
             \\  --yes                   Confirm local replacement
+            \\  --json                  Emit newline-delimited JSON events
             \\
         , .{});
     }
@@ -491,6 +498,7 @@ pub const RegistryPurgeCommand = struct {
             \\  --blob <path>           Artifact/source archive to remove by hash
             \\  --p-name <name>         Package name fallback
             \\  --version <version>     Package version fallback
+            \\  --json                  Emit newline-delimited JSON events
             \\
         , .{});
     }

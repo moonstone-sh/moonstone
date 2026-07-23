@@ -173,7 +173,7 @@ pub const ConfigGetCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon config get <setting> [--default]
+            \\Usage: moon config get <setting> [--default] [--json]
             \\
             \\Read one typed setting. --default prints the built-in value rather
             \\than a value set in the active configuration file.
@@ -222,7 +222,7 @@ pub const ConfigSetCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon config set <setting> <value>
+            \\Usage: moon config set <setting> <value> [--json]
             \\
             \\Set one supported setting in the active configuration file.
             \\Use `moon config unset <setting>` to restore normal precedence.
@@ -261,7 +261,7 @@ pub const ConfigUnsetCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon config unset <setting>
+            \\Usage: moon config unset <setting> [--json]
             \\
             \\Remove one override from the active configuration file.
             \\

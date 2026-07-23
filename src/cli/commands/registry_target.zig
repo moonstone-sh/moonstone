@@ -1,7 +1,9 @@
 const std = @import("std");
 const moonstone = @import("moonstone");
 const router = @import("../router.zig");
+const command_mod = @import("command.zig");
 const file_commands = @import("registry_file.zig");
+const ndjson = @import("ndjson.zig");
 
 const Target = struct {
     path: []const u8,
@@ -14,12 +16,13 @@ fn usage(stdout: *std.Io.Writer) !void {
         \\       moon registry init --file <path> [--name <name>]
         \\
         \\Target operations:
-        \\  publish --descriptor <package.toml> --artifact <archive>
-        \\  index rebuild [--no-compact]
-        \\  fetch --descriptor <name>@<version> [--output <path>]
-        \\  package delete <name>@<version>
-        \\  settings show
-        \\  doctor
+        \\  publish --descriptor <package.toml> --artifact <archive> [--json]
+        \\  index rebuild [--no-compact] [--json]
+        \\  fetch --descriptor <name>@<version> [--output <path>] [--json]
+        \\  package delete <name>@<version> [--json]
+        \\  settings show [--json]
+        \\  doctor [--json]
+        \\  auth --file <provider.auth.lua> [--json]
         \\
         \\A trailing colon marks a configured registry target. Registry names
         \\are resolved from the user config and current project, with project
@@ -71,7 +74,7 @@ fn splitPackageSpec(spec: []const u8) !struct { name: []const u8, version: []con
     return .{ .name = spec[0..at], .version = spec[at + 1 ..] };
 }
 
-fn configureCredentialProvider(ctx: *router.Context, registry_name: []const u8, provider_path: []const u8) !void {
+fn configureCredentialProvider(ctx: *router.Context, registry_name: []const u8, provider_path: []const u8, json: bool) !void {
     const content = try std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024));
     defer ctx.allocator.free(content);
     var project = try moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, content);
@@ -101,10 +104,13 @@ fn configureCredentialProvider(ctx: *router.Context, registry_name: []const u8, 
         if (current_ignore.len > 0 and current_ignore[current_ignore.len - 1] != '\n') try ignore_file.writeStreamingAll(ctx.io, "\n");
         try ignore_file.writeStreamingAll(ctx.io, "*.auth.lua\n");
     }
-    try ctx.stdout.print("Configured credential provider for registry '{s}'.\n", .{registry_name});
+    if (json) {
+        var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-auth");
+        try emitter.terminate(ctx.io, registry_name, "ok", .{ .provider_path = provider_path });
+    } else try ctx.stdout.print("Configured credential provider for registry '{s}'.\n", .{registry_name});
 }
 
-fn doctor(ctx: *router.Context, registry_path: []const u8) !void {
+fn doctor(ctx: *router.Context, registry_path: []const u8, json: bool) !void {
     const required = [_][]const u8{ "registry.toml", "index.toml", "index.sqlite.zst", "blobs/b3" };
     var missing = std.ArrayList([]const u8).empty;
     defer missing.deinit(ctx.allocator);
@@ -122,27 +128,43 @@ fn doctor(ctx: *router.Context, registry_path: []const u8) !void {
     }
 
     if (missing.items.len > 0) {
+        if (json) return error.RegistryHealthCheckFailed;
         try ctx.stdout.print("Registry {s} is incomplete; missing:\n", .{registry_path});
         for (missing.items) |relative_path| try ctx.stdout.print("  - {s}\n", .{relative_path});
         return error.RegistryHealthCheckFailed;
     }
 
-    try ctx.stdout.print("Registry {s} is healthy: metadata, TOML index, compact index, and blob root are present.\n", .{registry_path});
+    if (json) {
+        var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-doctor");
+        try emitter.terminate(ctx.io, "registry", "ok", .{ .path = registry_path, .healthy = true });
+    } else try ctx.stdout.print("Registry {s} is healthy: metadata, TOML index, compact index, and blob root are present.\n", .{registry_path});
 }
 
 pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
+    dispatchImpl(args, ctx) catch |err| {
+        if (err == error.AlreadyReported) return err;
+        try command_mod.reportError(ctx.allocator, ctx.io, ctx.stdout, hasFlag(args, "--json"), err, "registry-target", ctx.error_detail);
+        return error.AlreadyReported;
+    };
+}
+
+fn dispatchImpl(args: []const []const u8, ctx: *router.Context) !void {
     if (args.len == 0 or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) return usage(ctx.stdout);
 
     if (std.mem.eql(u8, args[0], "init")) {
         const path = option(args[1..], "--file") orelse return error.MissingArgument;
         const name = option(args[1..], "--name") orelse "local";
-        return (file_commands.RegistryCreateCommand{ .positionals = &.{path}, .name_arg = name }).run(ctx);
+        return (file_commands.RegistryCreateCommand{
+            .positionals = &.{path},
+            .name_arg = name,
+            .json = hasFlag(args[1..], "--json"),
+        }).run(ctx);
     }
 
     if (args.len >= 2 and std.mem.endsWith(u8, args[0], ":") and std.mem.eql(u8, args[1], "auth")) {
         const registry_name = args[0][0 .. args[0].len - 1];
         const provider_path = option(args[2..], "--file") orelse return error.MissingArgument;
-        return configureCredentialProvider(ctx, registry_name, provider_path);
+        return configureCredentialProvider(ctx, registry_name, provider_path, hasFlag(args[2..], "--json"));
     }
 
     const resolved = try targetFromArgs(ctx, args);
@@ -187,8 +209,16 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
             const file = try std.Io.Dir.cwd().createFile(ctx.io, output, .{});
             defer file.close(ctx.io);
             try file.writeStreamingAll(ctx.io, bytes);
-        } else {
+        } else if (!hasFlag(rest, "--json")) {
             try ctx.stdout.writeAll(bytes);
+        }
+        if (hasFlag(rest, "--json")) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-fetch");
+            try emitter.terminate(ctx.io, descriptor, "ok", .{
+                .path = source,
+                .output = option(rest, "--output"),
+                .content = bytes,
+            });
         }
         return;
     }
@@ -197,11 +227,14 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
         defer ctx.allocator.free(source);
         const bytes = try std.Io.Dir.cwd().readFileAlloc(ctx.io, source, ctx.allocator, std.Io.Limit.limited(1024 * 1024));
         defer ctx.allocator.free(bytes);
-        try ctx.stdout.writeAll(bytes);
+        if (hasFlag(rest, "--json")) {
+            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-settings-show");
+            try emitter.terminate(ctx.io, "registry", "ok", .{ .path = source, .content = bytes });
+        } else try ctx.stdout.writeAll(bytes);
         return;
     }
-    if (std.mem.eql(u8, operation, "doctor") and rest.len == 0) {
-        return doctor(ctx, resolved.target.path);
+    if (std.mem.eql(u8, operation, "doctor") and (rest.len == 0 or (rest.len == 1 and hasFlag(rest, "--json")))) {
+        return doctor(ctx, resolved.target.path, hasFlag(rest, "--json"));
     }
 
     return error.UnsupportedRegistryOperation;

@@ -22,6 +22,7 @@ pub const OrbitAddCommand = struct {
             \\Flags:
             \\  --name <name>    Unique orbit name
             \\  --path <path>    Child project directory
+            \\  --json           Emit newline-delimited JSON events
             \\
         , .{});
     }
