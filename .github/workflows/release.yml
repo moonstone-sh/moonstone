@@ -48,7 +48,7 @@ jobs:
           zig build release -Doptimize=ReleaseSafe
 
           python3 -m pip install --user blake3
-          python3 release-tools/package-release.py --overwrite
+          python3 scripts/release/package-release.py --overwrite
 
       - name: Compute Hashes
         id: hashes
