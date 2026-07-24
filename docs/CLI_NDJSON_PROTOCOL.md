@@ -128,9 +128,17 @@ Values answer: **"What exactly is the current reading?"**
 ```
 "warn.no-source-hash"            — descriptor missing [source]
 "warn.link-mode-fallback"        — artifact mode fell back to live
-"warn.offline-ignored"           --offline not fully enforced
 "warn.orphaned-artifact"         — store artifact has no lockfile reference
 ```
+
+### Offline Contract
+
+`--offline` is fully enforced. Moonstone must not contact remote registries,
+download source payloads, fetch artifacts, or fall back to a network provider.
+It may resolve and materialize only from the local content-addressed store and
+cached resolver metadata or source inputs. If a required input is unavailable,
+the command emits a structured `ERROR` envelope and fails; it never downgrades
+offline mode into a warning or an online retry.
 
 ---
 

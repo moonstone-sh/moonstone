@@ -22,6 +22,7 @@ pub const init_command = struct {
     bin: bool = false,
     no_git: bool = false,
     no_sync: bool = false,
+    empty: bool = false,
     yes: bool = false,
     json: bool = false,
 
@@ -46,6 +47,7 @@ pub const init_command = struct {
             \\  --license <id>   SPDX license identifier
             \\  --no-git         Do not initialize a git repository
             \\  --no-sync     Do not run moon sync after init
+            \\  --empty          Create only moonstone.toml (no starter files or scripts)
             \\  --yes            Assume yes for all prompts
             \\  --json           Output results as JSON (bloated protocol)
             \\
@@ -214,7 +216,11 @@ pub const init_command = struct {
             break :blk Kind.script;
         };
 
-        const template = self.template orelse if (pkg_kind == .lib) "lib" else "script";
+        if (self.empty and self.template != null) {
+            ctx.error_detail = .{ .message = .{ .msg = "--empty cannot be combined with --template." } };
+            return error.InvalidArguments;
+        }
+        const template = if (self.empty) "empty" else self.template orelse if (pkg_kind == .lib) "lib" else "script";
         const configured_runtime = if (self.interpreter == null) try defaultRuntimeSpec(allocator, ctx.env, io) else null;
         defer if (configured_runtime) |spec| allocator.free(spec);
         const runtime_spec = if (std.mem.eql(u8, template, "nvim") and self.interpreter == null)
@@ -231,7 +237,9 @@ pub const init_command = struct {
 
         const T = moonstone.assets.raw.templates;
 
-        if (std.mem.eql(u8, template, "script")) {
+        if (std.mem.eql(u8, template, "empty")) {
+            // Empty projects are useful as isolated hosts for project-local tools.
+        } else if (std.mem.eql(u8, template, "script")) {
             try project_dir.createDirPath(io, "src");
             if (project_dir.access(io, "src/main.lua", .{})) |_| {} else |_| {
                 const f = try project_dir.createFile(io, "src/main.lua", .{});

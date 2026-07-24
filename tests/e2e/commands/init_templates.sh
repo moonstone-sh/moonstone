@@ -82,4 +82,15 @@ for T in "${TEMPLATES[@]}"; do
     rm -rf "${WORKDIR}"
 done
 
+echo "━━━ testing empty project ━━━"
+EMPTY_WORKDIR="/tmp/moon-test-template-empty"
+rm -rf "${EMPTY_WORKDIR}"
+mkdir -p "${EMPTY_WORKDIR}"
+moon init "${EMPTY_WORKDIR}" --empty --name "tmp-empty-$(date +%s)" --no-sync --no-git
+[[ -f "${EMPTY_WORKDIR}/moonstone.toml" ]]
+[[ ! -e "${EMPTY_WORKDIR}/src" ]]
+[[ ! -e "${EMPTY_WORKDIR}/.luarc.json" ]]
+[[ ! -e "${EMPTY_WORKDIR}/README.md" ]]
+rm -rf "${EMPTY_WORKDIR}"
+
 echo "━━━ ✓ Init templates test passed ━━━"
