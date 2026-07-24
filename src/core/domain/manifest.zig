@@ -1079,6 +1079,7 @@ pub const MoonstoneToml = struct {
         version: []const u8,
         abi: []const u8,
     },
+    origin: ?Origin = null,
     resolution: ?ResolutionConfig = null,
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
@@ -1100,6 +1101,13 @@ pub const MoonstoneToml = struct {
     pub const OrbitConfig = struct {
         name: []const u8,
         path: []const u8,
+    };
+
+    pub const Origin = struct {
+        kind: []const u8,
+        url: []const u8,
+        revision: ?[]const u8 = null,
+        hash: ?[]const u8 = null,
     };
 
     pub fn init(allocator: std.mem.Allocator) MoonstoneToml {
@@ -1189,6 +1197,28 @@ pub const MoonstoneToml = struct {
             .version = try allocator.dupe(u8, runtime_version),
             .abi = runtime_abi,
         };
+
+        if (table.get("origin")) |origin_val| {
+            if (origin_val != .table) return error.InvalidOriginSection;
+            const origin_kind = origin_val.table.get("kind") orelse return error.MissingOriginKind;
+            if (origin_kind != .string) return error.InvalidOriginKind;
+            const origin_url = origin_val.table.get("url") orelse return error.MissingOriginUrl;
+            if (origin_url != .string) return error.InvalidOriginUrl;
+            const revision = if (origin_val.table.get("revision")) |value| blk: {
+                if (value != .string) return error.InvalidOriginRevision;
+                break :blk try allocator.dupe(u8, value.string);
+            } else null;
+            const hash = if (origin_val.table.get("hash")) |value| blk: {
+                if (value != .string) return error.InvalidOriginHash;
+                break :blk try allocator.dupe(u8, value.string);
+            } else null;
+            self.origin = .{
+                .kind = try allocator.dupe(u8, origin_kind.string),
+                .url = try allocator.dupe(u8, origin_url.string),
+                .revision = revision,
+                .hash = hash,
+            };
+        }
 
         if (table.get("build")) |b| {
             if (b == .table) {
@@ -1366,6 +1396,12 @@ pub const MoonstoneToml = struct {
         allocator.free(self.runtime.name);
         allocator.free(self.runtime.version);
         allocator.free(self.runtime.abi);
+        if (self.origin) |origin| {
+            allocator.free(origin.kind);
+            allocator.free(origin.url);
+            if (origin.revision) |revision| allocator.free(revision);
+            if (origin.hash) |hash| allocator.free(hash);
+        }
 
         for (self.dependencies.items) |dep| {
             var mut_dep = dep;
@@ -1437,6 +1473,22 @@ pub const MoonstoneToml = struct {
         try writer.print("\nabi = ", .{});
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
+
+        if (self.origin) |origin| {
+            try writer.print("\n[origin]\nkind = ", .{});
+            try writeTomlString(writer, origin.kind);
+            try writer.print("\nurl = ", .{});
+            try writeTomlString(writer, origin.url);
+            if (origin.revision) |revision| {
+                try writer.print("\nrevision = ", .{});
+                try writeTomlString(writer, revision);
+            }
+            if (origin.hash) |hash| {
+                try writer.print("\nhash = ", .{});
+                try writeTomlString(writer, hash);
+            }
+            try writer.print("\n", .{});
+        }
 
         if (self.scripts.count() > 0) {
             const ScriptEntry = struct {
@@ -2033,6 +2085,35 @@ test "MoonstoneToml round-trips build environment configuration" {
     try std.testing.expectEqualStrings("CC", cc.from.?);
     try std.testing.expect(cc.optional);
     try std.testing.expectEqualStrings("zig cc", cc.default.?);
+}
+
+test "MoonstoneToml round-trips declared origin" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "origin-project"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[origin]
+        \\kind = "git"
+        \\url = "https://github.com/moonstone-sh/origin-project"
+        \\revision = "0123456789abcdef"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try manifest.serialize(allocator, &out.writer);
+    try out.writer.flush();
+
+    var round_tripped = try MoonstoneToml.parse(allocator, out.writer.buffer[0..out.writer.end]);
+    defer round_tripped.deinit(allocator);
+    const origin = round_tripped.origin orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("git", origin.kind);
+    try std.testing.expectEqualStrings("https://github.com/moonstone-sh/origin-project", origin.url);
+    try std.testing.expectEqualStrings("0123456789abcdef", origin.revision.?);
 }
 
 test "MoonstoneToml round-trips every root configuration section" {
