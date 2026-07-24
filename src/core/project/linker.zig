@@ -323,6 +323,10 @@ fn luaAbisCompatible(left: ?[]const u8, right: ?[]const u8) bool {
     return left_digits == right_digits;
 }
 
+fn scopeArtifactAbiCompatible(owner_abi: ?[]const u8, artifact_abi: ?[]const u8, has_native_lua_modules: bool) bool {
+    return luaAbisCompatible(owner_abi, artifact_abi) or !has_native_lua_modules;
+}
+
 fn provisionModuleRoot(allocator: std.mem.Allocator, provision: manifest.FeatureProvision) !?[]const u8 {
     const module_relative_path = try std.mem.replaceOwned(u8, allocator, provision.name, ".", "/");
     defer allocator.free(module_relative_path);
@@ -386,10 +390,17 @@ fn appendScopeClosure(
     var store_manifest = try manifest.StoreManifest.parse(allocator, content);
     defer store_manifest.deinit(allocator);
 
+    // Lua ABI boundaries are mandatory for native modules, but pure Lua
+    // dependencies are portable source files. A tool such as Ballad may run
+    // under LuaJIT while the hosting project uses Lua 5.4; its pure-Lua
+    // transitive dependencies still belong to the tool scope.
+    if (!scopeArtifactAbiCompatible(owner_abi, artifact.lua_abi, store_manifest.provides.lua_cmodule.len != 0)) {
+        return error.ScopeDependencyAbiMismatch;
+    }
+
     for (store_manifest.dependencies) |dependency| {
         if (dependency.optional) continue;
         const resolved_dependency = findResolvedDependency(projected_artifacts, dependency) orelse return error.ScopeDependencyNotResolved;
-        if (!luaAbisCompatible(owner_abi, resolved_dependency.lua_abi)) return error.ScopeDependencyAbiMismatch;
         try appendScopeClosure(allocator, io, index, projected_artifacts, owner_abi, resolved_dependency, visited, closure);
     }
 }
@@ -1644,4 +1655,10 @@ test "scope module roots preserve dotted Lua module paths" {
     })).?;
     defer allocator.free(c_root);
     try std.testing.expectEqualStrings("lib/lua/5.4", c_root);
+}
+
+test "scope closures permit pure Lua dependencies across ABI boundaries" {
+    try std.testing.expect(scopeArtifactAbiCompatible("lua51", "lua54", false));
+    try std.testing.expect(!scopeArtifactAbiCompatible("lua51", "lua54", true));
+    try std.testing.expect(scopeArtifactAbiCompatible("lua54", "lua54", true));
 }
