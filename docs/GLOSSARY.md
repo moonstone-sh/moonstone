@@ -161,8 +161,22 @@ Moonstone project with its own isolated environment and `moonstone.lock`.
 - Orbit names and paths are unique within the root project.
 - `moon orbit sync` synchronizes every configured child, or one selected child;
   `moon sync` continues to synchronize only the current project.
+- `moon orbit sync --locked` requires each selected child lockfile to be
+  current; `--update` refreshes it within declared constraints; `--offline`
+  limits resolution to locally available sources.
 - `moon orbit exec` and `moon orbit run` execute within the selected child
   environment without introducing a separate executor.
+
+Orbit members keep independent dependency closures and runtime scopes. A path
+or link dependency brought in by an orbit is expanded with its transitive
+descriptor dependencies before Moonstone links the child environment. Pure Lua
+dependencies may cross an isolated tool runtime boundary; native Lua modules
+remain ABI-bound to their matching runtime.
+
+Ballad can consume an orbit only when a parent partiture explicitly maps it to
+a child partiture. This is not Orbit metadata: Moonstone remains unaware of
+Ballad release policy, while `moon orbit exec` supplies the child-scoped
+interpreter and tool closure needed to run the export safely.
 
 **Managing Members:**
 ```bash

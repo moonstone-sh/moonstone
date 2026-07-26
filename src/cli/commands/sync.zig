@@ -1115,6 +1115,85 @@ pub const SyncCommand = struct {
                     }
                 }
             }
+
+            // Direct path/link dependencies are resolved outside PubGrub so their
+            // local manifests can participate in the project closure. A linked
+            // project can introduce a registry package whose descriptor has
+            // further dependencies (for example Meteorite -> Ballad -> dkjson).
+            // Expand discovered descriptors to a fixed point before scope linking.
+            var expanded_descriptors = std.StringArrayHashMapUnmanaged(void).empty;
+            defer {
+                var expanded_it = expanded_descriptors.iterator();
+                while (expanded_it.next()) |entry| allocator.free(entry.key_ptr.*);
+                expanded_descriptors.deinit(allocator);
+            }
+            while (expanded_descriptors.count() < solution.count()) {
+                var package_names = std.ArrayList([]const u8).empty;
+                defer {
+                    for (package_names.items) |package_name| allocator.free(package_name);
+                    package_names.deinit(allocator);
+                }
+                for (solution.keys()) |package_name| {
+                    try package_names.append(allocator, try allocator.dupe(u8, package_name));
+                }
+
+                for (package_names.items) |parent_name| {
+                    if (expanded_descriptors.contains(parent_name)) continue;
+                    try expanded_descriptors.put(allocator, try allocator.dupe(u8, parent_name), {});
+
+                    const parent = solution.getPtr(parent_name) orelse continue;
+                    const remote_desc = parent.remote_desc orelse continue;
+                    for (remote_desc.dependencies) |child_dep| {
+                        const child_raw_spec = try child_dep.toSpecString(allocator);
+                        defer allocator.free(child_raw_spec);
+                        const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
+                        defer child_spec.deinit(allocator);
+                        const child_name = if (child_spec.resolver == .rocks) child_spec.name else child_dep.name;
+                        if (solutionContainsPackage(&solution, child_name)) continue;
+
+                        var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
+                        var child_kinds_len: usize = 0;
+                        if (child_spec.resolver) |resolver_kind| {
+                            child_kinds_buf[child_kinds_len] = resolver_kind;
+                            child_kinds_len += 1;
+                        } else {
+                            const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
+                            for (default_order) |resolver_name| {
+                                if (moonstone.resolution.coordinator.CoordinatorKind.fromString(resolver_name)) |kind| {
+                                    child_kinds_buf[child_kinds_len] = kind;
+                                    child_kinds_len += 1;
+                                } else |_| continue;
+                            }
+                        }
+
+                        const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
+                            .path, .link, .artifact => child_spec.name,
+                            else => child_name,
+                        } else child_name;
+                        var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
+                        for (child_kinds_buf[0..child_kinds_len]) |kind| {
+                            resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
+                                .offline = self.offline,
+                                .prefer_local = !self.update,
+                                .runtime = active_lua_abi,
+                                .runtime_c_api = runtime_c_api,
+                                .runtime_artifact_hash = rt_res.artifact_hash,
+                                .runtime_path = rt_mat_res.path,
+                                .on_event = on_resolve_cb,
+                                .on_event_context = on_resolve_ctx,
+                                .build_env = build_env,
+                            }, kind, env) catch |err| {
+                                if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
+                                return err;
+                            };
+                            if (resolved_child_opt != null) break;
+                        }
+                        var resolved_child = resolved_child_opt orelse return error.PackageNotFound;
+                        errdefer resolved_child.deinit(allocator);
+                        try solution.put(allocator, try allocator.dupe(u8, resolved_child.name), resolved_child);
+                    }
+                }
+            }
             profiler.spanCount("sync.direct.resolve", profile_span, "packages", solution.count());
 
             report.requested_targets = targets.items.len;

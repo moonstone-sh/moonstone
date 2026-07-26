@@ -44,6 +44,9 @@ EOF
 # Sync child explicitly
 moon orbit sync child
 
+echo "Testing explicit locked orbit sync..."
+moon orbit sync child --locked
+
 echo "Testing that child uses luajit..."
 OUTPUT=$(moon orbit exec child -- luajit -v 2>&1)
 if [[ "$OUTPUT" != *"luajit"* ]]; then

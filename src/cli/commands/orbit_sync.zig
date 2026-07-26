@@ -12,6 +12,8 @@ pub const OrbitSyncCommand = struct {
 
     json: bool = false,
     locked: bool = false,
+    update: bool = false,
+    offline: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -22,6 +24,8 @@ pub const OrbitSyncCommand = struct {
             \\
             \\Flags:
             \\  --locked  Require moonstone.lock to be up-to-date
+            \\  --update  Refresh the orbit lockfile within declared constraints
+            \\  --offline Resolve from the local store and configured file registries only
             \\  --json    Output results as JSON
             \\
         , .{});
@@ -126,6 +130,8 @@ pub const OrbitSyncCommand = struct {
             var child_sync = sync_command{
                 .json = self.json,
                 .locked = self.locked,
+                .update = self.update,
+                .offline = self.offline,
             };
             child_sync.runImpl(ctx, backend) catch |err| {
                 std.process.setCurrentPath(ctx.io, root_cwd) catch {};
