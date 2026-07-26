@@ -1142,13 +1142,37 @@ pub const SyncCommand = struct {
                     try expanded_descriptors.put(allocator, try allocator.dupe(u8, parent_name), {});
 
                     const parent = solution.getPtr(parent_name) orelse continue;
-                    const remote_desc = parent.remote_desc orelse continue;
-                    for (remote_desc.dependencies) |child_dep| {
-                        const child_raw_spec = try child_dep.toSpecString(allocator);
-                        defer allocator.free(child_raw_spec);
+                    var child_specs = std.ArrayList([]const u8).empty;
+                    defer {
+                        for (child_specs.items) |child_spec| allocator.free(child_spec);
+                        child_specs.deinit(allocator);
+                    }
+
+                    if (parent.remote_desc) |remote_desc| {
+                        for (remote_desc.dependencies) |child_dep| {
+                            try child_specs.append(allocator, try child_dep.toSpecString(allocator));
+                        }
+                    } else if (parent.local_path) |local_path| {
+                        const manifest_path = try std.fs.path.join(allocator, &.{ local_path, "manifest.toml" });
+                        defer allocator.free(manifest_path);
+                        const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| switch (err) {
+                            error.FileNotFound => null,
+                            else => return err,
+                        };
+                        if (content) |store_content| {
+                            defer allocator.free(store_content);
+                            var store_manifest = try moonstone.domain.manifest.StoreManifest.parse(allocator, store_content);
+                            defer store_manifest.deinit(allocator);
+                            for (store_manifest.dependencies) |child_dep| {
+                                try child_specs.append(allocator, try child_dep.toSpecString(allocator));
+                            }
+                        }
+                    }
+
+                    for (child_specs.items) |child_raw_spec| {
                         const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
                         defer child_spec.deinit(allocator);
-                        const child_name = if (child_spec.resolver == .rocks) child_spec.name else child_dep.name;
+                        const child_name = child_spec.name;
                         if (solutionContainsPackage(&solution, child_name)) continue;
 
                         var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;

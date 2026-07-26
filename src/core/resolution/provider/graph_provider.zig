@@ -520,6 +520,12 @@ pub const RegistryProvider = struct {
 
             for (local_candidates) |cand| {
                 if (candidateHasMalformedRuntimeMetadata(cand)) continue;
+                // `--update` refreshes resolver metadata as well as versions.
+                // Keep cached candidates for normal/offline resolution, but
+                // let Moonstone registry and LuaRocks candidates be revisited
+                // online so their declared closures cannot remain stale.
+                if (!self.options.prefer_local and !self.options.offline and res_constraint != null and
+                    (res_constraint.? == .moonstone or res_constraint.? == .rocks)) continue;
                 if (resolver_filter) |rf| {
                     if (cand.resolver) |cr| {
                         if (cr.len == 0 and !std.mem.eql(u8, rf, "moonstone")) continue;
