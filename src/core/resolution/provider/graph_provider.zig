@@ -903,6 +903,24 @@ pub const RegistryProvider = struct {
                     const raw_spec = try dep.toSpecString(arena);
                     const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                     defer spec.deinit(self.allocator);
+
+                    // PubGrub asks for available versions by package name, so
+                    // retain the resolver selected by this remote descriptor.
+                    // Without this origin, a descriptor dependency such as
+                    // rocks:dkjson is looked up in the Moonstone registry
+                    // instead of LuaRocks.
+                    try self.store_dependency_origins.append(self.allocator, .{
+                        .child_name = try self.allocator.dupe(u8, spec.name),
+                        .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
+                        .child_resolver = spec.resolver,
+                        .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                        .child_role = dep.role,
+                        .parent_name = try self.allocator.dupe(u8, art.name),
+                        .parent_version = try self.allocator.dupe(u8, art.version),
+                        .parent_resolver = .moonstone,
+                        .parent_manifest_path = try self.allocator.dupe(u8, art.descriptor_path orelse "<registry descriptor>"),
+                    });
+
                     try terms.append(self.allocator, .{
                         .name = try arena.dupe(u8, spec.name),
                         .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
