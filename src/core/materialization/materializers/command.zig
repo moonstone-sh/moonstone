@@ -239,7 +239,10 @@ fn collectOutputs(
             const cp_res = try std.process.run(allocator, io, .{
                 .argv = &.{ "cp", src_abs, dest_abs },
             });
+            defer allocator.free(cp_res.stdout);
+            defer allocator.free(cp_res.stderr);
             if (cp_res.term != .exited or cp_res.term.exited != 0) {
+                std.log.err("Failed to copy '{s}' to '{s}': {s}", .{ src_abs, dest_abs, cp_res.stderr });
                 return error.CopyFailed;
             }
         }

@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
 
 jobs:
   test:
@@ -33,3 +36,27 @@ jobs:
       - name: Run Contracts Verification Tests
         # We verify TS, Go, and LuaCATS contracts remain valid
         run: ./packages/contracts/tests/run.sh
+
+  release-candidate:
+    name: Build Release Candidate
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build and package release candidate
+        run: |
+          zig build release -Doptimize=ReleaseSafe
+          python3 -m pip install --user blake3
+          python3 scripts/release/package-release.py --overwrite
+          version="$(python3 scripts/release/package-release.py --print-version)"
+          test -s "dist/releases/$version/release-manifest.json"
+          test -s "dist/releases/$version/SHA256SUMS"
