@@ -917,7 +917,11 @@ pub fn link_project_env_at(
                 if (lua_map.get(m.name)) |existing| {
                     if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.ModuleConflict;
                 } else {
-                    const abs_lua_path = try std.fs.path.join(allocator, &.{ art_path, "files", m.path });
+                    const rel_file = if (std.mem.startsWith(u8, m.path, "${build}/"))
+                        m.path["${build}/".len..]
+                    else
+                        m.name;
+                    const abs_lua_path = try std.fs.path.join(allocator, &.{ art_path, "files", rel_file });
                     try lua_map.put(allocator, try allocator.dupe(u8, m.name), .{
                         .path = abs_lua_path,
                         .artifact_hash = try allocator.dupe(u8, hash),
@@ -1133,14 +1137,18 @@ pub fn link_project_env_at(
             const pos = std.mem.indexOf(u8, target_path, search_str).?;
             break :blk target_path[pos..];
         } else blk: {
-            const ext = if (std.mem.endsWith(u8, mod_name, ".lua")) @as(usize, 4) else @as(usize, 0);
-            const clean_name = mod_name[0 .. mod_name.len - ext];
-            const slash_name = try std.mem.replaceOwned(u8, allocator, clean_name, ".", "/");
-            defer allocator.free(slash_name);
-            if (is_dir.?) {
-                break :blk try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, slash_name });
+            if (std.mem.indexOfScalar(u8, mod_name, '/') != null) {
+                break :blk try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, mod_name });
             } else {
-                break :blk try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, slash_name });
+                const ext = if (std.mem.endsWith(u8, mod_name, ".lua")) @as(usize, 4) else @as(usize, 0);
+                const clean_name = mod_name[0 .. mod_name.len - ext];
+                const slash_name = try std.mem.replaceOwned(u8, allocator, clean_name, ".", "/");
+                defer allocator.free(slash_name);
+                if (is_dir.?) {
+                    break :blk try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}", .{ lua_ver_dot, slash_name });
+                } else {
+                    break :blk try std.fmt.allocPrint(allocator, "share/lua/{s}/{s}.lua", .{ lua_ver_dot, slash_name });
+                }
             }
         };
         const is_owned = std.mem.indexOf(u8, target_path, search_str) == null;

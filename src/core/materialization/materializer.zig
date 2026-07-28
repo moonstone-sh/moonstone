@@ -412,7 +412,7 @@ pub const Materializer = struct {
                     if (new_provides.lua_module.len == 0 and m.collect.lua_modules.len > 0) {
                         var clist = std.ArrayList(manifest.FeatureProvision).empty;
                         for (m.collect.lua_modules) |p| try clist.append(self.allocator, .{
-                            .name = try self.allocator.dupe(u8, std.fs.path.basename(p.name)),
+                            .name = try self.allocator.dupe(u8, p.name),
                             .path = try self.allocator.dupe(u8, p.name),
                         });
                         new_provides.lua_module = try clist.toOwnedSlice(self.allocator);

@@ -222,6 +222,7 @@ const DownloadPool = struct {
     io: std.Io,
     env: *std.process.Environ.Map,
     jobs: []DownloadJob,
+    runtime_path: ?[]const u8 = null,
     next: std.atomic.Value(usize) = .init(0),
     wctx: ?*progress_runtime.WorkerContext,
     on_resolve_cb: ?moonstone.resolution.options.ResolveCallback,
@@ -255,6 +256,7 @@ const DownloadPool = struct {
             .allocator = self.allocator,
             .io = self.io,
             .environ_map = self.env,
+            .runtime_path = self.runtime_path,
             .on_event = self.on_resolve_cb,
             .on_event_context = self.on_resolve_ctx,
         };
@@ -1463,6 +1465,7 @@ pub const SyncCommand = struct {
                 .io = io,
                 .env = env,
                 .jobs = download_jobs.items,
+                .runtime_path = rt_mat_res.path,
                 .wctx = switch (backend) {
                     .direct => null,
                     .queue => |w| w,
