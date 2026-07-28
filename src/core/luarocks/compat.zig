@@ -37,7 +37,6 @@ pub fn apply(
     source_dir: []const u8,
 ) !?AppliedRecipe {
     if (matching_rule(package_name, runtime)) |rule| {
-
         const source_path = try std.fs.path.join(allocator, &.{ source_dir, rule.source_file });
         defer allocator.free(source_path);
         const source = std.Io.Dir.cwd().readFileAlloc(io, source_path, allocator, std.Io.Limit.limited(16 * 1024 * 1024)) catch |err| {

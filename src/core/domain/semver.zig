@@ -339,7 +339,8 @@ pub const VersionRange = struct {
             if (i > 0) try writer.writeAll(" || ");
             try interval.print(writer);
         }
-    }    intervals: []const Interval,
+    }
+    intervals: []const Interval,
     excludes: []const Version = &.{},
 
     pub fn any(allocator: std.mem.Allocator) !VersionRange {
