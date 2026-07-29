@@ -239,23 +239,22 @@ pub const ExecCommand = struct {
             try stdout.flush();
         }
 
-        var term = std.process.spawn(io, .{
+        // Replace this process with the child. Signals (SIGINT, SIGTERM, etc.)
+        // will be delivered directly to the child, avoiding orphaned process
+        // trees when the user presses Ctrl+C.
+        //
+        // replace() never returns on success — the process image is replaced.
+        // On failure it returns an error from ReplaceError.
+        const err = std.process.replace(io, .{
             .argv = argv,
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
-                return error.CommandNotFound;
-            }
-            return err;
-        };
-
-        const wait_res = try term.wait(io);
-
-        if (wait_res != .exited or wait_res.exited != 0) {
-            std.process.exit(if (wait_res == .exited) @intCast(wait_res.exited) else 1);
+        });
+        if (err == error.FileNotFound) {
+            if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
+            return error.CommandNotFound;
         }
+        return err;
     }
 };
