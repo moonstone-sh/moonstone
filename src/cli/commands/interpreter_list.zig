@@ -104,6 +104,7 @@ pub const InterpreterListCommand = struct {
             defer if (cache_dir) |cd| allocator.free(cd);
             if (emitter == null) try stdout.print("\nAvailable interpreters from registries:\n", .{});
             for (registries) |reg| {
+                if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
                 var client = moonstone.registry.core.RegistryClient.init(allocator, io, reg.url, reg.token, env);
                 defer client.deinit();
                 if (cache_dir) |cd| {

@@ -107,7 +107,6 @@ unambiguous:
 
 ```bash
 moon registry add --name moonstone-sh-acme --url https://moonstone.sh/registry/v0/private/ns_123
-moon registry moonstone-sh-acme: auth --file ./acme.auth.lua
 moon add moonstone-sh-acme:acme/internal-tool@^1.2
 ```
 
@@ -280,7 +279,9 @@ A basic registry is just a directory tree.  You can serve it with:
 3. Point `moonstone.toml` at it:
 
 ```toml
-[registries.synthetic]
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
 path = "./fixtures/sandbox/registry"
 ```
 
@@ -364,23 +365,9 @@ registry URL (e.g. `https://registry.moonstone.sh/registry/v0`).
 
 ### Authentication
 
-The client sends:
-
-```http
-Authorization: Bearer <token>
-```
-
-Tokens are scoped per-registry in `moonstone.toml`:
-
-```toml
-[registries.moonstone]
-url = "https://registry.moonstone.sh/registry/v0"
-token = "mst_..."
-```
-
-A mature registry validates tokens and returns `401` for missing/invalid tokens
-when `capabilities.private = true`.  For public registries, tokens are optional
-but may unlock higher rate limits.
+Moonstone does not define project-level authentication fields or executable
+credential hooks. A registry vendor, proxy, or infrastructure tool owns login,
+token refresh, and multi-step validation before Moonstone reads the registry.
 
 ### Search
 
@@ -631,20 +618,9 @@ them as opaque strings.
 
 ### Project credential providers
 
-Project manifests declare the exact registry transport and may reference a
-private executable credential provider. Moonstone never stores the provider's
-output in `moonstone.toml`, the lockfile, the store, or diagnostics:
-
-```toml
-[registries.company]
-url = "https://registry.company.internal/v0"
-credential_provider = "./company.auth.lua"
-```
-
-Configure the reference with `moon registry company: auth --file
-./company.auth.lua`. Moonstone adds `*.auth.lua` to `.gitignore`; the provider
-may read environment variables or call OS credential tools, but it must not
-print secrets to stderr. Providers negotiate a versioned JSON request/response
+Moonstone does not support project credential providers. Keep authentication
+outside `moonstone.toml`; the project records only a registry identity,
+resolver kind, and URL or path needed for reproducible resolution.
 protocol and currently serve read credentials only. Remote publication remains
 an external deployment concern for the static registry tree.
 
@@ -794,11 +770,11 @@ even if that plan is trivial ("unpack this prebuilt blob").
 When the user runs `moon add inspect` or `moon sync`:
 
 ```
-1. Parse package spec → detect resolver prefix (moonstone:, rocks:, path:, link:)
-2. If prefixed → use that resolver only.
-   If unprefixed → read [resolution] default_order from moonstone.toml
-                   (default: moonstone → rocks)
-3. For moonstone resolver:
+1. Parse package spec → detect a registry identity or local-source prefix.
+2. `registry:package` selects exactly that registry identity; a bare package
+   selects the built-in `moonstone` identity. `path:`, `link:`, and `artifact:`
+   are local-source forms, not registries.
+3. For the Moonstone resolver:
    a. Read moonstone.toml → find registry URLs / paths.
    b. Fetch registry.toml from each registry.
    c. Fetch index.toml (or use local cache if revision matches).
@@ -832,17 +808,17 @@ symlinks point directly to the source project.
 
 ### Resolver Kinds
 
-| Prefix | Resolver | Source recorded in lockfile |
-|--------|----------|----------------------------|
-| (none) | `default_order` | `moonstone:<name>` or `rocks:<name>` |
-| `moonstone:` | Moonstone registry | `moonstone:<name>` |
-| `rocks:` | LuaRocks importer | `rocks:<name>` |
-| `path:` | Local filesystem | `path:<path>` |
-| `link:` | Global link registry | `link:<name>` |
+| Package form | Meaning | Lockfile fields |
+|--------------|---------|-----------------|
+| `<name>` | built-in `moonstone` identity | `registry = "moonstone"`, `resolver = "moonstone"` |
+| `moonstone:<name>` | built-in Moonstone registry | `registry = "moonstone"`, `resolver = "moonstone"` |
+| `rocks:<name>` | built-in LuaRocks registry | `registry = "rocks"`, `resolver = "rocks"` |
+| `<custom>:<name>` | declared custom registry identity | its configured identity and resolver |
+| `path:`, `link:`, `artifact:` | local-source resolver forms | local resolver; no registry identity |
 
-The lockfile records both `resolver` (which resolver produced the entry) and
-`source` (the canonical origin string) so that `moon sync` can replay
-resolution deterministically.
+The lockfile records both `registry` (the selected identity) and `resolver`
+(the implementation that produced the entry), alongside the canonical source,
+so that `moon sync` can replay resolution deterministically.
 
 ---
 

@@ -15,5 +15,5 @@ run = "lua main.lua \"$@\""
 [[dependencies]]
 name = "ansicolors"
 constraint = "^1.0"
-resolver = "rocks"
+registry = "rocks"
 role = "runtime"

@@ -4,6 +4,20 @@ const router = @import("../router.zig");
 const progress_runtime = @import("../progress.zig");
 const profiler = moonstone.diagnostics.profiler;
 
+fn resolverForPackageSpec(
+    mt: *const moonstone.domain.manifest.MoonstoneToml,
+    spec: moonstone.domain.package_spec.PackageSpec,
+) !moonstone.resolution.coordinator.CoordinatorKind {
+    if (spec.resolver) |kind| return kind;
+
+    const identity = spec.registry orelse return .moonstone;
+    if (std.mem.eql(u8, identity, "moonstone")) return .moonstone;
+    if (std.mem.eql(u8, identity, "rocks")) return .rocks;
+
+    const config = mt.registries.get(identity) orelse return error.RegistryNotFound;
+    return moonstone.resolution.coordinator.CoordinatorKind.fromString(config.resolver);
+}
+
 fn packageNamesMatch(left: []const u8, right: []const u8) bool {
     return std.mem.eql(u8, left, right) or std.ascii.eqlIgnoreCase(left, right);
 }
@@ -502,12 +516,22 @@ pub const add_command = struct {
 
             const range = try moonstone.domain.semver.VersionRange.parse(allocator, parsed.constraint orelse "*");
             errdefer range.deinit(allocator);
+            const selected_resolver = try resolverForPackageSpec(&mt, parsed);
 
             try targets.append(allocator, .{
                 .name = try allocator.dupe(u8, if (path_candidate) |candidate| candidate.name else parsed.name),
                 .range = range,
-                .registry = if (parsed.registry) |r| try allocator.dupe(u8, r) else if (parsed.resolver == .path) try allocator.dupe(u8, parsed.name) else null,
-                .resolver = parsed.resolver,
+                .registry = if (parsed.registry) |r|
+                    try allocator.dupe(u8, r)
+                else if (selected_resolver == .moonstone)
+                    try allocator.dupe(u8, "moonstone")
+                else if (selected_resolver == .rocks)
+                    try allocator.dupe(u8, "rocks")
+                else if (parsed.resolver == .path)
+                    try allocator.dupe(u8, parsed.name)
+                else
+                    null,
+                .resolver = selected_resolver,
                 .role = target_role,
             });
         }
@@ -606,13 +630,8 @@ pub const add_command = struct {
                 direct_kinds_buf[direct_kinds_len] = resolver_kind;
                 direct_kinds_len += 1;
             } else {
-                const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
-                for (default_order) |r_name| {
-                    if (moonstone.resolution.coordinator.CoordinatorKind.fromString(r_name)) |kind| {
-                        direct_kinds_buf[direct_kinds_len] = kind;
-                        direct_kinds_len += 1;
-                    } else |_| continue;
-                }
+                direct_kinds_buf[direct_kinds_len] = .moonstone;
+                direct_kinds_len += 1;
             }
 
             var resolved_direct_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
@@ -626,7 +645,7 @@ pub const add_command = struct {
                     .on_event = on_resolve_cb,
                     .on_event_context = on_resolve_ctx,
                     .build_env = build_env,
-                }, kind, env) catch |err| {
+                }, kind, env, parsed.registry) catch |err| {
                     if (err == error.RocksVersionDiscoveryFailed and parsed.resolver == null) continue;
                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
@@ -768,13 +787,8 @@ pub const add_command = struct {
             }
 
             if (kinds_len == 0) {
-                const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
-                for (default_order) |r_name| {
-                    if (moonstone.resolution.coordinator.CoordinatorKind.fromString(r_name)) |kind| {
-                        kinds_buf[kinds_len] = kind;
-                        kinds_len += 1;
-                    } else |_| continue;
-                }
+                kinds_buf[kinds_len] = .moonstone;
+                kinds_len += 1;
             }
             const order = kinds_buf[0..kinds_len];
 
@@ -791,7 +805,7 @@ pub const add_command = struct {
                     .runtime_path = mat.runtime_path,
                     .on_event = on_resolve_cb,
                     .on_event_context = on_resolve_ctx,
-                }, kind, env) catch |err| {
+                }, kind, env, explicit_prefix) catch |err| {
                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
                 };
@@ -831,8 +845,8 @@ pub const add_command = struct {
                     if (self.save_tilde) break :blk "~";
                     break :blk "^";
                 };
-                // Store the dependency as a [[dependencies]] entry with explicit
-                // resolver and constraint fields.  The constraint is always just
+                // Store the dependency as a [[dependencies]] entry with an explicit
+                // registry identity and constraint. The constraint is always just
                 // the version (e.g. "^1.3.2-1"), never the full spec.
                 const final_ver = try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved.version });
                 defer allocator.free(final_ver);
@@ -844,14 +858,14 @@ pub const add_command = struct {
                 _ = effective_kind;
                 // For path dependencies, the "version" is the original spec
                 // (e.g. "path:../my-lib") since path deps don't have semver.
-                const dep_resolver: ?[]const u8 = explicit_prefix;
+                const dep_registry: ?[]const u8 = explicit_prefix;
                 const dep_constraint = if (explicit_prefix) |reg|
                     if (std.mem.eql(u8, reg, "path")) (explicit_spec orelse final_ver) else final_ver
                 else if (resolved.version.len == 0 or std.mem.eql(u8, resolved.version, "0.0.0")) blk: {
                     if (explicit_spec) |spec| break :blk spec;
                     break :blk "*";
                 } else final_ver;
-                try mt.add_dependency_with_resolver(allocator, pkg_name, dep_constraint, target_role, self.optional, dep_resolver);
+                try mt.add_dependency_with_registry(allocator, pkg_name, dep_constraint, target_role, self.optional, dep_registry);
                 _ = effective_kind;
                 try added_list.append(allocator, try allocator.dupe(u8, pkg_name));
             }

@@ -15,5 +15,5 @@ run = "lua main.lua \"$@\""
 [[dependencies]]
 name = "fun"
 constraint = "^0.1"
-resolver = "rocks"
+registry = "rocks"
 role = "runtime"

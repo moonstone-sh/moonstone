@@ -18,19 +18,19 @@ export = "moon exec cyan build && moon exec ballad play partiture.lua"
 [[dependencies]]
 name = "cyan"
 constraint = "^0.4.0-1"
-resolver = "rocks"
+registry = "rocks"
 role = "tool"
 
 [[dependencies]]
 name = "argparse"
 constraint = "^0.7.1-1"
-resolver = "rocks"
+registry = "rocks"
 role = "runtime"
 
 [[dependencies]]
 name = "argparse-tl-type"
 constraint = "*"
-resolver = "rocks"
+registry = "rocks"
 role = "tool"
 
 [[dependencies]]

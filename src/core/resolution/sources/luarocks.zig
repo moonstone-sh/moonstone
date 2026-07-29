@@ -655,9 +655,10 @@ pub fn discoverVersions(
     pkg_name: []const u8,
     options: options_mod.ResolveOptions,
     env_map: *std.process.Environ.Map,
+    base_override: ?[]const u8,
 ) ![]@import("../../domain/semver.zig").Version {
     const semver = @import("../../domain/semver.zig");
-    const base = get_luarocks_base(env_map);
+    const base = base_override orelse get_luarocks_base(env_map);
     const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
     defer manifest_parsed.deinit();
     const repository = manifest_parsed.value.object.get("repository") orelse return error.RocksVersionDiscoveryFailed;
@@ -1638,12 +1639,14 @@ pub fn resolve(
     version_range: []const u8,
     options: options_mod.ResolveOptions,
     env_map: *std.process.Environ.Map,
+    base_override: ?[]const u8,
+    registry_name: ?[]const u8,
 ) !candidate_mod.Candidate {
     if (options.offline) return error.PackageNotFound;
 
     const runtime_spec = options.runtime orelse "lua54";
 
-    const base = get_luarocks_base(env_map);
+    const base = base_override orelse get_luarocks_base(env_map);
 
     // Phase 1: Candidate discovery
     const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
@@ -1678,7 +1681,7 @@ pub fn resolve(
                     .source_hash = try allocator.dupe(u8, res.source_hash),
                     .recipe_hash = try allocator.dupe(u8, res.recipe_hash),
                     .runtime_artifact_hash = if (options.runtime_artifact_hash) |rah| try allocator.dupe(u8, rah) else try allocator.dupe(u8, ""),
-                    .registry_name = try allocator.dupe(u8, "rocks"),
+                    .registry_name = try allocator.dupe(u8, registry_name orelse "rocks"),
                     .local_path = try allocator.dupe(u8, res.path),
                     .origin = .{ .luarocks = .{ .url = try allocator.dupe(u8, base), .rockspec_path = try allocator.dupe(u8, "") } },
                 };

@@ -57,7 +57,7 @@ cat >> moonstone.toml <<'TOML'
 [[dependencies]]
 name = "FakeBin"
 constraint = "^1.0-1"
-resolver = "rocks"
+registry = "rocks"
 role = "runtime"
 TOML
 

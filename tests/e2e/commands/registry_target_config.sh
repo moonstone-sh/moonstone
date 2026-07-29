@@ -89,13 +89,14 @@ if moon --config-file="${WORKDIR}/config.toml" registry user: publish --descript
     exit 1
 fi
 
-moon registry project: auth --file ./project.auth.lua --json | grep -Fq '"kind":"RESULT"'
-grep -Fq 'credential_provider = "./project.auth.lua"' moonstone.toml
-grep -Fxq '*.auth.lua' .gitignore
 moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry " > "${WORKDIR}/completions"
 grep -qx 'user:' "${WORKDIR}/completions"
 grep -qx 'profiled:' "${WORKDIR}/completions"
 grep -qx 'project:' "${WORKDIR}/completions"
 moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry project: " | grep -qx 'publish'
+if moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry project: " | grep -qx 'auth'; then
+    echo "registry auth completion should not be available" >&2
+    exit 1
+fi
 
 echo "━━━ ✓ Config-file registry target grammar passed ━━━"

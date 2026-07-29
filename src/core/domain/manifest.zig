@@ -894,6 +894,7 @@ pub const StoreDependency = struct {
     name: []const u8,
     constraint: []const u8 = "",
     resolver: ?[]const u8 = null,
+    registry: ?[]const u8 = null,
     role: DependencyRole = .runtime,
     optional: bool = false,
 
@@ -901,20 +902,21 @@ pub const StoreDependency = struct {
         allocator.free(self.name);
         allocator.free(self.constraint);
         if (self.resolver) |r| allocator.free(r);
+        if (self.registry) |r| allocator.free(r);
     }
 
     /// Reconstruct a raw package-spec string suitable for parsePackageSpec.
     /// Handles both flat-array format (resolver + name + constraint) and
     /// sugar format (constraint may already contain resolver prefix).
     pub fn toSpecString(self: StoreDependency, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.resolver) |resolver| {
-            if (self.constraint.len > 0 and std.mem.startsWith(u8, self.constraint, resolver) and self.constraint.len > resolver.len and self.constraint[resolver.len] == ':') {
+        if (self.registry orelse self.resolver) |registry| {
+            if (self.constraint.len > 0 and std.mem.startsWith(u8, self.constraint, registry) and self.constraint.len > registry.len and self.constraint[registry.len] == ':') {
                 return try allocator.dupe(u8, self.constraint);
             }
             if (self.constraint.len > 0) {
-                return try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ resolver, self.name, self.constraint });
+                return try std.fmt.allocPrint(allocator, "{s}:{s}@{s}", .{ registry, self.name, self.constraint });
             } else {
-                return try std.fmt.allocPrint(allocator, "{s}:{s}", .{ resolver, self.name });
+                return try std.fmt.allocPrint(allocator, "{s}:{s}", .{ registry, self.name });
             }
         } else if (self.constraint.len > 0) {
             if (std.mem.indexOfScalar(u8, self.constraint, ':') != null or std.mem.indexOfScalar(u8, self.constraint, '@') != null) {
@@ -1080,7 +1082,6 @@ pub const MoonstoneToml = struct {
         abi: []const u8,
     },
     origin: ?Origin = null,
-    resolution: ?ResolutionConfig = null,
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
@@ -1258,14 +1259,15 @@ pub const MoonstoneToml = struct {
                     const dep = dep_val.table;
                     const role_str = if (dep.get("role")) |r| r.string else "runtime";
                     const role = try parseDependencyRole(role_str);
-                    const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
+                    if (dep.get("resolver") != null) return error.DependencyResolverSyntaxUnsupported;
+                    const registry = if (dep.get("registry")) |r| try allocator.dupe(u8, r.string) else null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
                     const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
                     const optional = if (dep.get("optional")) |o| o.boolean else false;
                     try self.dependencies.append(allocator, .{
                         .name = name,
                         .constraint = constraint,
-                        .resolver = resolver,
+                        .registry = registry,
                         .role = role,
                         .optional = optional,
                     });
@@ -1350,19 +1352,6 @@ pub const MoonstoneToml = struct {
             try extractRegistriesFromToml(allocator, reg_val, &self.registries);
         }
 
-        self.resolution = null;
-        if (table.get("resolution")) |res_val| {
-            if (res_val == .table) {
-                if (res_val.table.get("default_order")) |o_val| {
-                    if (o_val == .array) {
-                        var list = std.ArrayList([]const u8).empty;
-                        for (o_val.array.items) |o| try list.append(allocator, try allocator.dupe(u8, o.string));
-                        self.resolution = .{ .default_order = try list.toOwnedSlice(allocator) };
-                    }
-                }
-            }
-        }
-
         self.orbits = .empty;
         if (table.get("orbits")) |orbits_val| {
             if (orbits_val == .table) {
@@ -1425,10 +1414,6 @@ pub const MoonstoneToml = struct {
         }
         self.registries.deinit(allocator);
 
-        if (self.resolution) |res| {
-            for (res.default_order) |o| allocator.free(o);
-            allocator.free(res.default_order);
-        }
         if (self.build) |*build| {
             var build_env_it = build.env.iterator();
             while (build_env_it.next()) |entry| {
@@ -1604,9 +1589,11 @@ pub const MoonstoneToml = struct {
             }.lessThan);
 
             for (entries.items) |entry| {
-                try writer.print("\n[registries.", .{});
+                try writer.print("\n[[registries]]\nname = ", .{});
                 try writeTomlString(writer, entry.key);
-                try writer.print("]\n", .{});
+                try writer.print("\nresolver = ", .{});
+                try writeTomlString(writer, entry.value.resolver);
+                try writer.print("\n", .{});
                 if (entry.value.url) |url| {
                     try writer.print("url = ", .{});
                     try writeTomlString(writer, url);
@@ -1618,27 +1605,7 @@ pub const MoonstoneToml = struct {
                     try writer.print("\n", .{});
                 }
                 try writer.print("priority = {d}\n", .{entry.value.priority});
-                if (entry.value.token) |token| {
-                    try writer.print("token = ", .{});
-                    try writeTomlString(writer, token);
-                    try writer.print("\n", .{});
-                }
-                if (entry.value.credential_provider) |provider| {
-                    try writer.print("credential_provider = ", .{});
-                    try writeTomlString(writer, provider);
-                    try writer.print("\n", .{});
-                }
             }
-        }
-
-        if (self.resolution) |res| {
-            try writer.print("\n[resolution]\n", .{});
-            try writer.print("default_order = [", .{});
-            for (res.default_order, 0..) |o, i| {
-                if (i > 0) try writer.print(", ", .{});
-                try writer.print("\"{s}\"", .{o});
-            }
-            try writer.print("]\n", .{});
         }
 
         const ordered_dependencies = try allocator.dupe(StoreDependency, self.dependencies.items);
@@ -1652,8 +1619,8 @@ pub const MoonstoneToml = struct {
             try writeTomlString(writer, dep.name);
             try writer.print("\nconstraint = ", .{});
             try writeTomlString(writer, dep.constraint);
-            if (dep.resolver) |r| {
-                try writer.print("\nresolver = ", .{});
+            if (dep.registry) |r| {
+                try writer.print("\nregistry = ", .{});
                 try writeTomlString(writer, r);
             }
             try writer.print("\nrole = \"{s}\"\n", .{dep.role.toString()});
@@ -1710,17 +1677,17 @@ pub const MoonstoneToml = struct {
     }
 
     pub fn add_dependency(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool) !void {
-        try self.add_dependency_with_resolver(allocator, name, spec, role, optional, null);
+        try self.add_dependency_with_registry(allocator, name, spec, role, optional, null);
     }
 
-    pub fn add_dependency_with_resolver(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool, resolver: ?[]const u8) !void {
+    pub fn add_dependency_with_registry(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, spec: []const u8, role: DependencyRole, optional: bool, registry: ?[]const u8) !void {
         // Check if it already exists, replace it
         for (self.dependencies.items) |*dep| {
             if (std.mem.eql(u8, dep.name, name)) {
                 allocator.free(dep.constraint);
                 dep.constraint = try allocator.dupe(u8, spec);
-                if (dep.resolver) |r| allocator.free(r);
-                dep.resolver = if (resolver) |r| try allocator.dupe(u8, r) else null;
+                if (dep.registry) |r| allocator.free(r);
+                dep.registry = if (registry) |r| try allocator.dupe(u8, r) else null;
                 dep.role = role;
                 dep.optional = optional;
                 return;
@@ -1730,7 +1697,7 @@ pub const MoonstoneToml = struct {
         try self.dependencies.append(allocator, .{
             .name = try allocator.dupe(u8, name),
             .constraint = try allocator.dupe(u8, spec),
-            .resolver = if (resolver) |r| try allocator.dupe(u8, r) else null,
+            .registry = if (registry) |r| try allocator.dupe(u8, r) else null,
             .role = role,
             .optional = optional,
         });
@@ -1782,67 +1749,48 @@ pub fn inferRuntimeAbi(allocator: std.mem.Allocator, runtime_name: []const u8, r
     return try allocator.dupe(u8, "5.4");
 }
 
-pub const ResolutionConfig = struct {
-    default_order: []const []const u8 = &.{ "moonstone", "rocks" },
-};
-
 pub const RegistryConfig = struct {
+    resolver: []const u8,
     url: ?[]const u8 = null,
     path: ?[]const u8 = null,
     priority: i32 = 0,
-    token: ?[]const u8 = null,
-    credential_provider: ?[]const u8 = null,
 
     pub fn deinit(self: RegistryConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.resolver);
         if (self.url) |u| allocator.free(u);
         if (self.path) |p| allocator.free(p);
-        if (self.token) |t| allocator.free(t);
-        if (self.credential_provider) |provider| allocator.free(provider);
     }
 };
 
-/// Extract registries from a raw TOML value supporting both syntaxes:
-///   [registries."name"] or [registries.name]  (table of tables)
-///   [[registries]] with `name` field            (array of tables)
-///
-/// Populates `out_map` with registry name -> RegistryConfig.
+fn isReservedRegistryName(name: []const u8) bool {
+    const reserved = [_][]const u8{ "moonstone", "rocks", "default", "path", "link", "artifact" };
+    for (reserved) |value| if (std.mem.eql(u8, name, value)) return true;
+    return false;
+}
+
+/// Extract canonical `[[registries]]` declarations into name -> RegistryConfig.
 pub fn extractRegistriesFromToml(
     allocator: std.mem.Allocator,
     registries_value: toml.Value,
     out_map: *std.StringArrayHashMapUnmanaged(RegistryConfig),
 ) !void {
     switch (registries_value) {
-        .table => |tab| {
-            // Dotted-table syntax: [registries."name"] or [registries.name]
-            var it = tab.iterator();
-            while (it.next()) |entry| {
-                const reg_name = entry.key_ptr.*;
-                if (std.mem.eql(u8, reg_name, "moonstone") or std.mem.eql(u8, reg_name, "rocks")) continue;
-                if (entry.value_ptr.* != .table) continue;
-                const rt = entry.value_ptr.table;
-                try out_map.put(allocator, try allocator.dupe(u8, reg_name), .{
-                    .url = if (rt.get("url")) |u| try allocator.dupe(u8, u.string) else null,
-                    .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
-                    .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
-                    .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
-                    .credential_provider = if (rt.get("credential_provider")) |provider| try allocator.dupe(u8, provider.string) else null,
-                });
-            }
-        },
+        .table => return error.RegistryTableSyntaxUnsupported,
         .array => |ar| {
             // Array-table syntax: [[registries]]
             for (ar.items) |item| {
                 if (item != .table) continue;
                 const rt = item.table;
                 const name_v = rt.get("name") orelse continue;
+                const resolver_v = rt.get("resolver") orelse return error.RegistryResolverRequired;
                 const reg_name = name_v.string;
-                if (std.mem.eql(u8, reg_name, "moonstone") or std.mem.eql(u8, reg_name, "rocks")) continue;
+                if (isReservedRegistryName(reg_name)) return error.ReservedRegistryName;
+                if (rt.get("token") != null or rt.get("credential_provider") != null) return error.RegistryAuthenticationUnsupported;
                 try out_map.put(allocator, try allocator.dupe(u8, reg_name), .{
+                    .resolver = try allocator.dupe(u8, resolver_v.string),
                     .url = if (rt.get("url")) |u| try allocator.dupe(u8, u.string) else null,
                     .path = if (rt.get("path")) |p| try allocator.dupe(u8, p.string) else null,
                     .priority = if (rt.get("priority")) |p| @intCast(p.integer) else 0,
-                    .token = if (rt.get("token")) |t| try allocator.dupe(u8, t.string) else null,
-                    .credential_provider = if (rt.get("credential_provider")) |provider| try allocator.dupe(u8, provider.string) else null,
                 });
             }
         },
@@ -2146,22 +2094,22 @@ test "MoonstoneToml round-trips every root configuration section" {
         \\OPENSSL_DIR = "/opt/openssl"
         \\CC = { from = "CC", optional = true, default = "zig cc" }
         \\
-        \\[registries."z-reg"]
+        \\[[registries]]
+        \\name = "z-reg"
+        \\resolver = "moonstone"
         \\url = "https://example.invalid/z"
         \\priority = 20
         \\
-        \\[registries."a-reg"]
+        \\[[registries]]
+        \\name = "a-reg"
+        \\resolver = "moonstone"
         \\path = "/tmp/a-reg"
         \\priority = 10
-        \\token = "secret"
-        \\
-        \\[resolution]
-        \\default_order = ["rocks", "moonstone"]
         \\
         \\[[dependencies]]
         \\name = "runtime-lib"
         \\constraint = "^1.0.0"
-        \\resolver = "rocks"
+        \\registry = "rocks"
         \\role = "runtime"
         \\
         \\[[dependencies]]
@@ -2181,8 +2129,8 @@ test "MoonstoneToml round-trips every root configuration section" {
     const serialized = out.writer.buffer[0..out.writer.end];
     try std.testing.expect((std.mem.indexOf(u8, serialized, "\"alpha\" =") orelse return error.TestExpectedEqual) <
         (std.mem.indexOf(u8, serialized, "\"zeta\" =") orelse return error.TestExpectedEqual));
-    try std.testing.expect((std.mem.indexOf(u8, serialized, "[registries.\"a-reg\"]") orelse return error.TestExpectedEqual) <
-        (std.mem.indexOf(u8, serialized, "[registries.\"z-reg\"]") orelse return error.TestExpectedEqual));
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"a-reg\"") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "name = \"z-reg\"") orelse return error.TestExpectedEqual));
 
     var round_tripped = try MoonstoneToml.parse(allocator, serialized);
     defer round_tripped.deinit(allocator);
@@ -2201,13 +2149,9 @@ test "MoonstoneToml round-trips every root configuration section" {
     const a_registry = round_tripped.registries.get("a-reg").?;
     const z_registry = round_tripped.registries.get("z-reg").?;
     try std.testing.expectEqualStrings("/tmp/a-reg", a_registry.path.?);
-    try std.testing.expectEqualStrings("secret", a_registry.token.?);
     try std.testing.expectEqualStrings("https://example.invalid/z", z_registry.url.?);
     try std.testing.expectEqual(@as(i32, 20), z_registry.priority);
 
-    const resolution = round_tripped.resolution orelse return error.TestExpectedEqual;
-    try std.testing.expectEqualStrings("rocks", resolution.default_order[0]);
-    try std.testing.expectEqualStrings("moonstone", resolution.default_order[1]);
     try std.testing.expectEqual(@as(usize, 2), round_tripped.dependencies.items.len);
     try std.testing.expectEqual(DependencyRole.tool, round_tripped.dependencies.items[0].role);
     try std.testing.expectEqual(DependencyRole.runtime, round_tripped.dependencies.items[1].role);
@@ -2595,4 +2539,61 @@ test "StoreManifest source_url round-trips through serialize and parse" {
     try std.testing.expectEqualStrings("puc_lua_source", sm2.origin.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", sm2.origin.source_payload);
     try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm2.origin.source_url);
+}
+
+test "MoonstoneToml rejects registry authentication fields" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "registry-auth"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[[registries]]
+        \\name = "acme"
+        \\resolver = "moonstone"
+        \\url = "https://packages.example.test/registry/v0"
+        \\credential_provider = "./acme.auth.lua"
+    ;
+
+    try std.testing.expectError(error.RegistryAuthenticationUnsupported, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml rejects dependency resolver fields" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "legacy-dependency-resolver"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[[dependencies]]
+        \\name = "argparse"
+        \\constraint = "^0.7.1-1"
+        \\resolver = "rocks"
+        \\role = "runtime"
+    ;
+
+    try std.testing.expectError(error.DependencyResolverSyntaxUnsupported, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml rejects reserved registry aliases" {
+    const allocator = std.testing.allocator;
+    const aliases = [_][]const u8{ "moonstone", "rocks", "default", "path", "link", "artifact" };
+    for (aliases) |alias| {
+        const toml_text = try std.fmt.allocPrint(allocator,
+            \\[package]
+            \\name = "reserved-registry"
+            \\version = "0.1.0"
+            \\kind = "script"
+            \\
+            \\[[registries]]
+            \\name = "{s}"
+            \\resolver = "moonstone"
+            \\path = "./registry"
+        , .{alias});
+        defer allocator.free(toml_text);
+
+        try std.testing.expectError(error.ReservedRegistryName, MoonstoneToml.parse(allocator, toml_text));
+    }
 }

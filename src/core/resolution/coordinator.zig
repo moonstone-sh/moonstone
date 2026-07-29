@@ -82,6 +82,7 @@ pub const Coordinator = struct {
         if (options.offline) return error.OfflineMode;
 
         for (registries) |reg| {
+            if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
             const res = moonstone_resolver.resolve_remote(self.allocator, self.io, pkg_name, constraint, reg.url, reg.token, options, environ_map) catch |err| {
                 if (err == error.PackageNotFound) continue;
                 return err;
@@ -106,6 +107,7 @@ pub const Coordinator = struct {
                     },
                 },
                 .remote_desc = res.desc,
+                .registry_name = try self.allocator.dupe(u8, reg.name),
                 .registry_url = try self.allocator.dupe(u8, reg.url),
                 .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
                 .descriptor_path = try self.allocator.dupe(u8, res.descriptor_path),
@@ -267,6 +269,7 @@ pub const Coordinator = struct {
         options: options_mod.ResolveOptions,
         kind: CoordinatorKind,
         environ_map: *std.process.Environ.Map,
+        registry_identity: ?[]const u8,
     ) !candidate_mod.Candidate {
         // Check local store first for resolvers that can produce cached artifacts
         if (try self.tryResolveFromStore(pkg_name, constraint, kind, index, options)) |cand| {
@@ -275,11 +278,19 @@ pub const Coordinator = struct {
 
         return switch (kind) {
             .moonstone => self.resolveFromRegistries(pkg_name, constraint, registries, options, environ_map),
-            .rocks => rocks_resolver.resolve(self.allocator, self.io, pkg_name, constraint, options, environ_map),
+            .rocks => rocks_resolver.resolve(self.allocator, self.io, pkg_name, constraint, options, environ_map, rocksBaseForIdentity(registries, registry_identity), registry_identity),
             .path => path_resolver.resolve(self.allocator, self.io, pkg_name, constraint, options),
             .link => link_resolver.resolve(self.allocator, self.io, pkg_name, constraint, index, options, environ_map),
             .artifact => artifact_resolver.resolve(self.allocator, self.io, pkg_name, constraint, index, options),
         };
+    }
+
+    fn rocksBaseForIdentity(registries: []const registry.ResolvedRegistry, identity: ?[]const u8) ?[]const u8 {
+        const wanted = identity orelse "rocks";
+        for (registries) |reg| {
+            if (std.mem.eql(u8, reg.name, wanted) and std.mem.eql(u8, reg.resolver, "rocks")) return reg.url;
+        }
+        return null;
     }
 
     pub fn resolve_remote(

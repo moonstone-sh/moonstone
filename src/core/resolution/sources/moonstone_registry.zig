@@ -23,6 +23,7 @@ pub fn resolve(
     // 1. Check remote registries unless offline
     if (!options.offline) {
         for (registries) |reg| {
+            if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
             if (resolve_remote(allocator, io, pkg_name, version_range, reg.url, reg.token, options, env)) |res| {
                 const art = res.desc.artifact[res.artifact_idx];
                 return candidate_mod.Candidate{

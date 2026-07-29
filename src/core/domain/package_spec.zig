@@ -26,23 +26,14 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
 
     var current = raw;
 
-    // 1. Check for resolver/registry prefix (colon notation)
+    // 1. Check for a registry identity or a local-source prefix.
     if (std.mem.indexOfScalar(u8, current, ':')) |colon_idx| {
         const prefix = current[0..colon_idx];
-        if (root.ResolverKind.fromString(prefix)) |kind| {
+        if (std.mem.eql(u8, prefix, "path") or std.mem.eql(u8, prefix, "link") or std.mem.eql(u8, prefix, "artifact")) {
+            const kind = try root.ResolverKind.fromString(prefix);
             result.resolver = kind;
             current = current[colon_idx + 1 ..];
-        } else |_| {
-            // Check if it's a reserved keyword we don't know about yet but shouldn't use as registry name
-            const reserved = &[_][]const u8{ "moonstone", "rocks", "links", "path", "artifact", "git", "http", "https" };
-            var is_reserved = false;
-            for (reserved) |res| {
-                if (std.mem.eql(u8, prefix, res)) {
-                    is_reserved = true;
-                    break;
-                }
-            }
-            // If it matches a known reserved resolver or common protocol, treat it as a registry reference
+        } else {
             result.registry = try allocator.dupe(u8, prefix);
             current = current[colon_idx + 1 ..];
         }
@@ -58,9 +49,6 @@ pub fn parsePackageSpec(allocator: std.mem.Allocator, raw: []const u8) !PackageS
     }
 
     const name = try allocator.dupe(u8, current);
-    if (result.resolver == .rocks) {
-        for (name) |*char| char.* = std.ascii.toLower(char.*);
-    }
     result.name = name;
     return result;
 }
@@ -72,12 +60,13 @@ pub fn canonicalOfficialRuntime(name: []const u8) []const u8 {
     return name;
 }
 
-test "parsePackageSpec normalizes explicit LuaRocks names" {
+test "parsePackageSpec treats explicit prefixes as registry identities" {
     const allocator = std.testing.allocator;
     const spec = try parsePackageSpec(allocator, "rocks:LuaSocket@^3.1.0-1");
     defer spec.deinit(allocator);
 
-    try std.testing.expectEqual(root.ResolverKind.rocks, spec.resolver.?);
-    try std.testing.expectEqualStrings("luasocket", spec.name);
+    try std.testing.expect(spec.resolver == null);
+    try std.testing.expectEqualStrings("rocks", spec.registry.?);
+    try std.testing.expectEqualStrings("LuaSocket", spec.name);
     try std.testing.expectEqualStrings("^3.1.0-1", spec.constraint.?);
 }

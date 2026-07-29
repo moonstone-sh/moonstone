@@ -185,12 +185,14 @@ Use fake tokens like:
 mst_example_do_not_use
 ```
 
-Prefer environment-variable examples for private registry credentials:
+For a private registry, document the vendor or gateway's access setup rather
+than putting credentials in the project manifest:
 
 ```toml
-[registries.company]
+[[registries]]
+name = "company"
+resolver = "moonstone"
 url = "https://registry.company.internal/v0"
-token = "$MOONSTONE_COMPANY_TOKEN"
 ```
 
 ## Registry and package contract changes

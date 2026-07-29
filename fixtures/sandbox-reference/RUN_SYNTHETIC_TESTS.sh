@@ -39,9 +39,6 @@ cache = "${MOONSTONE_CACHE}"
 downloads = "${MOONSTONE_CACHE}/downloads"
 shims = "${MOONSTONE_DATA}/v0/shims"
 
-[registries.synthetic]
-path = "${SCRIPT_DIR}/registry"
-priority = 100
 EOF
 
 PASS=0

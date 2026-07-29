@@ -20,6 +20,51 @@ fn solutionFetchSwapRemovePackage(solution: *std.StringArrayHashMapUnmanaged(moo
     }
     return null;
 }
+
+fn resolverForPackageSpec(
+    mt: *const moonstone.domain.manifest.MoonstoneToml,
+    spec: moonstone.domain.package_spec.PackageSpec,
+) !moonstone.resolution.coordinator.CoordinatorKind {
+    if (spec.resolver) |kind| return kind;
+
+    const identity = spec.registry orelse return .moonstone;
+    if (std.mem.eql(u8, identity, "moonstone")) return .moonstone;
+    if (std.mem.eql(u8, identity, "rocks")) return .rocks;
+
+    const config = mt.registries.get(identity) orelse return error.RegistryNotFound;
+    return moonstone.resolution.coordinator.CoordinatorKind.fromString(config.resolver);
+}
+
+fn registryIdentityForPackageSpec(
+    allocator: std.mem.Allocator,
+    spec: moonstone.domain.package_spec.PackageSpec,
+    resolver: moonstone.resolution.coordinator.CoordinatorKind,
+) !?[]const u8 {
+    if (spec.resolver != null) {
+        return switch (resolver) {
+            .path => try allocator.dupe(u8, spec.name),
+            .link, .artifact => null,
+            else => null,
+        };
+    }
+    return try allocator.dupe(u8, spec.registry orelse switch (resolver) {
+        .moonstone => "moonstone",
+        .rocks => "rocks",
+        else => return null,
+    });
+}
+
+fn lockRegistryForPackage(
+    allocator: std.mem.Allocator,
+    pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
+    existing_lock: *const moonstone.domain.lockfile.LockFile,
+) ![]const u8 {
+    if (pkg.registry_name) |registry_name| return allocator.dupe(u8, registry_name);
+    if (existing_lock.find(pkg.name)) |entry| {
+        if (entry.registry.len > 0) return allocator.dupe(u8, entry.registry);
+    }
+    return &.{};
+}
 fn projectedArtifactFromPkg(
     allocator: std.mem.Allocator,
     mt: *const moonstone.domain.manifest.MoonstoneToml,
@@ -733,11 +778,13 @@ pub const SyncCommand = struct {
             const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
             defer spec.deinit(allocator);
 
+            const selected_resolver = try resolverForPackageSpec(&mt, spec);
+
             try targets.append(allocator, .{
-                .name = try allocator.dupe(u8, if (spec.resolver == .rocks) spec.name else dep.name),
+                .name = try allocator.dupe(u8, if (selected_resolver == .rocks) spec.name else dep.name),
                 .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
-                .resolver = spec.resolver,
-                .registry = if (spec.registry) |r| try allocator.dupe(u8, r) else if (spec.resolver == .path) try allocator.dupe(u8, spec.name) else null,
+                .resolver = selected_resolver,
+                .registry = try registryIdentityForPackageSpec(allocator, spec, selected_resolver),
                 .role = dep.role,
             });
         }
@@ -962,32 +1009,18 @@ pub const SyncCommand = struct {
                 const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                 defer spec.deinit(allocator);
 
-                const dep_name = if (spec.resolver == .rocks) spec.name else dep.name;
+                const selected_resolver = try resolverForPackageSpec(&mt, spec);
+                const dep_name = if (selected_resolver == .rocks) spec.name else dep.name;
 
                 const force_direct = spec.resolver != null or spec.registry != null;
                 if (solutionContainsPackage(&solution, dep_name) and !force_direct) continue;
 
-                var direct_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
-                var direct_kinds_len: usize = 0;
-                if (spec.resolver) |resolver_kind| {
-                    direct_kinds_buf[direct_kinds_len] = resolver_kind;
-                    direct_kinds_len += 1;
-                } else {
-                    const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
-                    for (default_order) |r_name| {
-                        if (moonstone.resolution.coordinator.CoordinatorKind.fromString(r_name)) |kind| {
-                            direct_kinds_buf[direct_kinds_len] = kind;
-                            direct_kinds_len += 1;
-                        } else |_| continue;
-                    }
-                }
-
                 var resolved_direct_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
-                const resolver_query_name = if (spec.resolver) |resolver_kind| switch (resolver_kind) {
+                const resolver_query_name = switch (selected_resolver) {
                     .path, .link, .artifact => spec.name,
                     else => dep_name,
-                } else dep_name;
-                for (direct_kinds_buf[0..direct_kinds_len]) |kind| {
+                };
+                if (selected_resolver != .moonstone) {
                     resolved_direct_opt = coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
                         .offline = self.offline,
                         .prefer_local = !self.update,
@@ -998,14 +1031,16 @@ pub const SyncCommand = struct {
                         .on_event = on_resolve_cb,
                         .on_event_context = on_resolve_ctx,
                         .build_env = build_env,
-                    }, kind, env) catch |err| {
-                        if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
-                        return err;
+                    }, selected_resolver, env, spec.registry) catch |err| {
+                        if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
+                            resolved_direct_opt = null;
+                        } else {
+                            return err;
+                        }
                     };
-                    if (resolved_direct_opt != null) break;
                 }
-                if (resolved_direct_opt == null) {
-                    if (spec.registry) |registry_name| {
+                if (resolved_direct_opt == null and selected_resolver == .moonstone) {
+                    const registry_name = spec.registry orelse "moonstone";
                         for (registries) |reg| {
                             if (!std.mem.eql(u8, reg.name, registry_name)) continue;
                             const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
@@ -1025,6 +1060,7 @@ pub const SyncCommand = struct {
                                 .artifact_hash = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].hash),
                                 .lua_abi = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].lua_abi),
                                 .remote_desc = remote.desc,
+                                .registry_name = try allocator.dupe(u8, reg.name),
                                 .registry_url = try allocator.dupe(u8, reg.url),
                                 .registry_token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
                                 .descriptor_path = remote.descriptor_path,
@@ -1038,7 +1074,6 @@ pub const SyncCommand = struct {
                             };
                             break;
                         }
-                    }
                 }
                 var resolved_direct = resolved_direct_opt orelse {
                     if (spec.resolver) |resolver_kind| switch (resolver_kind) {
@@ -1081,13 +1116,8 @@ pub const SyncCommand = struct {
                                 child_kinds_buf[child_kinds_len] = resolver_kind;
                                 child_kinds_len += 1;
                             } else {
-                                const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
-                                for (default_order) |r_name| {
-                                    if (moonstone.resolution.coordinator.CoordinatorKind.fromString(r_name)) |kind| {
-                                        child_kinds_buf[child_kinds_len] = kind;
-                                        child_kinds_len += 1;
-                                    } else |_| continue;
-                                }
+                                child_kinds_buf[child_kinds_len] = .moonstone;
+                                child_kinds_len += 1;
                             }
 
                             const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
@@ -1104,7 +1134,7 @@ pub const SyncCommand = struct {
                                     .on_event = on_resolve_cb,
                                     .on_event_context = on_resolve_ctx,
                                     .build_env = build_env,
-                                }, kind, env) catch |err| {
+                                }, kind, env, child_spec.registry) catch |err| {
                                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                                     return err;
                                 };
@@ -1183,13 +1213,8 @@ pub const SyncCommand = struct {
                             child_kinds_buf[child_kinds_len] = resolver_kind;
                             child_kinds_len += 1;
                         } else {
-                            const default_order = if (mt.resolution) |r| r.default_order else @as([]const []const u8, &[_][]const u8{ "moonstone", "rocks" });
-                            for (default_order) |resolver_name| {
-                                if (moonstone.resolution.coordinator.CoordinatorKind.fromString(resolver_name)) |kind| {
-                                    child_kinds_buf[child_kinds_len] = kind;
-                                    child_kinds_len += 1;
-                                } else |_| continue;
-                            }
+                            child_kinds_buf[child_kinds_len] = .moonstone;
+                            child_kinds_len += 1;
                         }
 
                         const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
@@ -1208,7 +1233,7 @@ pub const SyncCommand = struct {
                                 .on_event = on_resolve_cb,
                                 .on_event_context = on_resolve_ctx,
                                 .build_env = build_env,
-                            }, kind, env) catch |err| {
+                            }, kind, env, child_spec.registry) catch |err| {
                                 if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                                 return err;
                             };
@@ -1573,6 +1598,7 @@ pub const SyncCommand = struct {
                         .target = try allocator.dupe(u8, "native"),
                         .constellation = try allocator.dupe(u8, "default"),
                         .resolver = try allocator.dupe(u8, if (is_link) "link" else "path"),
+                        .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
                         .source = try allocator.dupe(u8, lp),
                         .source_kind = try allocator.dupe(u8, if (is_link) "live_link" else "local_path"),
                         .source_payload = &.{},
@@ -1655,6 +1681,7 @@ pub const SyncCommand = struct {
                                     break :blk "store";
                                 },
                             }),
+                            .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
                             .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (pkg.origin) {
                                 .moonstone_registry => if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
                                 .luarocks => |r| try allocator.dupe(u8, r.url),
@@ -1767,6 +1794,7 @@ pub const SyncCommand = struct {
                         .path => "path",
                         else => "store",
                     }),
+                    .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
                     .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (pkg.origin) {
                         .moonstone_registry => if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
                         .luarocks => |r| try allocator.dupe(u8, r.url),

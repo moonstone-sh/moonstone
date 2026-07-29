@@ -42,15 +42,6 @@ fn trace(comptime fmt: []const u8, args: anytype) void {
     std.debug.print("[registry] " ++ fmt ++ "\n", args);
 }
 
-fn resolveToken(
-    allocator: std.mem.Allocator,
-    config: manifest.RegistryConfig,
-    environ_map: *std.process.Environ.Map,
-) !?[]const u8 {
-    if (config.token) |token| return try expandEnv(allocator, token, environ_map);
-    return null;
-}
-
 /// Read project registries from moonstone.toml and return an ordered list of
 /// registry URLs sorted by priority (highest first). Global config registries
 /// are intentionally not resolution fallbacks: projects declare their exact
@@ -123,11 +114,11 @@ pub fn resolve(
                     }
 
                     if (url) |u| {
-                        const token = try resolveToken(allocator, cfg, environ_map);
                         try result.append(allocator, .{
                             .name = try allocator.dupe(u8, reg_name),
+                            .resolver = try allocator.dupe(u8, cfg.resolver),
                             .url = u,
-                            .token = token,
+                            .token = null,
                             .priority = cfg.priority,
                         });
                         if (do_trace) trace("project registry: name={s} url={s} priority={d}", .{ reg_name, u, cfg.priority });
@@ -139,17 +130,16 @@ pub fn resolve(
         }
     }
 
-    // ── 3. Fall back to default ───────────────────────────────────────────
-    if (result.items.len == 0) {
-        const default_url = @import("build_options").default_registry_url;
-        if (do_trace) trace("No custom registries loaded; falling back to default registry {s}", .{default_url});
-        try result.append(allocator, .{
-            .name = try allocator.dupe(u8, "official"),
-            .url = try allocator.dupe(u8, default_url),
-            .token = null,
-            .priority = 0,
-        });
-    } else if (do_trace) {
+    // ── 3. Add the immutable built-in Moonstone identity ─────────────────
+    const default_url = @import("build_options").default_registry_url;
+    try result.append(allocator, .{
+        .name = try allocator.dupe(u8, "moonstone"),
+        .resolver = try allocator.dupe(u8, "moonstone"),
+        .url = try allocator.dupe(u8, default_url),
+        .token = null,
+        .priority = 0,
+    });
+    if (do_trace) {
         trace("Final registry list ({d} entries):", .{result.items.len});
         for (result.items) |r| {
             trace("  {s}: {s} (priority {d})", .{ r.name, r.url, r.priority });

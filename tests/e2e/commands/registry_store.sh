@@ -13,7 +13,9 @@ moon interpreter set lua@5.4 --no-sync
 
 cd subdir
 moon registry add local-synthetic "${SANDBOX_DIR}/registry" --default
-assert_file_contains "${WORKDIR}/project/moonstone.toml" '[registries."local-synthetic"]'
+assert_file_contains "${WORKDIR}/project/moonstone.toml" '[[registries]]'
+assert_file_contains "${WORKDIR}/project/moonstone.toml" 'name = "local-synthetic"'
+assert_file_contains "${WORKDIR}/project/moonstone.toml" 'resolver = "moonstone"'
 assert_file_contains "${WORKDIR}/project/moonstone.toml" "${SANDBOX_DIR}/registry"
 
 registry_output=$(moon registry list)

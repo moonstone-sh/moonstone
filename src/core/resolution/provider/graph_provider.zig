@@ -126,6 +126,14 @@ pub const RegistryProvider = struct {
         // All metadata is in the arena, just deinit it once.
         self.arena.deinit();
     }
+
+    fn registryUrlFor(self: *const RegistryProvider, identity: ?[]const u8, resolver_name: []const u8) ?[]const u8 {
+        const wanted = identity orelse resolver_name;
+        for (self.registries) |reg| {
+            if (std.mem.eql(u8, reg.name, wanted) and std.mem.eql(u8, reg.resolver, resolver_name)) return reg.url;
+        }
+        return null;
+    }
     pub fn get_artifact(self: *RegistryProvider, request: package_provider.ArtifactRequest) anyerror!?candidate_mod.Candidate {
         // 1. If artifact_hash is provided, do strict exact lookup first.
         if (request.artifact_hash) |hash| {
@@ -309,6 +317,7 @@ pub const RegistryProvider = struct {
             const exact_version_constraint = try std.fmt.allocPrint(self.allocator, "={s}", .{request.version});
             defer self.allocator.free(exact_version_constraint);
             for (self.registries) |reg| {
+                if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
                 var remote = moonstone_registry_resolver.resolve_remote(
                     self.allocator,
                     self.io,
@@ -337,6 +346,7 @@ pub const RegistryProvider = struct {
                     .runtime = try self.allocator.dupe(u8, selected_artifact.runtime),
                     .runtime_artifact_hash = try self.allocator.dupe(u8, selected_artifact.runtime_artifact_hash),
                     .remote_desc = try remote.desc.clone(self.allocator),
+                    .registry_name = try self.allocator.dupe(u8, reg.name),
                     .registry_url = try self.allocator.dupe(u8, reg.url),
                     .registry_token = if (reg.token) |t| try self.allocator.dupe(u8, t) else null,
                     .descriptor_path = try self.allocator.dupe(u8, remote.descriptor_path),
@@ -367,7 +377,7 @@ pub const RegistryProvider = struct {
             if (is_rocks) {
                 var opts = self.options;
                 opts.lua_exe = self.lua_exe;
-                const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?) catch |err| {
+                const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?, null, null) catch |err| {
                     if (err == error.PackageNotFound or err == error.RockspecNotFound or
                         err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
                         err == error.RocksVersionDiscoveryFailed)
@@ -617,7 +627,7 @@ pub const RegistryProvider = struct {
             if (versions.items.len == 0) {
                 var opts = self.options;
                 opts.lua_exe = self.lua_exe;
-                const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?) catch |err| blk: {
+                const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, self.registryUrlFor(reg_constraint, "rocks")) catch |err| blk: {
                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
                         break :blk @as([]semver.Version, &.{});
                     }
@@ -636,13 +646,8 @@ pub const RegistryProvider = struct {
         // 4. Check remote registries
         if (!self.options.offline and (res_constraint == null or res_constraint.? == .moonstone)) {
             for (self.registries) |reg| {
-                if (reg_constraint) |rc| {
-                    if (std.mem.eql(u8, rc, "moonstone")) {
-                        // All
-                    } else if (!std.mem.eql(u8, reg.name, rc)) {
-                        continue;
-                    }
-                }
+                if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
+                if (reg_constraint) |rc| if (!std.mem.eql(u8, reg.name, rc)) continue;
 
                 var client = registry.RegistryClient.init(self.allocator, self.io, reg.url, reg.token, self.env);
                 defer client.deinit();
@@ -673,6 +678,7 @@ pub const RegistryProvider = struct {
                                 .kind = pkg.kind,
                                 .artifact_hash = try arena.dupe(u8, ""),
                                 .version = try arena.dupe(u8, pkg.version),
+                                .registry_name = try arena.dupe(u8, reg.name),
                                 .registry_url = try arena.dupe(u8, reg.url),
                                 .registry_token = if (reg.token) |t| try arena.dupe(u8, t) else null,
                                 .descriptor_path = try arena.dupe(u8, pkg.descriptor),
@@ -837,15 +843,18 @@ pub const RegistryProvider = struct {
         // the "Inline Materialization" design from ARCHITECTURE.md section 9.
         if (artifact == null) {
             var dep_resolver: ?root.ResolverKind = null;
+            var dep_registry: ?[]const u8 = null;
             for (self.targets) |t| {
                 if (std.mem.eql(u8, t.name, name)) {
                     dep_resolver = t.resolver;
+                    dep_registry = t.registry;
                     break;
                 }
             }
             if (dep_resolver == null) {
                 if (self.findStoreDependencyOrigin(name, null)) |origin| {
                     dep_resolver = origin.child_resolver;
+                    dep_registry = origin.child_registry;
                 }
             }
 
@@ -856,7 +865,7 @@ pub const RegistryProvider = struct {
                 var opts = self.options;
                 opts.lua_exe = self.lua_exe;
 
-                const built = rocks_resolver.resolve(self.allocator, self.io, name, v_str, opts, self.env.?) catch |err| {
+                const built = rocks_resolver.resolve(self.allocator, self.io, name, v_str, opts, self.env.?, self.registryUrlFor(dep_registry, "rocks"), dep_registry) catch |err| {
                     if (err == error.PackageNotFound or err == error.RockspecNotFound or
                         err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
                         err == error.RocksVersionDiscoveryFailed)

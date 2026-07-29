@@ -25,6 +25,7 @@ pub const LockEntry = struct {
     rockspec_hash: []const u8 = &.{},
     rockspec_payload: []const u8 = &.{},
     resolver: []const u8 = &.{},
+    registry: []const u8 = &.{},
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
     roles: []const []const u8 = &.{},
@@ -51,6 +52,7 @@ pub const LockEntry = struct {
         if (self.rockspec_hash.len > 0) allocator.free(self.rockspec_hash);
         if (self.rockspec_payload.len > 0) allocator.free(self.rockspec_payload);
         if (self.resolver.len > 0) allocator.free(self.resolver);
+        if (self.registry.len > 0) allocator.free(self.registry);
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
         for (self.roles) |g| allocator.free(g);
         if (self.roles.len > 0) allocator.free(self.roles);
@@ -122,6 +124,7 @@ pub const LockFile = struct {
             if (entry.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{entry.rockspec_hash});
             if (entry.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{entry.rockspec_payload});
             if (entry.resolver.len > 0) try writer.print("resolver = \"{s}\"\n", .{entry.resolver});
+            if (entry.registry.len > 0) try writer.print("registry = \"{s}\"\n", .{entry.registry});
             if (entry.link_mode.len > 0) try writer.print("link_mode = \"{s}\"\n", .{entry.link_mode});
             if (!entry.reproducible) try writer.print("reproducible = false\n", .{});
             if (entry.roles.len > 0) {
@@ -202,6 +205,7 @@ pub const LockFile = struct {
                     .rockspec_hash = if (getStr(t, "rockspec_hash")) |s| try allocator.dupe(u8, s) else &.{},
                     .rockspec_payload = if (getStr(t, "rockspec_payload")) |s| try allocator.dupe(u8, s) else &.{},
                     .resolver = if (getStr(t, "resolver")) |s| try allocator.dupe(u8, s) else &.{},
+                    .registry = if (getStr(t, "registry")) |s| try allocator.dupe(u8, s) else &.{},
                     .link_mode = if (getStr(t, "link_mode")) |s| try allocator.dupe(u8, s) else &.{},
                     .reproducible = reproducible,
                     .replay_mode = parsed_replay_mode,

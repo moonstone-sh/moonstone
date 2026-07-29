@@ -12,12 +12,14 @@ var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 /// Resolved registry entry ready for use by the client.
 pub const ResolvedRegistry = struct {
     name: []const u8,
+    resolver: []const u8,
     url: []const u8,
     token: ?[]const u8,
     priority: i32,
 
     pub fn deinit(self: ResolvedRegistry, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        allocator.free(self.resolver);
         allocator.free(self.url);
         if (self.token) |t| allocator.free(t);
     }
@@ -48,12 +50,6 @@ pub const RegistryClient = struct {
     env: ?*std.process.Environ.Map = null,
     on_event: ?resolver.ResolveCallback = null,
     on_event_context: ?*anyopaque = null,
-
-    const CredentialHeader = struct { name: []const u8, value: []const u8 };
-    const ProviderResponse = struct {
-        headers: ?[]CredentialHeader = null,
-        @"error": ?struct { message: []const u8 } = null,
-    };
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, root: []const u8, token: ?[]const u8, env: ?*std.process.Environ.Map) RegistryClient {
         const is_remote = std.mem.startsWith(u8, root, "http");
@@ -452,75 +448,7 @@ pub const RegistryClient = struct {
             try extra_headers.append(self.allocator, .{ .name = "Authorization", .value = auth_val });
         }
 
-        if (try self.providerHeaders(url)) |headers| {
-            defer {
-                for (headers) |header| {
-                    self.allocator.free(header.name);
-                    self.allocator.free(header.value);
-                }
-                self.allocator.free(headers);
-            }
-            for (headers) |header| {
-                if (std.ascii.eqlIgnoreCase(header.name, "host") or
-                    std.ascii.eqlIgnoreCase(header.name, "content-length") or
-                    std.ascii.eqlIgnoreCase(header.name, "range")) return error.CredentialProviderForbiddenHeader;
-                try extra_headers.append(self.allocator, .{ .name = header.name, .value = header.value });
-            }
-        }
-
         return http.fetchGetBodyWithClient(self.allocator, client, url, extra_headers.items, timeout_ms);
-    }
-
-    fn providerPath(self: *RegistryClient) !?[]const u8 {
-        const content = std.Io.Dir.cwd().readFileAlloc(self.io, "moonstone.toml", self.allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
-            error.FileNotFound => return null,
-            else => return err,
-        };
-        defer self.allocator.free(content);
-        var project = try manifest.MoonstoneToml.parse(self.allocator, content);
-        defer project.deinit(self.allocator);
-        var it = project.registries.iterator();
-        while (it.next()) |entry| {
-            const config = entry.value_ptr.*;
-            if (config.url) |registry_url| {
-                if (std.mem.eql(u8, registry_url, self.registry_root)) {
-                    if (config.credential_provider) |provider| return try self.allocator.dupe(u8, provider);
-                }
-            }
-        }
-        return null;
-    }
-
-    fn providerHeaders(self: *RegistryClient, url: []const u8) !?[]CredentialHeader {
-        if (!self.is_remote) return null;
-        const provider = try self.providerPath() orelse return null;
-        defer self.allocator.free(provider);
-        const executable = if (std.fs.path.isAbsolute(provider)) provider else try std.fs.path.join(self.allocator, &.{ ".", provider });
-        defer if (!std.mem.eql(u8, executable, provider)) self.allocator.free(executable);
-
-        var request = std.Io.Writer.Allocating.init(self.allocator);
-        defer request.deinit();
-        try std.json.Stringify.value(.{ .v = @as(u8, 1), .kind = "get", .registry = .{ .url = self.registry_root }, .request = .{ .operation = "download", .url = url, .method = "GET" } }, .{}, &request.writer);
-        try request.writer.writeAll("\n");
-
-        var child = try std.process.spawn(self.io, .{ .argv = &.{executable}, .environ_map = self.env, .stdin = .pipe, .stdout = .pipe, .stderr = .ignore });
-        try child.stdin.?.writeStreamingAll(self.io, request.writer.buffer[0..request.writer.end]);
-        child.stdin.?.close(self.io);
-        var buffer: [4096]u8 = undefined;
-        var reader = child.stdout.?.reader(self.io, &buffer);
-        const output = try reader.interface.allocRemaining(self.allocator, .limited(64 * 1024));
-        defer self.allocator.free(output);
-        const term = try child.wait(self.io);
-        if (term != .exited or term.exited != 0) return error.CredentialProviderFailed;
-
-        var parsed = try std.json.parseFromSlice(ProviderResponse, self.allocator, output, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
-        defer parsed.deinit();
-        if (parsed.value.@"error" != null) return error.CredentialProviderRejected;
-        const source = parsed.value.headers orelse return error.CredentialProviderInvalidResponse;
-        var headers = try self.allocator.alloc(CredentialHeader, source.len);
-        errdefer self.allocator.free(headers);
-        for (source, 0..) |header, index| headers[index] = .{ .name = try self.allocator.dupe(u8, header.name), .value = try self.allocator.dupe(u8, header.value) };
-        return headers;
     }
 
     fn get_url(self: *RegistryClient, url: []const u8) ![]u8 {

@@ -40,11 +40,6 @@ assert_file_contains "moonstone.toml" 'abi = "5.3"'
 cd "${WORKDIR}"
 moon init abi-negative --name abi-negative --interpreter lua@5.4 --no-sync --no-git
 cd "${WORKDIR}/abi-negative"
-cat >> moonstone.toml <<'TOML'
-
-[resolution]
-default_order = ["moonstone"]
-TOML
 python3 - <<'PY'
 from pathlib import Path
 path = Path('moonstone.toml')
