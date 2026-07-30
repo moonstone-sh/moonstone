@@ -1106,23 +1106,19 @@ pub const SyncCommand = struct {
                             defer allocator.free(child_raw_spec);
                             const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
                             defer child_spec.deinit(allocator);
-                            const child_name = if (child_spec.resolver == .rocks) child_spec.name else child_dep.name;
+                            const child_resolver = try resolverForPackageSpec(&linked_mt, child_spec);
+                            const child_name = if (child_resolver == .rocks) child_spec.name else child_dep.name;
                             if (solutionContainsPackage(&solution, child_name)) continue;
 
                             var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
                             var child_kinds_len: usize = 0;
-                            if (child_spec.resolver) |resolver_kind| {
-                                child_kinds_buf[child_kinds_len] = resolver_kind;
-                                child_kinds_len += 1;
-                            } else {
-                                child_kinds_buf[child_kinds_len] = .moonstone;
-                                child_kinds_len += 1;
-                            }
+                            child_kinds_buf[child_kinds_len] = child_resolver;
+                            child_kinds_len += 1;
 
-                            const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
+                            const child_query_name = switch (child_resolver) {
                                 .path, .link, .artifact => child_spec.name,
                                 else => child_name,
-                            } else child_name;
+                            };
                             var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
                             for (child_kinds_buf[0..child_kinds_len]) |kind| {
                                 resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
@@ -1203,23 +1199,19 @@ pub const SyncCommand = struct {
                     for (child_specs.items) |child_raw_spec| {
                         const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
                         defer child_spec.deinit(allocator);
+                        const child_resolver = try resolverForPackageSpec(&mt, child_spec);
                         const child_name = child_spec.name;
                         if (solutionContainsPackage(&solution, child_name)) continue;
 
                         var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
                         var child_kinds_len: usize = 0;
-                        if (child_spec.resolver) |resolver_kind| {
-                            child_kinds_buf[child_kinds_len] = resolver_kind;
-                            child_kinds_len += 1;
-                        } else {
-                            child_kinds_buf[child_kinds_len] = .moonstone;
-                            child_kinds_len += 1;
-                        }
+                        child_kinds_buf[child_kinds_len] = child_resolver;
+                        child_kinds_len += 1;
 
-                        const child_query_name = if (child_spec.resolver) |resolver_kind| switch (resolver_kind) {
+                        const child_query_name = switch (child_resolver) {
                             .path, .link, .artifact => child_spec.name,
                             else => child_name,
-                        } else child_name;
+                        };
                         var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
                         for (child_kinds_buf[0..child_kinds_len]) |kind| {
                             resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
@@ -1305,7 +1297,8 @@ pub const SyncCommand = struct {
             defer allocator.free(raw_spec);
             const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
             defer spec.deinit(allocator);
-            const dep_pkg_name = if (spec.resolver == .rocks) spec.name else dep.name;
+            const selected_resolver = try resolverForPackageSpec(&mt, spec);
+            const dep_pkg_name = if (selected_resolver == .rocks) spec.name else dep.name;
             const group_name = @tagName(dep.role);
             try group_ctx.addGroup(dep_pkg_name, group_name);
         }
@@ -1359,7 +1352,8 @@ pub const SyncCommand = struct {
                                     defer allocator.free(raw_spec);
                                     const dspec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                                     defer dspec.deinit(allocator);
-                                    const dname = if (dspec.resolver == .rocks) dspec.name else dep.name;
+                                    const selected_resolver = try resolverForPackageSpec(&mt, dspec);
+                                    const dname = if (selected_resolver == .rocks) dspec.name else dep.name;
                                     try deps.append(allocator, try allocator.dupe(u8, dname));
                                 }
                             }

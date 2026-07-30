@@ -720,7 +720,13 @@ pub const RemotePackageDescriptor = struct {
                     const dep = dep_val.table;
                     const role_str = dep.get("role").?.string;
                     const role = try parseDependencyRole(role_str);
-                    const resolver = if (dep.get("resolver")) |r| try allocator.dupe(u8, r.string) else null;
+                    if (dep.get("registry") != null and dep.get("resolver") != null) return error.DependencyRegistryConflict;
+                    const resolver = if (dep.get("registry")) |r|
+                        try allocator.dupe(u8, r.string)
+                    else if (dep.get("resolver")) |r|
+                        try allocator.dupe(u8, r.string)
+                    else
+                        null;
                     const name = try allocator.dupe(u8, dep.get("name").?.string);
                     const constraint = if (dep.get("constraint")) |c| try allocator.dupe(u8, c.string) else try allocator.dupe(u8, "");
                     const optional = if (dep.get("optional")) |o| o.boolean else false;
@@ -2296,6 +2302,28 @@ test "RemotePackageDescriptor parses string artifact runtime" {
 
     try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
     try std.testing.expectEqualStrings("moonstone/luajit@2.1.0", desc.artifact[0].runtime);
+}
+
+test "RemotePackageDescriptor accepts canonical dependency registries" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "moonstone/ballad"
+        \\version = "0.2.42"
+        \\kind = "bin"
+        \\
+        \\[[dependencies]]
+        \\name = "dkjson"
+        \\constraint = "^2.9-1"
+        \\registry = "rocks"
+        \\role = "runtime"
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), desc.dependencies.len);
+    try std.testing.expectEqualStrings("rocks", desc.dependencies[0].resolver.?);
 }
 
 test "RemotePackageDescriptor ignores malformed table pointer runtime string" {

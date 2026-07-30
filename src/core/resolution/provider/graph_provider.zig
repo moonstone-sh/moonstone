@@ -134,6 +134,7 @@ pub const RegistryProvider = struct {
         }
         return null;
     }
+
     pub fn get_artifact(self: *RegistryProvider, request: package_provider.ArtifactRequest) anyerror!?candidate_mod.Candidate {
         // 1. If artifact_hash is provided, do strict exact lookup first.
         if (request.artifact_hash) |hash| {
@@ -918,6 +919,7 @@ pub const RegistryProvider = struct {
                     const raw_spec = try dep.toSpecString(arena);
                     const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                     defer spec.deinit(self.allocator);
+                    const child_resolver = try resolverForPackageSpec(self.registries, spec);
 
                     // PubGrub asks for available versions by package name, so
                     // retain the resolver selected by this remote descriptor.
@@ -927,7 +929,7 @@ pub const RegistryProvider = struct {
                     try self.store_dependency_origins.append(self.allocator, .{
                         .child_name = try self.allocator.dupe(u8, spec.name),
                         .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
-                        .child_resolver = spec.resolver,
+                        .child_resolver = child_resolver,
                         .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
                         .child_role = dep.role,
                         .parent_name = try self.allocator.dupe(u8, art.name),
@@ -940,7 +942,7 @@ pub const RegistryProvider = struct {
                         .name = try arena.dupe(u8, spec.name),
                         .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
                         .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                        .resolver = spec.resolver,
+                        .resolver = child_resolver,
                         .role = dep.role,
                     });
                 }
@@ -996,6 +998,7 @@ pub const RegistryProvider = struct {
                         defer self.allocator.free(raw_spec);
                         const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                         defer spec.deinit(self.allocator);
+                        const child_resolver = try resolverForPackageSpec(self.registries, spec);
 
                         var child_name = dep.name;
                         var child_constraint = dep.constraint;
@@ -1005,7 +1008,7 @@ pub const RegistryProvider = struct {
                             child_constraint = spec.constraint orelse "*";
                         }
 
-                        if (spec.resolver == .path) {
+                        if (child_resolver == .path) {
                             const child_path = if (std.fs.path.isAbsolute(spec.name))
                                 try arena.dupe(u8, spec.name)
                             else
@@ -1021,7 +1024,7 @@ pub const RegistryProvider = struct {
                         try self.store_dependency_origins.append(self.allocator, .{
                             .child_name = try self.allocator.dupe(u8, child_name),
                             .child_constraint = try self.allocator.dupe(u8, child_constraint),
-                            .child_resolver = spec.resolver,
+                            .child_resolver = child_resolver,
                             .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
                             .child_role = dep.role,
                             .parent_name = try self.allocator.dupe(u8, art.name),
@@ -1034,7 +1037,7 @@ pub const RegistryProvider = struct {
                             .name = try arena.dupe(u8, child_name),
                             .range = try semver.VersionRange.parse(arena, child_constraint),
                             .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
-                            .resolver = spec.resolver,
+                            .resolver = child_resolver,
                             .role = dep.role,
                         });
                     }
@@ -1167,6 +1170,32 @@ fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
     if (std.mem.eql(u8, runtime_spec, "lua@unknown")) return false;
     if (std.mem.startsWith(u8, runtime_spec, "table:")) return false;
     return true;
+}
+
+fn resolverForPackageSpec(registries: []const registry.ResolvedRegistry, spec: package_spec.PackageSpec) !?root.ResolverKind {
+    if (spec.resolver) |resolver_kind| return resolver_kind;
+
+    const identity = spec.registry orelse return null;
+    if (std.mem.eql(u8, identity, "moonstone")) return .moonstone;
+    if (std.mem.eql(u8, identity, "rocks")) return .rocks;
+
+    for (registries) |reg| {
+        if (std.mem.eql(u8, reg.name, identity)) {
+            return try root.ResolverKind.fromString(reg.resolver);
+        }
+    }
+    return error.RegistryNotFound;
+}
+
+test "resolverForPackageSpec maps built-in registry namespaces" {
+    const allocator = std.testing.allocator;
+    const rocks_spec = try package_spec.parsePackageSpec(allocator, "rocks:dkjson@^2.9-1");
+    defer rocks_spec.deinit(allocator);
+    const moonstone_spec = try package_spec.parsePackageSpec(allocator, "moonstone/ballad@^0.2.41");
+    defer moonstone_spec.deinit(allocator);
+
+    try std.testing.expectEqual(root.ResolverKind.rocks, (try resolverForPackageSpec(&.{}, rocks_spec)).?);
+    try std.testing.expectEqual(@as(?root.ResolverKind, null), try resolverForPackageSpec(&.{}, moonstone_spec));
 }
 
 fn candidateHasMalformedRuntimeMetadata(candidate: driver_mod.Candidate) bool {
