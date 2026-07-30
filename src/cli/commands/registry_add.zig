@@ -52,7 +52,9 @@ pub const RegistryAddCommand = struct {
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, content);
         defer mt.deinit(allocator);
 
-        var config = moonstone.domain.manifest.RegistryConfig{};
+        var config = moonstone.domain.manifest.RegistryConfig{
+            .resolver = try allocator.dupe(u8, "moonstone"),
+        };
         if (std.mem.startsWith(u8, r_uri, "http")) {
             config.url = try allocator.dupe(u8, r_uri);
         } else if (std.mem.startsWith(u8, r_uri, "file:")) {

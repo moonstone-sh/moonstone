@@ -1021,59 +1021,58 @@ pub const SyncCommand = struct {
                     else => dep_name,
                 };
                 if (selected_resolver != .moonstone) {
-                    resolved_direct_opt = coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
-                        .offline = self.offline,
-                        .prefer_local = !self.update,
-                        .runtime = active_lua_abi,
-                        .runtime_c_api = runtime_c_api,
-                        .runtime_artifact_hash = rt_res.artifact_hash,
-                        .runtime_path = rt_mat_res.path,
-                        .on_event = on_resolve_cb,
-                        .on_event_context = on_resolve_ctx,
-                        .build_env = build_env,
-                    }, selected_resolver, env, spec.registry) catch |err| {
-                        if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) {
-                            resolved_direct_opt = null;
-                        } else {
+                    resolved_direct_opt = blk: {
+                        break :blk coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
+                            .offline = self.offline,
+                            .prefer_local = !self.update,
+                            .runtime = active_lua_abi,
+                            .runtime_c_api = runtime_c_api,
+                            .runtime_artifact_hash = rt_res.artifact_hash,
+                            .runtime_path = rt_mat_res.path,
+                            .on_event = on_resolve_cb,
+                            .on_event_context = on_resolve_ctx,
+                            .build_env = build_env,
+                        }, selected_resolver, env, spec.registry) catch |err| {
+                            if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) break :blk null;
                             return err;
-                        }
+                        };
                     };
                 }
                 if (resolved_direct_opt == null and selected_resolver == .moonstone) {
                     const registry_name = spec.registry orelse "moonstone";
-                        for (registries) |reg| {
-                            if (!std.mem.eql(u8, reg.name, registry_name)) continue;
-                            const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
-                                .offline = self.offline,
-                                .prefer_local = !self.update,
-                                .runtime = active_lua_abi,
-                                .runtime_artifact_hash = rt_res.artifact_hash,
-                                .runtime_path = rt_mat_res.path,
-                                .on_event = on_resolve_cb,
-                                .on_event_context = on_resolve_ctx,
-                                .build_env = build_env,
-                            }, env) catch continue;
-                            resolved_direct_opt = .{
-                                .name = try allocator.dupe(u8, dep_name),
-                                .version = try allocator.dupe(u8, remote.desc.package.version),
-                                .kind = remote.desc.package.kind,
-                                .artifact_hash = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].hash),
-                                .lua_abi = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].lua_abi),
-                                .remote_desc = remote.desc,
-                                .registry_name = try allocator.dupe(u8, reg.name),
-                                .registry_url = try allocator.dupe(u8, reg.url),
-                                .registry_token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
-                                .descriptor_path = remote.descriptor_path,
+                    for (registries) |reg| {
+                        if (!std.mem.eql(u8, reg.name, registry_name)) continue;
+                        const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
+                            .offline = self.offline,
+                            .prefer_local = !self.update,
+                            .runtime = active_lua_abi,
+                            .runtime_artifact_hash = rt_res.artifact_hash,
+                            .runtime_path = rt_mat_res.path,
+                            .on_event = on_resolve_cb,
+                            .on_event_context = on_resolve_ctx,
+                            .build_env = build_env,
+                        }, env) catch continue;
+                        resolved_direct_opt = .{
+                            .name = try allocator.dupe(u8, dep_name),
+                            .version = try allocator.dupe(u8, remote.desc.package.version),
+                            .kind = remote.desc.package.kind,
+                            .artifact_hash = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].hash),
+                            .lua_abi = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].lua_abi),
+                            .remote_desc = remote.desc,
+                            .registry_name = try allocator.dupe(u8, reg.name),
+                            .registry_url = try allocator.dupe(u8, reg.url),
+                            .registry_token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
+                            .descriptor_path = remote.descriptor_path,
+                            .artifact_idx = remote.artifact_idx,
+                            .origin = .{ .moonstone_registry = .{
+                                .url = try allocator.dupe(u8, reg.url),
+                                .token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
+                                .descriptor_path = try allocator.dupe(u8, remote.descriptor_path),
                                 .artifact_idx = remote.artifact_idx,
-                                .origin = .{ .moonstone_registry = .{
-                                    .url = try allocator.dupe(u8, reg.url),
-                                    .token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
-                                    .descriptor_path = try allocator.dupe(u8, remote.descriptor_path),
-                                    .artifact_idx = remote.artifact_idx,
-                                } },
-                            };
-                            break;
-                        }
+                            } },
+                        };
+                        break;
+                    }
                 }
                 var resolved_direct = resolved_direct_opt orelse {
                     if (spec.resolver) |resolver_kind| switch (resolver_kind) {
@@ -1598,7 +1597,7 @@ pub const SyncCommand = struct {
                         .target = try allocator.dupe(u8, "native"),
                         .constellation = try allocator.dupe(u8, "default"),
                         .resolver = try allocator.dupe(u8, if (is_link) "link" else "path"),
-                        .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
+                        .registry = try lockRegistryForPackage(allocator, &pkg, &existing_lock),
                         .source = try allocator.dupe(u8, lp),
                         .source_kind = try allocator.dupe(u8, if (is_link) "live_link" else "local_path"),
                         .source_payload = &.{},
@@ -1681,7 +1680,7 @@ pub const SyncCommand = struct {
                                     break :blk "store";
                                 },
                             }),
-                            .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
+                            .registry = try lockRegistryForPackage(allocator, &pkg, &existing_lock),
                             .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (pkg.origin) {
                                 .moonstone_registry => if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
                                 .luarocks => |r| try allocator.dupe(u8, r.url),
@@ -1794,7 +1793,7 @@ pub const SyncCommand = struct {
                         .path => "path",
                         else => "store",
                     }),
-                    .registry = try lockRegistryForPackage(allocator, pkg, &existing_lock),
+                    .registry = try lockRegistryForPackage(allocator, &pkg, &existing_lock),
                     .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (pkg.origin) {
                         .moonstone_registry => if (pkg.source.len > 0) try allocator.dupe(u8, pkg.source) else if (pkg.registry_url) |url| try allocator.dupe(u8, url) else &.{},
                         .luarocks => |r| try allocator.dupe(u8, r.url),

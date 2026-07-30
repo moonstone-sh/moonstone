@@ -158,7 +158,16 @@ pub fn ensureLockedArtifact(
     defer allocator.free(rocks_lookup_name);
     for (rocks_lookup_name) |*byte| byte.* = std.ascii.toLower(byte.*);
 
-    var cand = luarocks_src.resolve(allocator, io, rocks_lookup_name, entry.version, resolve_opts, env) catch |err| {
+    var cand = luarocks_src.resolve(
+        allocator,
+        io,
+        rocks_lookup_name,
+        entry.version,
+        resolve_opts,
+        env,
+        null,
+        if (entry.registry.len > 0) entry.registry else "rocks",
+    ) catch |err| {
         if (policy.offline and (err == error.NetworkDenied or err == error.HttpFailed)) {
             return error.OfflineReplayInputUnavailable;
         }
