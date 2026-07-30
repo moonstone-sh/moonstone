@@ -33,6 +33,9 @@ jobs:
         # We run the internal test suite
         run: zig build test
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Run Contracts Verification Tests
         # We verify TS, Go, and LuaCATS contracts remain valid
         run: ./packages/contracts/tests/run.sh
