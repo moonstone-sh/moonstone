@@ -619,17 +619,6 @@ fn projectFile(
     destination_dir.deleteFile(io, destination_name) catch |err| {
         if (err != error.FileNotFound) return err;
     };
-
-    if (comptime builtin.os.tag == .windows) {
-        destination_dir.symLink(io, source_path, destination_name, .{}) catch |err| switch (err) {
-            error.AccessDenied, error.PermissionDenied => {
-                try std.Io.Dir.cwd().copyFile(source_path, destination_dir, destination_name, io, .{ .replace = true });
-            },
-            else => return err,
-        };
-        return;
-    }
-
     try destination_dir.symLink(io, source_path, destination_name, .{});
 }
 
@@ -662,7 +651,6 @@ fn projectTree(
 }
 
 fn projectDirectory(
-    allocator: std.mem.Allocator,
     io: std.Io,
     destination_dir: std.Io.Dir,
     source_path: []const u8,
@@ -671,19 +659,6 @@ fn projectDirectory(
     destination_dir.deleteTree(io, destination_name) catch |err| {
         if (err != error.FileNotFound) return err;
     };
-
-    if (comptime builtin.os.tag == .windows) {
-        destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true }) catch |err| switch (err) {
-            error.AccessDenied, error.PermissionDenied => {
-                try destination_dir.createDirPath(io, destination_name);
-                var materialized_dir = try destination_dir.openDir(io, destination_name, .{});
-                defer materialized_dir.close(io);
-                try projectTree(allocator, io, materialized_dir, source_path);
-            },
-            else => return err,
-        };
-        return;
-    }
 
     try destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true });
 }
@@ -1353,7 +1328,7 @@ pub fn link_project_env_at(
         const ll_policy = ll.role.getProjectionPolicy();
         if (ll_policy.metadata_only) continue;
         const ll_local = packageLocalName(ll.pkg_name);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, ll_local, ll.source_path);
+        try linkPackageIntoLibexec(io, libexec_dir, ll_local, ll.source_path);
     }
 
     // 6. Fallback linking for artifacts without successful module metadata linking
@@ -1538,7 +1513,7 @@ pub fn link_project_env_at(
         const pa_path = try index.get_artifact_path(pa2.artifact_hash) orelse continue;
         defer allocator.free(pa_path);
         const pa_local = packageLocalName(pa2.name);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, pa_path);
+        try linkPackageIntoLibexec(io, libexec_dir, pa_local, pa_path);
     }
 
     // 7. Generate env.toml
@@ -1647,13 +1622,12 @@ fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.
 }
 
 fn linkPackageIntoLibexec(
-    allocator: std.mem.Allocator,
     io: std.Io,
     libexec_dir: std.Io.Dir,
     local_name: []const u8,
     src_path: []const u8,
 ) !void {
-    try projectDirectory(allocator, io, libexec_dir, src_path, local_name);
+    try projectDirectory(io, libexec_dir, src_path, local_name);
 }
 
 test "link_project_env basic" {
