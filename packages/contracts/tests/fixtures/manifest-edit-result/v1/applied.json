@@ -1,0 +1,6 @@
+{
+  "contract": "moonstone:manifest-edit-result:v1",
+  "storage_revision": "b3:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "applied": 2,
+  "storage_mode": "source_preserving"
+}

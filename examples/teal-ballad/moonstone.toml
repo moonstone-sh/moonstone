@@ -1,3 +1,5 @@
+manifest_version = 2
+
 [package]
 name = "teal-example"
 version = "0.1.0"
@@ -10,10 +12,10 @@ version = "5.4"
 abi = "5.4"
 
 [scripts]
-check = "moon exec cyan build --check-only"
-build = "moon exec cyan build"
-run = "moon exec cyan run src/main.tl \"$@\""
-export = "moon exec cyan build && moon exec ballad play partiture.lua"
+check = "moon exec cyan -- build --check-only"
+build = "moon exec cyan -- build"
+run = 'moon exec cyan -- run src/main.tl "$@"'
+export = "moon exec cyan -- build && moon exec ballad -- play partiture.lua"
 
 [[dependencies]]
 name = "cyan"

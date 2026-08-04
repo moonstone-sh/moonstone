@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const toml = @import("toml");
+const script_mod = @import("script.zig");
 
 pub const Kind = enum {
     script,
@@ -1076,11 +1077,40 @@ pub const StoreManifest = struct {
 };
 
 pub const MoonstoneToml = struct {
+    pub const TidyScriptOrder = enum {
+        lexicographic,
+        preserve,
+
+        pub fn fromString(value: []const u8) ?TidyScriptOrder {
+            if (std.mem.eql(u8, value, "lexicographic")) return .lexicographic;
+            if (std.mem.eql(u8, value, "preserve")) return .preserve;
+            return null;
+        }
+
+        pub fn asString(self: TidyScriptOrder) []const u8 {
+            return switch (self) {
+                .lexicographic => "lexicographic",
+                .preserve => "preserve",
+            };
+        }
+    };
+
+    pub const Tidy = struct {
+        scripts: TidyScriptOrder = .lexicographic,
+        on_script_mutation: bool = true,
+
+        pub fn isDefault(self: Tidy) bool {
+            return self.scripts == .lexicographic and self.on_script_mutation;
+        }
+    };
+
+    manifest_version: u32 = 2,
     package: struct {
         name: []const u8,
         version: []const u8,
         kind: Kind,
         description: ?[]const u8 = null,
+        readme: ?[]const u8 = null,
     },
     runtime: struct {
         name: []const u8,
@@ -1089,7 +1119,8 @@ pub const MoonstoneToml = struct {
     },
     origin: ?Origin = null,
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
-    scripts: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+    scripts: std.ArrayListUnmanaged(script_mod.ScriptDefinition) = .empty,
+    tidy: Tidy = .{},
     registries: std.StringArrayHashMapUnmanaged(RegistryConfig) = .{},
     orbits: std.ArrayListUnmanaged(OrbitConfig) = .empty,
     build: ?Build = null,
@@ -1123,6 +1154,30 @@ pub const MoonstoneToml = struct {
             .package = undefined,
             .runtime = .{ .name = "", .version = "", .abi = "" },
         };
+    }
+
+    pub fn findScript(self: *const MoonstoneToml, name: []const u8) ?*const script_mod.ScriptDefinition {
+        for (self.scripts.items) |*script| if (std.mem.eql(u8, script.name, name)) return script;
+        return null;
+    }
+
+    pub fn setScript(self: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, command: []const u8) !void {
+        if (!script_mod.isValidName(name)) return error.InvalidScriptName;
+        if (command.len == 0) return error.InvalidScriptCommand;
+
+        for (self.scripts.items) |*definition| {
+            if (!std.mem.eql(u8, definition.name, name)) continue;
+            allocator.free(definition.command);
+            definition.command = try allocator.dupe(u8, command);
+            return;
+        }
+
+        const definition_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(definition_name);
+        try self.scripts.append(allocator, .{
+            .name = definition_name,
+            .command = try allocator.dupe(u8, command),
+        });
     }
 
     pub fn resolveBuildEnv(self: *const MoonstoneToml, allocator: std.mem.Allocator, env_map: *std.process.Environ.Map) ![]const EnvPair {
@@ -1161,6 +1216,12 @@ pub const MoonstoneToml = struct {
         const table = res.value;
 
         var self = MoonstoneToml.init(allocator);
+        self.manifest_version = 1;
+        if (table.get("manifest_version")) |version_value| {
+            if (version_value != .integer) return error.InvalidManifestVersion;
+            self.manifest_version = @intCast(version_value.integer);
+        }
+        if (self.manifest_version != 1 and self.manifest_version != 2) return error.UnsupportedManifestVersion;
         const package_val = table.get("package") orelse return error.MissingPackageSection;
         if (package_val != .table) return error.InvalidPackageSection;
         const p_val = package_val.table;
@@ -1180,6 +1241,7 @@ pub const MoonstoneToml = struct {
             .version = try allocator.dupe(u8, package_version.string),
             .kind = try packageKindFromString(package_kind.string),
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
+            .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
         const runtime_name = if (r_val) |runtime| blk: {
             const value = runtime.get("name") orelse break :blk "lua";
@@ -1255,6 +1317,22 @@ pub const MoonstoneToml = struct {
                     }
                 }
                 self.build = build_cfg;
+            }
+        }
+
+        self.tidy = .{};
+        if (table.get("manifest")) |manifest_value| {
+            if (manifest_value != .table) return error.InvalidManifestSettings;
+            if (manifest_value.table.get("tidy")) |tidy_value| {
+                if (tidy_value != .table) return error.InvalidManifestTidyPolicy;
+                if (tidy_value.table.get("scripts")) |scripts_value| {
+                    if (scripts_value != .string) return error.InvalidManifestTidyPolicy;
+                    self.tidy.scripts = TidyScriptOrder.fromString(scripts_value.string) orelse return error.InvalidManifestTidyPolicy;
+                }
+                if (tidy_value.table.get("on_script_mutation")) |mutation_value| {
+                    if (mutation_value != .boolean) return error.InvalidManifestTidyPolicy;
+                    self.tidy.on_script_mutation = mutation_value.boolean;
+                }
             }
         }
 
@@ -1343,13 +1421,25 @@ pub const MoonstoneToml = struct {
             }
         }
 
-        self.scripts = .{};
-        if (table.get("scripts") orelse table.get("commands")) |s_val| {
-            if (s_val == .table) {
-                var it = s_val.table.iterator();
-                while (it.next()) |entry| {
-                    try self.scripts.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.string));
-                }
+        if (table.get("commands") != null) return error.LegacyScriptSyntax;
+        if (table.get("script") != null) return error.UnsupportedComplexScriptSyntax;
+        if (self.manifest_version == 1 and table.get("scripts") != null) return error.ManifestVersionRequired;
+        self.scripts = .empty;
+        if (table.get("scripts")) |scripts_value| {
+            if (scripts_value != .table) return error.InvalidScriptSection;
+            var names = scripts_value.table.iterator();
+            while (names.next()) |name_entry| {
+                const name = name_entry.key_ptr.*;
+                if (!script_mod.isValidName(name)) return error.InvalidScriptName;
+                if (name_entry.value_ptr.* != .string) return error.InvalidScriptCommand;
+
+                var definition = script_mod.ScriptDefinition{
+                    .name = try allocator.dupe(u8, name),
+                    .command = try allocator.dupe(u8, name_entry.value_ptr.string),
+                };
+                errdefer definition.deinit(allocator);
+                try definition.validate();
+                try self.scripts.append(allocator, definition);
             }
         }
 
@@ -1388,6 +1478,7 @@ pub const MoonstoneToml = struct {
         allocator.free(self.package.name);
         allocator.free(self.package.version);
         if (self.package.description) |d| allocator.free(d);
+        if (self.package.readme) |readme| allocator.free(readme);
         allocator.free(self.runtime.name);
         allocator.free(self.runtime.version);
         allocator.free(self.runtime.abi);
@@ -1404,14 +1495,8 @@ pub const MoonstoneToml = struct {
         }
         self.dependencies.deinit(allocator);
 
-        inline for (.{&self.scripts}) |table| {
-            var it = table.iterator();
-            while (it.next()) |entry| {
-                allocator.free(entry.key_ptr.*);
-                allocator.free(entry.value_ptr.*);
-            }
-            table.deinit(allocator);
-        }
+        for (self.scripts.items) |*script| script.deinit(allocator);
+        self.scripts.deinit(allocator);
 
         var reg_it = self.registries.iterator();
         while (reg_it.next()) |entry| {
@@ -1443,6 +1528,7 @@ pub const MoonstoneToml = struct {
     /// FUTURE: This could be refactored to use DTOs (Data Transfer Objects) that match
     /// the library's expected structure more closely if automated serialization is desired.
     pub fn serialize(self: MoonstoneToml, allocator: std.mem.Allocator, writer: anytype) !void {
+        try writer.print("manifest_version = {d}\n\n", .{self.manifest_version});
         try writer.print("[package]\n", .{});
         try writer.print("name = ", .{});
         try writeTomlString(writer, self.package.name);
@@ -1454,6 +1540,10 @@ pub const MoonstoneToml = struct {
             try writer.print("\ndescription = ", .{});
             try writeTomlString(writer, d);
         }
+        if (self.package.readme) |readme| {
+            try writer.print("\nreadme = ", .{});
+            try writeTomlString(writer, readme);
+        }
         try writer.print("\n", .{});
 
         try writer.print("\n[interpreter]\n", .{});
@@ -1464,6 +1554,12 @@ pub const MoonstoneToml = struct {
         try writer.print("\nabi = ", .{});
         try writeTomlString(writer, self.runtime.abi);
         try writer.print("\n", .{});
+
+        if (!self.tidy.isDefault()) {
+            try writer.print("\n[manifest.tidy]\nscripts = ", .{});
+            try writeTomlString(writer, self.tidy.scripts.asString());
+            try writer.print("\non_script_mutation = {s}\n", .{if (self.tidy.on_script_mutation) "true" else "false"});
+        }
 
         if (self.origin) |origin| {
             try writer.print("\n[origin]\nkind = ", .{});
@@ -1481,32 +1577,11 @@ pub const MoonstoneToml = struct {
             try writer.print("\n", .{});
         }
 
-        if (self.scripts.count() > 0) {
-            const ScriptEntry = struct {
-                key: []const u8,
-                value: []const u8,
-            };
-            var entries = std.ArrayList(ScriptEntry).empty;
-            defer entries.deinit(allocator);
-
-            var it = self.scripts.iterator();
-            while (it.next()) |entry| {
-                try entries.append(allocator, .{
-                    .key = entry.key_ptr.*,
-                    .value = entry.value_ptr.*,
-                });
-            }
-            std.mem.sort(ScriptEntry, entries.items, {}, struct {
-                fn lessThan(_: void, left: ScriptEntry, right: ScriptEntry) bool {
-                    return std.mem.order(u8, left.key, right.key) == .lt;
-                }
-            }.lessThan);
-
+        if (self.scripts.items.len > 0) {
             try writer.print("\n[scripts]\n", .{});
-            for (entries.items) |entry| {
-                try writeTomlString(writer, entry.key);
-                try writer.print(" = ", .{});
-                try writeTomlString(writer, entry.value);
+            for (self.scripts.items) |script| {
+                try writer.print("{s} = ", .{script.name});
+                try writeTomlCommand(writer, script.command);
                 try writer.print("\n", .{});
             }
         }
@@ -1647,6 +1722,16 @@ pub const MoonstoneToml = struct {
             }
         }
         try writer.writeByte('"');
+    }
+
+    fn writeTomlCommand(writer: anytype, value: []const u8) !void {
+        if (std.mem.indexOfScalar(u8, value, '\n') == null or std.mem.startsWith(u8, value, "\n") or std.mem.indexOf(u8, value, "\"\"\"") != null) {
+            return writeTomlString(writer, value);
+        }
+        try writer.writeAll("\"\"\"\n");
+        try writer.writeAll(value);
+        if (!std.mem.endsWith(u8, value, "\n")) try writer.writeByte('\n');
+        try writer.writeAll("\"\"\"");
     }
 
     fn dependencyLessThan(_: void, left: StoreDependency, right: StoreDependency) bool {
@@ -2084,9 +2169,12 @@ test "MoonstoneToml round-trips every root configuration section" {
         \\version = "5.4"
         \\abi = "5.4"
         \\
+        \\manifest_version = 2
+        \\
         \\[scripts]
-        \\zeta = "lua zeta.lua"
-        \\alpha = "lua alpha.lua"
+        \\zeta.posix.sh = "lua zeta.lua"
+        \\
+        \\alpha.posix.sh = "lua alpha.lua"
         \\
         \\[[orbits.member]]
         \\name = "first"
@@ -2133,8 +2221,8 @@ test "MoonstoneToml round-trips every root configuration section" {
     try out.writer.flush();
 
     const serialized = out.writer.buffer[0..out.writer.end];
-    try std.testing.expect((std.mem.indexOf(u8, serialized, "\"alpha\" =") orelse return error.TestExpectedEqual) <
-        (std.mem.indexOf(u8, serialized, "\"zeta\" =") orelse return error.TestExpectedEqual));
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"zeta\"") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "name = \"alpha\"") orelse return error.TestExpectedEqual));
     try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"a-reg\"") orelse return error.TestExpectedEqual) <
         (std.mem.indexOf(u8, serialized, "name = \"z-reg\"") orelse return error.TestExpectedEqual));
 
@@ -2142,8 +2230,8 @@ test "MoonstoneToml round-trips every root configuration section" {
     defer round_tripped.deinit(allocator);
     try std.testing.expectEqualStrings("complete-manifest", round_tripped.package.name);
     try std.testing.expectEqualStrings("round trip coverage", round_tripped.package.description.?);
-    try std.testing.expectEqualStrings("lua alpha.lua", round_tripped.scripts.get("alpha").?);
-    try std.testing.expectEqualStrings("lua zeta.lua", round_tripped.scripts.get("zeta").?);
+    try std.testing.expectEqualStrings("lua alpha.lua", round_tripped.findScript("alpha").?.command);
+    try std.testing.expectEqualStrings("lua zeta.lua", round_tripped.findScript("zeta").?.command);
     try std.testing.expectEqual(@as(usize, 2), round_tripped.orbits.items.len);
     try std.testing.expectEqualStrings("first", round_tripped.orbits.items[0].name);
     try std.testing.expectEqualStrings("examples/second", round_tripped.orbits.items[1].path);
@@ -2228,7 +2316,7 @@ test "MoonstoneToml canonicalizes external and peer roles" {
     try std.testing.expect(std.mem.indexOf(u8, serialized, "role = \"peer\"") == null);
 }
 
-test "MoonstoneToml parse migrates legacy commands to scripts" {
+test "MoonstoneToml rejects legacy commands" {
     const allocator = std.testing.allocator;
     const toml_text =
         \\[package]
@@ -2240,10 +2328,31 @@ test "MoonstoneToml parse migrates legacy commands to scripts" {
         \\export = "lua src/main.lua"
     ;
 
+    try std.testing.expectError(error.LegacyScriptSyntax, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml parses structured script steps and argument forwarding" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\manifest_version = 2
+        \\[package]
+        \\name = "script-idl"
+        \\version = "0.1.0"
+        \\kind = "script"
+        \\
+        \\[scripts]
+        \\build.posix.sh = "zig build \\\"$@\\\""
+        \\
+        \\build.windows.pwsh = "zig build @args"
+        \\
+        \\test.linux.bash = "zig build test"
+    ;
+
     var manifest = try MoonstoneToml.parse(allocator, toml_text);
     defer manifest.deinit(allocator);
 
-    try std.testing.expectEqualStrings("lua src/main.lua", manifest.scripts.get("export").?);
+    const build = manifest.findScript("build").?;
+    try std.testing.expectEqualStrings("zig build \"$@\"", build.command);
 }
 
 test "RemotePackageDescriptor parses table artifact runtime" {

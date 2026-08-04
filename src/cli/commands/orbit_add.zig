@@ -137,12 +137,6 @@ fn isStrictChildPath(root_path: []const u8, child_path: []const u8) bool {
 }
 
 fn writeManifest(ctx: *router.Context, manifest: *const moonstone.domain.manifest.MoonstoneToml) !void {
-    var writer = std.Io.Writer.Allocating.init(ctx.allocator);
-    defer writer.deinit();
-    try manifest.serialize(ctx.allocator, &writer.writer);
-    try writer.writer.flush();
-
-    const toml_file = try std.Io.Dir.cwd().createFile(ctx.io, "moonstone.toml", .{});
-    defer toml_file.close(ctx.io);
-    try toml_file.writeStreamingAll(ctx.io, writer.writer.buffer[0..writer.writer.end]);
+    const serialized_manifest = try moonstone.project.manifest_editor.commit(ctx.allocator, ctx.io, manifest);
+    defer ctx.allocator.free(serialized_manifest);
 }

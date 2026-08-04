@@ -955,13 +955,8 @@ pub const add_command = struct {
 
         // Write moonstone.toml
         if (!self.dry_run) {
-            var aw = std.Io.Writer.Allocating.init(allocator);
-            defer aw.deinit();
-            try mt.serialize(allocator, &aw.writer);
-
-            const toml_file = try std.Io.Dir.cwd().createFile(io, toml_path, .{});
-            defer toml_file.close(io);
-            try toml_file.writeStreamingAll(io, aw.written());
+            const serialized_manifest = try moonstone.project.manifest_editor.commit(allocator, io, &mt);
+            defer allocator.free(serialized_manifest);
         }
 
         // Write moonstone.lock

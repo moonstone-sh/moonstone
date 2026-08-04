@@ -1,3 +1,5 @@
+manifest_version = 2
+
 [package]
 name = "moonscript-example"
 version = "0.1.0"
@@ -10,10 +12,10 @@ version = "5.4"
 abi = "5.4"
 
 [scripts]
-"test" = "busted -p '_spec%.moon$' spec/"
-"build" = "moonc -t build src/"
-"run" = "moon src/main.moon"
-"dev" = "moonc -t build src/ && lua build/src/main.lua"
+test = 'busted -p "_spec%.moon$" spec/'
+build = "moonc -t build src/"
+run = 'moon src/main.moon "$@"'
+dev = 'moonc -t build src/ && lua build/src/main.lua "$@"'
 
 [[dependencies]]
 name = "dkjson"

@@ -7,6 +7,28 @@ pub const init = @import("init.zig").init_command;
 pub const setup = @import("setup.zig").SetupCommand;
 pub const link = @import("link.zig").LinkCommand;
 pub const run = @import("run.zig").RunCommand;
+pub const manifest = struct {
+    pub const export_cmd = @import("manifest_export.zig").ManifestExportCommand;
+    pub const apply = @import("manifest_apply.zig").ManifestApplyCommand;
+    pub const tidy = @import("manifest_tidy.zig").ManifestTidyCommand;
+    pub const script = struct {
+        pub const list = @import("manifest_script.zig").ListCommand;
+        pub const get = @import("manifest_script.zig").GetCommand;
+        pub const set = @import("manifest_script.zig").SetCommand;
+        pub const remove = @import("manifest_script.zig").RemoveCommand;
+    };
+};
+pub const lock = struct {
+    pub const export_cmd = @import("lock_commands.zig").LockExportCommand;
+    pub const verify = @import("lock_commands.zig").LockVerifyCommand;
+    pub const profile_list = @import("lock_commands.zig").LockProfileListCommand;
+    pub const package_list = @import("lock_commands.zig").LockPackageListCommand;
+    pub const profile_get = @import("lock_commands.zig").LockProfileGetCommand;
+    pub const package_get = @import("lock_commands.zig").LockPackageGetCommand;
+    pub const realization_list = @import("lock_commands.zig").LockRealizationListCommand;
+    pub const realization_get = @import("lock_commands.zig").LockRealizationGetCommand;
+    pub const graph_export = @import("lock_commands.zig").LockGraphExportCommand;
+};
 
 pub const exec = @import("exec.zig").ExecCommand;
 pub const remove = @import("remove.zig").remove_command;

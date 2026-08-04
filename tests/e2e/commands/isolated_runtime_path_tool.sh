@@ -16,6 +16,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p "$WORKDIR/tool/src" "$WORKDIR/app"
 
 cat > "$WORKDIR/tool/moonstone.toml" <<'TOML'
+manifest_version = 2
+
 [package]
 name = "linked-tool"
 version = "0.1.0"
@@ -53,7 +55,7 @@ abi = "5.4"
 "linked-tool" = "link:linked-tool"
 
 [scripts]
-"hello" = "lua -e 'print(\"hello from app\")'"
+hello = 'lua -e "print(\"hello from app\")"'
 TOML
 
 # Sync must resolve and materialize the tool's isolated lua@5.4.6 runtime.

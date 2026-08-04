@@ -3,10 +3,9 @@ set -uo pipefail
 
 # Test: moon run Semantics
 # - Verifies PATH resolution (hitting .moonstone/env/bin/lua)
-# - Verifies shell quoting works
-# - Verifies shell operators (&&, ||) work
+# - Verifies opaque host-shell command interpretation
+# - Verifies shell-owned sequential chaining
 # - Verifies exit code propagation
-# - Verifies custom shell override (--shell)
 # - Verifies missing script error reporting
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -40,21 +39,20 @@ SH
 chmod +x .moonstone/env/bin/lua
 
 echo "━━━ Test 1: PATH resolution (lua hits project-local) ━━━"
-# Add scripts to moonstone.toml
+# Add declarative scripts to moonstone.toml.
 cat >> moonstone.toml << 'EOF'
-dev = "lua ./src/main.lua"
-quoted = "lua -e 'print(\"hello world\")'"
-compound = "echo before && lua ./src/main.lua && echo after"
+[scripts]
+quoted = 'lua -e "print(\"hello world\")"'
+compound = 'echo before && lua ./src/main.lua && echo after'
 bad = "exit 42"
-bash_only = "[[ 1 == 1 ]] && echo bash-ok"
 EOF
 
 moon run dev | grep "MOONSTONE_LUA\[./src/main.lua\]"
 
-echo "━━━ Test 2: Shell quoting works ━━━"
+echo "━━━ Test 2: Opaque command preserves shell quoting ━━━"
 moon run quoted | grep "MOONSTONE_LUA\[-e\]\[print(\"hello world\")\]"
 
-echo "━━━ Test 3: Shell operators work ━━━"
+echo "━━━ Test 3: Shell chaining works ━━━"
 # Use tee to see output while capturing
 moon run compound 2>&1 | tee compound_out
 grep "before" compound_out
@@ -72,13 +70,7 @@ if [[ $EXIT_CODE -ne 42 ]]; then
 fi
 echo "  ✓ Propagated exit code 42"
 
-echo "━━━ Test 5: Custom shell flag (--shell bash) ━━━"
-# Verify bash specific syntax only works with bash
-if [[ "$OSTYPE" != "msys" && "$OSTYPE" != "cygwin" ]]; then
-    moon run bash_only --shell bash | grep "bash-ok"
-fi
-
-echo "━━━ Test 6: Missing script errors ━━━"
+echo "━━━ Test 5: Missing script errors ━━━"
 set +o pipefail
 moon run missing 2>&1 | grep "Error: script 'missing' not found"
 set -o pipefail

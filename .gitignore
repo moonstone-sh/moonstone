@@ -37,6 +37,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# --- JavaScript / TypeScript Tooling ---
+node_modules/
+
 # --- IDEs & Editor Configuration ---
 .vscode/
 .idea/

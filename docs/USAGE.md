@@ -506,12 +506,14 @@ my-game/
 The generated manifest includes the imported runtime and a dev script:
 
 ```toml
+manifest_version = 2
+
 [dependencies.runtime]
 "moonstone:moonstone/love" = "11.5"
 
 [scripts]
 dev = "love ."
-export = "ballad play partiture.lua"
+export = "moon exec ballad -- play partiture.lua"
 ```
 
 Sync and run the normal LÖVE dev loop:

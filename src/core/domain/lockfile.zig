@@ -136,6 +136,21 @@ pub const LockFile = struct {
                 try writer.print("]\n", .{});
             }
         }
+        for (self.profiles.items) |profile| {
+            try writer.print("\n[[profile]]\nid = \"{s}\"\ntarget = \"{s}\"\nruntime = \"{s}\"\n", .{ profile.id, profile.target, profile.runtime });
+            if (profile.lua_abi) |abi| try writer.print("lua_abi = \"{s}\"\n", .{abi});
+            try writer.print("packages = [", .{});
+            for (profile.packages, 0..) |package, index| {
+                if (index > 0) try writer.print(", ", .{});
+                try writer.print("{{ name = \"{s}\", version = \"{s}\", realization_hash = \"{s}\" }}", .{ package.package_name, package.package_version, package.realization_hash });
+            }
+            try writer.print("]\nedges = [", .{});
+            for (profile.edges, 0..) |edge, index| {
+                if (index > 0) try writer.print(", ", .{});
+                try writer.print("{{ from = \"{s}\", to = \"{s}\", constraint = \"{s}\" }}", .{ edge.from_package, edge.to_package, edge.constraint });
+            }
+            try writer.print("]\n", .{});
+        }
     }
 
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !LockFile {
@@ -224,6 +239,53 @@ pub const LockFile = struct {
                         break :blk &.{};
                     },
                 });
+            }
+        }
+
+        if (root.get("profile")) |value| {
+            if (value != .array) return error.InvalidLockFile;
+            for (value.array.items) |profile_value| {
+                if (profile_value != .table) return error.InvalidLockFile;
+                const table = profile_value.table;
+                const id = table.get("id") orelse return error.InvalidLockFile;
+                const target = table.get("target") orelse return error.InvalidLockFile;
+                const runtime = table.get("runtime") orelse return error.InvalidLockFile;
+                if (id != .string or target != .string or runtime != .string) return error.InvalidLockFile;
+                var packages = std.ArrayList(res_profile.ProfilePackageRef).empty;
+                errdefer {
+                    for (packages.items) |package| package.deinit(allocator);
+                    packages.deinit(allocator);
+                }
+                if (table.get("packages")) |packages_value| {
+                    if (packages_value != .array) return error.InvalidLockFile;
+                    for (packages_value.array.items) |package_value| {
+                        if (package_value != .table) return error.InvalidLockFile;
+                        const package_table = package_value.table;
+                        const name = package_table.get("name") orelse return error.InvalidLockFile;
+                        const version = package_table.get("version") orelse return error.InvalidLockFile;
+                        const hash = package_table.get("realization_hash") orelse return error.InvalidLockFile;
+                        if (name != .string or version != .string or hash != .string) return error.InvalidLockFile;
+                        try packages.append(allocator, .{ .package_name = try allocator.dupe(u8, name.string), .package_version = try allocator.dupe(u8, version.string), .realization_hash = try allocator.dupe(u8, hash.string) });
+                    }
+                }
+                var edges = std.ArrayList(res_profile.DependencyEdge).empty;
+                errdefer {
+                    for (edges.items) |edge| edge.deinit(allocator);
+                    edges.deinit(allocator);
+                }
+                if (table.get("edges")) |edges_value| {
+                    if (edges_value != .array) return error.InvalidLockFile;
+                    for (edges_value.array.items) |edge_value| {
+                        if (edge_value != .table) return error.InvalidLockFile;
+                        const edge_table = edge_value.table;
+                        const from = edge_table.get("from") orelse return error.InvalidLockFile;
+                        const to = edge_table.get("to") orelse return error.InvalidLockFile;
+                        if (from != .string or to != .string) return error.InvalidLockFile;
+                        const constraint = if (edge_table.get("constraint")) |item| item.string else "";
+                        try edges.append(allocator, .{ .from_package = try allocator.dupe(u8, from.string), .to_package = try allocator.dupe(u8, to.string), .constraint = if (constraint.len > 0) try allocator.dupe(u8, constraint) else "" });
+                    }
+                }
+                try lf.profiles.append(allocator, .{ .id = try allocator.dupe(u8, id.string), .target = try allocator.dupe(u8, target.string), .runtime = try allocator.dupe(u8, runtime.string), .lua_abi = if (table.get("lua_abi")) |abi| try allocator.dupe(u8, abi.string) else null, .packages = try packages.toOwnedSlice(allocator), .edges = try edges.toOwnedSlice(allocator) });
             }
         }
 

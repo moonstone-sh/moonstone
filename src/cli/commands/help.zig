@@ -37,7 +37,7 @@ pub fn run(allocator: std.mem.Allocator, command: Command, io: std.Io, stdout: *
                 \\  init            Create a new project
                 \\  add             Add dependencies (modifies moonstone.toml)
                 \\  sync            Synchronize and link project environment
-                \\  run             Run named script from [scripts]
+                \\  run             Run named shell-qualified project script
                 \\  exec            Run arbitrary command inside environment
                 \\  env             Print env / shell activation
                 \\  interpreter     Manage Lua interpreters

@@ -1,6 +1,9 @@
-# Moonstone CLI & NDJSON Contracts
+# Moonstone CLI Contracts
 
-This directory contains the official typing definitions and schemas for the Moonstone CLI's bloated NDJSON protocol (as specified in the root [CLI_NDJSON_PROTOCOL.md](../../docs/CLI_NDJSON_PROTOCOL.md)).
+This directory contains language-neutral schemas and generated consumer bindings for
+Moonstone's public machine-facing contracts. `moonstone.toml` and
+`moonstone.lock` remain human-authored storage; external tools should consume the
+semantic JSON documents exposed by the CLI instead of depending on TOML layout.
 
 These definitions allow frontend developers, TUI wrapper authors, and CI pipelines to consume Moonstone's JSON output with complete safety and IDE autocomplete.
 
@@ -8,10 +11,32 @@ These definitions allow frontend developers, TUI wrapper authors, and CI pipelin
 
 ## 🗂️ Available Contracts
 
-*   **[JSON Schema](./schema/ndjson.json)**: Language-agnostic specification schema for validating NDJSON lines.
-*   **[TypeScript Types](./typescript/ndjson.ts)**: Discriminated union types built for TS environments.
-*   **[Go Structs](./go/ndjson.go)**: Structs and decoders for Go integrations.
-*   **[LuaCATS definitions](./lua/ndjson.lua)**: Standard type annotations for static analysis in Lua environments (LSPs).
+* **[NDJSON schema](./schema/ndjson.json)**: Event-stream schema for existing `moon --json` commands.
+* **[Manifest export schema](./schema/manifest-v1.json)**: `moon manifest export --json` projection.
+* **[Manifest edit schema](./schema/manifest-edit-v1.json)**: Guarded `moon manifest apply --json --force` request.
+* **[Manifest edit result schema](./schema/manifest-edit-result-v1.json)**: Successful semantic mutation result.
+* **[Lock export schema](./schema/lock-v1.json)**: Read-only `moon lock export --json` projection.
+* **[Valibot bindings](./typescript/manifest.ts)** and **[lock bindings](./typescript/lock.ts)**: strict TypeScript parsers.
+* **[LuaLS annotations](./lua/manifest.lua)** and **[lock annotations](./lua/lock.lua)**: generated from the schemas.
+
+## Authority and generation
+
+The JSON Schema documents are the language-neutral protocol description. Moonstone
+owns semantic validation and mutation; Valibot validates consumer input and CLI
+output shapes in TypeScript, while LuaLS annotations are generated from schema
+definitions that declare an `x-lua-name`.
+
+```bash
+cd packages/contracts
+bun install
+bun run check
+bun run test
+bun run generate:lua
+bun run check:lua
+```
+
+`moon manifest apply` always requires `--force` and an exact
+`expected_revision`; schemas cannot replace that stale-write protection.
 
 ---
 

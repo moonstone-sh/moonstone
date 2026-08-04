@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 
 const router = @import("router.zig");
 const command_mod = @import("commands/command.zig");
+const global_options = @import("global_options.zig");
 const profiler = moonstone.diagnostics.profiler;
 
 fn applyGlobalConfigFile(
@@ -56,7 +57,9 @@ pub fn main(init: std.process.Init) !void {
     const stderr = &stderr_writer.interface;
 
     const raw_args = try init.minimal.args.toSlice(arena);
-    const all_args = try applyGlobalConfigFile(arena, raw_args, init.environ_map);
+    const directory_args = try global_options.extractDirectory(arena, raw_args);
+    if (directory_args.directory) |directory| try std.process.setCurrentPath(init.io, directory);
+    const all_args = try applyGlobalConfigFile(arena, directory_args.args, init.environ_map);
 
     profiler.init(init.environ_map);
 
@@ -70,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
         .all_args = all_args,
     };
 
-    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management", &.{
+    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management\n\nGlobal options:\n  -C, --directory <path>  Change the project-resolution base before dispatch", &.{
         router.CommandNode.from(command_mod.add),
         router.CommandNode.from(command_mod.sync),
         router.CommandNode.from(command_mod.init),
@@ -84,6 +87,37 @@ pub fn main(init: std.process.Init) !void {
         router.CommandNode.from(command_mod.version),
         router.CommandNode.from(command_mod.env),
         router.CommandNode.from(@import("commands/completions.zig").CompletionsCommand),
+
+        router.CommandNode.group("manifest", "Inspect the project manifest through versioned semantic contracts", &.{
+            router.CommandNode.from(command_mod.manifest.export_cmd),
+            router.CommandNode.from(command_mod.manifest.apply),
+            router.CommandNode.from(command_mod.manifest.tidy),
+            router.CommandNode.group("script", "Inspect and edit semantic project scripts", &.{
+                router.CommandNode.from(command_mod.manifest.script.list),
+                router.CommandNode.from(command_mod.manifest.script.get),
+                router.CommandNode.from(command_mod.manifest.script.set),
+                router.CommandNode.from(command_mod.manifest.script.remove),
+            }),
+        }),
+        router.CommandNode.group("lock", "Inspect and verify the project lockfile through versioned semantic contracts", &.{
+            router.CommandNode.from(command_mod.lock.export_cmd),
+            router.CommandNode.from(command_mod.lock.verify),
+            router.CommandNode.group("profile", "Inspect locked resolution profiles", &.{
+                router.CommandNode.from(command_mod.lock.profile_list),
+                router.CommandNode.from(command_mod.lock.profile_get),
+            }),
+            router.CommandNode.group("package", "Inspect locked packages", &.{
+                router.CommandNode.from(command_mod.lock.package_list),
+                router.CommandNode.from(command_mod.lock.package_get),
+            }),
+            router.CommandNode.group("realization", "Inspect profile-specific locked realizations", &.{
+                router.CommandNode.from(command_mod.lock.realization_list),
+                router.CommandNode.from(command_mod.lock.realization_get),
+            }),
+            router.CommandNode.group("graph", "Export locked profile dependency graphs", &.{
+                router.CommandNode.from(command_mod.lock.graph_export),
+            }),
+        }),
 
         router.CommandNode.group("self", "Manage Moonstone installation and lifecycle", &.{
             router.CommandNode.from(command_mod.self_cmd.install),

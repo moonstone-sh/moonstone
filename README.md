@@ -46,6 +46,18 @@ moon run dev
 moon exec lua src/main.lua
 ```
 
+Run from outside a project with Moonstone's global project-resolution option:
+
+```bash
+moon -C ./my-app sync
+moon --directory ./my-app run dev
+```
+
+`moon exec` is the primitive projected process runner. `moon run <name>` is an
+optional, discoverable entrypoint declared in `[scripts]`; keep simple commands
+inline and move substantial orchestration to Lua, Ballad, or ordinary script
+files.
+
 ---
 
 ## 🛠️ CLI Lifecycle
@@ -126,4 +138,3 @@ Apache 2.0
 ## 🌌 About
 
 Moonstone is an experimental Lua ecosystem manager aiming to bring deterministic builds, version pinning, and global-store efficiency to Lua and LuaJIT — powered entirely by Zig.
-

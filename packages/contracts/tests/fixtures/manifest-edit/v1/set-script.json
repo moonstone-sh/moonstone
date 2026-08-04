@@ -1,0 +1,12 @@
+{
+  "contract": "moonstone:manifest-edit:v1",
+  "expected_revision": "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "operations": [
+    {
+      "kind": "set_script",
+      "name": "build",
+      "command": "zig build \"$@\""
+    },
+    { "kind": "remove_script", "name": "old-build" }
+  ]
+}

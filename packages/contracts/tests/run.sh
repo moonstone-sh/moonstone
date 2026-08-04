@@ -8,8 +8,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${DIR}/.." && pwd)"
 
 echo "=== Running TypeScript verification ==="
-bun x tsc --noEmit "${ROOT_DIR}/typescript/ndjson.ts"
-bun run "${ROOT_DIR}/tests/ndjson_test.ts"
+(
+    cd "${ROOT_DIR}"
+    bun run check
+    bun run test
+)
 echo "TypeScript verification: PASS"
 echo ""
 
@@ -25,10 +28,19 @@ echo "=== Running LuaCATS syntax verification ==="
 luac_bin=$(which luac || true)
 if [[ -n "${luac_bin}" ]]; then
     luac -p "${ROOT_DIR}/lua/ndjson.lua"
+    luac -p "${ROOT_DIR}/lua/manifest.lua"
+    luac -p "${ROOT_DIR}/lua/lock.lua"
     echo "LuaCATS syntax verification: PASS"
 else
     echo "luac not found, skipping syntax check (but file is metadata-only comments)"
 fi
+
+echo "=== Running generated annotation verification ==="
+(
+    cd "${ROOT_DIR}"
+    bun run check:lua
+)
+echo "Generated annotation verification: PASS"
 echo ""
 
 echo "All contract verification tests passed successfully!"

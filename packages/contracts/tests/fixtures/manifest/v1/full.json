@@ -1,0 +1,36 @@
+{
+  "contract": "moonstone:manifest:v1",
+  "storage_revision": "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "manifest": {
+    "manifest_version": 2,
+    "project": {
+      "name": "service",
+      "version": "0.1.0",
+      "kind": "script",
+      "description": null,
+      "readme": "REGISTRY_README.md"
+    },
+    "runtime": { "name": "lua", "version": "5.4", "abi": "5.4" },
+    "origin": { "kind": "git", "url": "https://example.test/service", "revision": "abc123", "hash": null },
+    "tidy": { "scripts": "lexicographic", "on_script_mutation": true },
+    "dependencies": [
+      { "name": "moonstone/meteorite", "constraint": "0.1.41", "registry": "moonstone", "role": "tool", "optional": false }
+    ],
+    "scripts": [
+      {
+        "name": "check",
+        "command": "zig fmt --check . && zig build \"$@\""
+      },
+      {
+        "name": "test",
+        "command": "printf '%s\\n' test"
+      }
+    ],
+    "registries": [
+      { "name": "moonstone", "resolver": "moonstone", "url": "https://registry.example.test", "path": null, "priority": 0 }
+    ],
+    "orbits": [
+      { "name": "site", "path": "apps/site" }
+    ]
+  }
+}

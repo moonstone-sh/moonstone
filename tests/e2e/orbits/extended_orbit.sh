@@ -13,6 +13,8 @@ cd "${WORKDIR}"
 mkdir -p "deep/nested/child"
 
 cat <<EOF > moonstone.toml
+manifest_version = 2
+
 [package]
 name = "orbit-root"
 kind = "script"

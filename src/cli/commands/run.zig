@@ -11,7 +11,6 @@ pub const RunCommand = struct {
     positionals: []const []const u8 = &.{},
     prod: bool = false,
     dev: bool = true,
-    shell: ?[]const u8 = null,
     interpreter: ?[]const u8 = null,
     target: ?[]const u8 = null,
     json: bool = false,
@@ -20,12 +19,12 @@ pub const RunCommand = struct {
         try stdout.print(
             \\Usage: moon run <script-name> [-- [args...]]
             \\
-            \\Run a named script from [scripts] in moonstone.toml.
+            \\Run a named opaque command from moonstone.toml. Moonstone projects
+            \\the environment; the host shell interprets the command body.
             \\
             \\Flags:
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
-            \\  --shell <s>      Shell to use for execution
             \\  --interpreter <i> Override interpreter
             \\  --target <t>     Override target
             \\  --json           Output results as JSON (bloated protocol)
@@ -43,9 +42,8 @@ pub const RunCommand = struct {
         defer mt.deinit(ctx.allocator);
 
         var list = std.ArrayList([]const u8).empty;
-        var sit = mt.scripts.iterator();
-        while (sit.next()) |entry| {
-            const script_name = entry.key_ptr.*;
+        for (mt.scripts.items) |script| {
+            const script_name = script.name;
             if (current.len == 0 or std.mem.startsWith(u8, script_name, current)) {
                 try list.append(ctx.allocator, try ctx.allocator.dupe(u8, script_name));
             }
@@ -87,46 +85,36 @@ pub const RunCommand = struct {
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, content);
         defer mt.deinit(allocator);
 
-        const script_cmd = mt.scripts.get(s_name) orelse {
+        if (mt.findScript(s_name) == null) {
             if (emitter) |e| {
                 try e.fail(io, s_name, "error.ScriptNotFound", .{});
             } else {
                 try stdout.print("Error: script '{s}' not found in moonstone.toml\n", .{s_name});
             }
             return error.ScriptNotFound;
-        };
+        }
 
         if (emitter == null) {
-            try stdout.print("> {s}\n\n", .{script_cmd});
+            try stdout.print("> {s}\n\n", .{s_name});
         }
 
         var run_env = try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
         defer run_env.deinit();
 
-        // npm-like behavior: scripts are shell strings
-        const shell_bin = self.shell orelse "sh";
-
-        var argv = std.ArrayList([]const u8).empty;
-        defer argv.deinit(allocator);
-        try argv.append(allocator, shell_bin);
-        try argv.append(allocator, "-c");
-        try argv.append(allocator, script_cmd);
-        try argv.append(allocator, s_name);
-        for (script_args) |arg| {
-            try argv.append(allocator, arg);
-        }
-
-        var term = try std.process.spawn(io, .{
-            .argv = argv.items,
+        const result = moonstone.project.script_executor.run(allocator, io, &mt, s_name, script_args, .{
             .environ_map = &run_env.env_map,
-            .expand_arg0 = .expand,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
-
-        const wait_res = try term.wait(io);
-        if (wait_res != .exited or wait_res.exited != 0) {
-            std.process.exit(if (wait_res == .exited) @intCast(wait_res.exited) else 1);
+        }) catch |err| {
+            if (emitter) |e| {
+                try e.fail(io, s_name, @errorName(err), .{});
+                return command_mod.CommonError.AlreadyReported;
+            }
+            try stdout.print("Error: script '{s}' failed: {s}\n", .{ s_name, @errorName(err) });
+            return err;
+        };
+        switch (result) {
+            .success => {},
+            .exit_code => |code| std.process.exit(code),
+            .signaled => return error.ScriptTerminated,
         }
 
         if (emitter) |e| {
@@ -135,7 +123,7 @@ pub const RunCommand = struct {
     }
 };
 
-test "RunCommand script name completions with colon flavors" {
+test "RunCommand script name completions use the dotted-key-safe grammar" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -147,10 +135,11 @@ test "RunCommand script name completions with colon flavors" {
         \\name = "meteorite"
         \\version = "0.1.0"
         \\
+        \\manifest_version = 2
         \\[scripts]
-        \\"bench:fast" = "lua bench/fast.lua"
-        \\"bench:slow" = "lua bench/slow.lua"
-        \\"test:unit" = "lua test/unit.lua"
+        \\bench-fast = "lua bench/fast.lua"
+        \\bench-slow = "lua bench/slow.lua"
+        \\test-unit = "lua test/unit.lua"
     );
 
     const old_cwd = try std.process.currentPath(allocator);
@@ -180,8 +169,8 @@ test "RunCommand script name completions with colon flavors" {
     var found_fast = false;
     var found_slow = false;
     for (comps) |c| {
-        if (std.mem.eql(u8, c, "bench:fast")) found_fast = true;
-        if (std.mem.eql(u8, c, "bench:slow")) found_slow = true;
+        if (std.mem.eql(u8, c, "bench-fast")) found_fast = true;
+        if (std.mem.eql(u8, c, "bench-slow")) found_slow = true;
     }
     try std.testing.expect(found_fast);
     try std.testing.expect(found_slow);

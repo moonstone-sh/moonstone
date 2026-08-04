@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://moonstone.sh/contracts/manifest/v1/schema.json",
+  "title": "Moonstone Manifest Export v1",
+  "x-lua-name": "MoonstoneManifestExportV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "storage_revision", "manifest"],
+  "properties": {
+    "contract": { "const": "moonstone:manifest:v1" },
+    "storage_revision": { "$ref": "#/$defs/revision" },
+    "manifest": { "$ref": "#/$defs/manifest" }
+  },
+  "$defs": {
+    "revision": { "type": "string", "pattern": "^b3:[0-9a-f]{64}$", "x-lua-name": "MoonstoneStorageRevision" },
+    "script": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "command"],
+      "properties": { "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }, "command": { "type": "string", "minLength": 1 } },
+      "x-lua-name": "MoonstoneScriptV1"
+    },
+    "tidy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scripts", "on_script_mutation"],
+      "properties": {
+        "scripts": { "enum": ["lexicographic", "preserve"] },
+        "on_script_mutation": { "type": "boolean" }
+      },
+      "x-lua-name": "MoonstoneManifestTidyV1"
+    },
+    "manifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["manifest_version", "project", "runtime", "origin", "tidy", "dependencies", "scripts", "registries", "orbits"],
+      "properties": {
+        "manifest_version": { "type": "integer", "minimum": 2 },
+        "project": { "type": "object" }, "runtime": { "type": "object" }, "origin": { "type": ["object", "null"] },
+        "tidy": { "$ref": "#/$defs/tidy" },
+        "dependencies": { "type": "array" }, "scripts": { "type": "array", "items": { "$ref": "#/$defs/script" } },
+        "registries": { "type": "array" }, "orbits": { "type": "array" }
+      }, "x-lua-name": "MoonstoneManifestV1"
+    }
+  }
+}

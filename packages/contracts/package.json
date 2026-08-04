@@ -1,0 +1,24 @@
+{
+  "name": "@moonstone/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./manifest": "./typescript/manifest.ts",
+    "./lock": "./typescript/lock.ts"
+  },
+  "scripts": {
+    "check": "bun x tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler typescript/*.ts tests/*.ts",
+    "test": "bun test tests/*.ts",
+    "generate:lua": "node scripts/generate-lua-annotations.mjs",
+    "check:lua": "node scripts/generate-lua-annotations.mjs --check"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

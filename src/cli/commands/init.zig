@@ -6,6 +6,10 @@ const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
 const command_mod = @import("command.zig");
 
+fn setScript(pkg: *MoonstoneToml, allocator: std.mem.Allocator, name: []const u8, command: []const u8) !void {
+    try pkg.setScript(allocator, name, command);
+}
+
 pub const init_command = struct {
     pub const command_name = "init";
     pub const description = "Create a new Moonstone project";
@@ -492,24 +496,28 @@ pub const init_command = struct {
         };
 
         if (std.mem.eql(u8, template, "script")) {
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
+            try setScript(&pkg, allocator, "dev", "lua ./src/main.lua \"$@\"");
         } else if (std.mem.eql(u8, template, "lua-zig")) {
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "build"), try allocator.dupe(u8, "zig build install-zig"));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "zig build install-zig && lua ./src/main.lua \"$@\""));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "run"), try allocator.dupe(u8, "lua ./src/main.lua \"$@\""));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "test"), try allocator.dupe(u8, "zig build"));
+            try setScript(&pkg, allocator, "dev", "zig build install-zig && lua ./src/main.lua \"$@\"");
+            try setScript(&pkg, allocator, "build", "zig build install-zig");
+            try setScript(&pkg, allocator, "run", "lua ./src/main.lua \"$@\"");
+            try setScript(&pkg, allocator, "test", "zig build");
         } else if (std.mem.eql(u8, template, "love")) {
             try pkg.add_dependency(allocator, "moonstone/love", "11.5", .runtime, false);
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "dev"), try allocator.dupe(u8, "love ."));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
+            try setScript(&pkg, allocator, "dev", "love .");
+            try setScript(&pkg, allocator, "export", "moon exec ballad -- play partiture.lua");
         } else if (std.mem.eql(u8, template, "nvim")) {
             const module_name = try moduleNameFromProjectName(allocator, final_name);
             defer allocator.free(module_name);
-            const smoke_script = try std.fmt.allocPrint(allocator, "nvim --headless -u tests/minimal_init.lua -c 'lua require(\"{s}\").setup({{}})' -c qa", .{module_name});
-            defer allocator.free(smoke_script);
             try pkg.add_dependency(allocator, "moonstone/ballad", "^0.2", .tool, false);
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "export"), try allocator.dupe(u8, "moon exec ballad -- play partiture.lua"));
-            try pkg.scripts.put(allocator, try allocator.dupe(u8, "smoke"), try allocator.dupe(u8, smoke_script));
+            const smoke_command = try std.fmt.allocPrint(allocator, "lua require(\"{s}\").setup({{}})", .{module_name});
+            defer allocator.free(smoke_command);
+            try setScript(&pkg, allocator, "export", "moon exec ballad -- play partiture.lua");
+            const smoke_posix = try std.fmt.allocPrint(allocator, "nvim --headless -u tests/minimal_init.lua -c '{s}' -c qa", .{smoke_command});
+            defer allocator.free(smoke_posix);
+            const smoke_windows = try std.fmt.allocPrint(allocator, "nvim --headless -u tests/minimal_init.lua -c '{s}' -c qa", .{smoke_command});
+            defer allocator.free(smoke_windows);
+            try setScript(&pkg, allocator, "smoke", smoke_posix);
         }
 
         const toml_path = "moonstone.toml";

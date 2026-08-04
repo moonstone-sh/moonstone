@@ -42,14 +42,8 @@ pub const RegistryRemoveCommand = struct {
             allocator.free(entry.key);
             entry.value.deinit(allocator);
 
-            const toml_file = try std.Io.Dir.cwd().createFile(io, toml_path, .{});
-            defer toml_file.close(io);
-
-            var aw = std.Io.Writer.Allocating.init(allocator);
-            defer aw.deinit();
-            try mt.serialize(allocator, &aw.writer);
-            try aw.writer.flush();
-            try toml_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+            const serialized_manifest = try moonstone.project.manifest_editor.commit(allocator, io, &mt);
+            defer allocator.free(serialized_manifest);
 
             try stdout.print("Removed registry '{s}'.\n", .{r_name});
         } else {

@@ -1,0 +1,26 @@
+{
+  "contract": "moonstone:lock:v1",
+  "storage_revision": "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "lockfile_version": 2,
+  "packages": [
+    {
+      "name": "example/lib",
+      "version": "1.2.3",
+      "kind": "library",
+      "resolver": "moonstone",
+      "registry": "moonstone",
+      "artifact_hash": "b3:artifact",
+      "source_hash": "b3:source",
+      "recipe_hash": "b3:recipe",
+      "runtime": "lua@5.4",
+      "lua_abi": "5.4",
+      "target": "aarch64-macos",
+      "replay_mode": "portable_source",
+      "reproducible": true
+    }
+  ],
+  "profiles": [
+    { "id": "aarch64-macos+lua54", "target": "aarch64-macos", "runtime": "lua@5.4", "lua_abi": "5.4", "package_count": 1, "edge_count": 0 },
+    { "id": "x86_64-linux+lua54", "target": "x86_64-linux", "runtime": "lua@5.4", "lua_abi": null, "package_count": 1, "edge_count": 0 }
+  ]
+}

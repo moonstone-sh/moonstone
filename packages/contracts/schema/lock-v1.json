@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://moonstone.sh/contracts/lock/v1/schema.json",
+  "title": "Moonstone Lock Export v1",
+  "x-lua-name": "MoonstoneLockExportV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "storage_revision", "lockfile_version", "packages", "profiles"],
+  "properties": {
+    "contract": { "const": "moonstone:lock:v1" },
+    "storage_revision": { "$ref": "#/$defs/storageRevision" },
+    "lockfile_version": { "const": 2 },
+    "packages": { "type": "array", "items": { "$ref": "#/$defs/package" } },
+    "profiles": { "type": "array", "items": { "$ref": "#/$defs/profile" } }
+  },
+  "$defs": {
+    "storageRevision": {
+      "x-lua-name": "MoonstoneLockStorageRevision",
+      "type": "string", "pattern": "^b3:[0-9a-f]{64}$"
+    },
+    "package": {
+      "x-lua-name": "MoonstoneLockedPackageV1",
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "kind", "resolver", "registry", "artifact_hash", "source_hash", "recipe_hash", "runtime", "lua_abi", "target", "replay_mode", "reproducible"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "resolver": { "type": "string", "minLength": 1 },
+        "registry": { "type": "string" },
+        "artifact_hash": { "type": "string" },
+        "source_hash": { "type": "string" },
+        "recipe_hash": { "type": "string" },
+        "runtime": { "type": "string" },
+        "lua_abi": { "type": "string" },
+        "target": { "type": "string" },
+        "replay_mode": { "type": "string", "minLength": 1 },
+        "reproducible": { "type": "boolean" }
+      }
+    },
+    "profile": {
+      "x-lua-name": "MoonstoneLockProfileV1",
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "target", "runtime", "lua_abi", "package_count", "edge_count"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "runtime": { "type": "string", "minLength": 1 },
+        "lua_abi": { "type": ["string", "null"] },
+        "package_count": { "type": "integer", "minimum": 0 },
+        "edge_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

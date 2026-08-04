@@ -64,9 +64,8 @@ pub const OrbitRunCommand = struct {
                     var orbit_mt = moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, orbit_content) catch return &.{};
                     defer orbit_mt.deinit(ctx.allocator);
 
-                    var sit = orbit_mt.scripts.iterator();
-                    while (sit.next()) |entry| {
-                        const script_name = entry.key_ptr.*;
+                    for (orbit_mt.scripts.items) |script| {
+                        const script_name = script.name;
                         const suggestion = if (std.mem.indexOfScalar(u8, script_name, ':')) |colon| script_name[0..colon] else script_name;
                         try list.append(ctx.allocator, try ctx.allocator.dupe(u8, suggestion));
                     }

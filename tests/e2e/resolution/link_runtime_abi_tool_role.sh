@@ -8,6 +8,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p "$WORKDIR/linked/src" "$WORKDIR/app"
 
 cat >"$WORKDIR/linked/moonstone.toml" <<'TOML'
+manifest_version = 2
+
 [package]
 name = "hyg-tool-mismatch"
 version = "0.1.0"
@@ -19,7 +21,7 @@ version = "5.1"
 abi = "5.1"
 
 [scripts]
-"hello" = "lua -e 'print(\"hello\")'"
+hello = 'lua -e "print(\"hello\")"'
 TOML
 
 cat >"$WORKDIR/linked/src/hyg_tool_mismatch.lua" <<'LUA'
