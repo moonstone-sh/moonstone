@@ -40,6 +40,29 @@ jobs:
         # We verify TS, Go, and LuaCATS contracts remain valid
         run: ./packages/contracts/tests/run.sh
 
+  windows-core:
+    name: Windows Core CLI (exploratory)
+    runs-on: windows-latest
+    # Moonstone is not Windows-compilable yet. Keep the native smoke visible
+    # while the platform boundary is extracted, without blocking releases.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build Moonstone
+        run: zig build
+
+      - name: Exercise project directory and process contracts
+        shell: pwsh
+        run: ./tests/windows/core.ps1
+
   release-candidate:
     name: Build Release Candidate
     needs: test

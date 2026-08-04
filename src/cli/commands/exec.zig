@@ -1,8 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
 const toml = @import("toml");
+
+fn pathSeparator() u8 {
+    return if (builtin.os.tag == .windows) ';' else ':';
+}
 
 pub const ExecCommand = struct {
     pub const name = "exec";
@@ -104,7 +109,7 @@ pub const ExecCommand = struct {
                         const path_to_prepend = item.string;
                         const old_path = run_env.env_map.get("PATH") orelse "";
                         const new_path = if (old_path.len > 0)
-                            try std.fmt.allocPrint(allocator, "{s}:{s}", .{ path_to_prepend, old_path })
+                            try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ path_to_prepend, pathSeparator(), old_path })
                         else
                             try allocator.dupe(u8, path_to_prepend);
                         defer allocator.free(new_path);
@@ -170,7 +175,7 @@ pub const ExecCommand = struct {
             var new_path = std.ArrayList(u8).empty;
             defer new_path.deinit(allocator);
 
-            var it = std.mem.splitScalar(u8, path_val, ':');
+            var it = std.mem.splitScalar(u8, path_val, pathSeparator());
             var first = true;
             while (it.next()) |p| {
                 if (p.len == 0 or !std.fs.path.isAbsolute(p)) continue;
@@ -178,7 +183,7 @@ pub const ExecCommand = struct {
                 defer allocator.free(real_p);
 
                 if (std.mem.eql(u8, real_p, real_shims)) continue;
-                if (!first) try new_path.append(allocator, ':');
+                if (!first) try new_path.append(allocator, pathSeparator());
                 try new_path.appendSlice(allocator, p);
                 first = false;
             }
@@ -218,7 +223,7 @@ pub const ExecCommand = struct {
         // ignoring environ_map PATH. Manually search PATH from run_env.env_map.
         if (!std.fs.path.isAbsolute(argv[0])) {
             if (run_env.env_map.get("PATH")) |path_val| {
-                var path_it = std.mem.splitScalar(u8, path_val, ':');
+                var path_it = std.mem.splitScalar(u8, path_val, pathSeparator());
                 while (path_it.next()) |dir| {
                     if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) continue;
                     const candidate = try std.fs.path.join(allocator, &.{ dir, self.positionals[0] });

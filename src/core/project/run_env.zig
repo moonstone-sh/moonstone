@@ -1,5 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const manifest = @import("../domain/manifest.zig");
+
+fn pathSeparator() u8 {
+    return if (builtin.os.tag == .windows) ';' else ':';
+}
 
 pub const RunEnv = struct {
     env_map: std.process.Environ.Map,
@@ -210,7 +215,7 @@ fn build_run_env(
 
     const old_path = base_env.get("PATH") orelse "";
     const new_path = if (old_path.len > 0)
-        try std.fmt.allocPrint(allocator, "{s}:{s}", .{ bin_path, old_path })
+        try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, pathSeparator(), old_path })
     else
         try allocator.dupe(u8, bin_path);
     defer allocator.free(new_path);
