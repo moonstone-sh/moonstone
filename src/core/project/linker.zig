@@ -520,8 +520,9 @@ fn writeRuntimeScope(
             defer allocator.free(module_root);
             const absolute_module_root = try std.fs.path.join(allocator, &.{ art_path, "files", module_root });
             defer allocator.free(absolute_module_root);
-            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?.so" }));
-            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, "?.dylib" }));
+            const pattern = try std.fmt.allocPrint(allocator, "?{s}", .{luaCmoduleExtension()});
+            defer allocator.free(pattern);
+            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, pattern }));
         }
     }
     if (effective_runtime_bin_path) |runtime_path| {
@@ -1082,11 +1083,12 @@ pub fn link_project_env_at(
             const pos = std.mem.indexOf(u8, target_path, search_str).?;
             break :blk target_path[pos..];
         } else blk: {
-            const ext = if (std.mem.endsWith(u8, mod_name, ".so")) @as(usize, 3) else @as(usize, 0);
+            const cmodule_extension = luaCmoduleExtension();
+            const ext = if (std.mem.endsWith(u8, mod_name, cmodule_extension)) cmodule_extension.len else @as(usize, 0);
             const clean_name = mod_name[0 .. mod_name.len - ext];
             const slash_name = try std.mem.replaceOwned(u8, allocator, clean_name, ".", "/");
             defer allocator.free(slash_name);
-            break :blk try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, slash_name });
+            break :blk try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, slash_name, cmodule_extension });
         };
         const is_owned = std.mem.indexOf(u8, target_path, search_str) == null;
         defer if (is_owned) allocator.free(final_dest_rel);
@@ -1672,4 +1674,11 @@ test "scope closures permit pure Lua dependencies across ABI boundaries" {
     try std.testing.expect(scopeArtifactAbiCompatible("lua51", "lua54", false));
     try std.testing.expect(!scopeArtifactAbiCompatible("lua51", "lua54", true));
     try std.testing.expect(scopeArtifactAbiCompatible("lua54", "lua54", true));
+}
+fn luaCmoduleExtension() []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => ".dll",
+        .macos => ".dylib",
+        else => ".so",
+    };
 }

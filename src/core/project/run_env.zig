@@ -6,6 +6,14 @@ fn pathSeparator() u8 {
     return if (builtin.os.tag == .windows) ';' else ':';
 }
 
+fn luaCmoduleExtension() []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => ".dll",
+        .macos => ".dylib",
+        else => ".so",
+    };
+}
+
 pub const RunEnv = struct {
     env_map: std.process.Environ.Map,
     allocator: std.mem.Allocator,
@@ -210,7 +218,8 @@ fn build_run_env(
     const lua_path_val = try std.fmt.allocPrint(allocator, "{s}/?.lua;{s}/?/init.lua;;", .{ share_path, share_path });
     errdefer allocator.free(lua_path_val);
 
-    const lua_cpath_val = try std.fmt.allocPrint(allocator, "{s}/?.so;{s}/?/init.so;;", .{ lib_path, lib_path });
+    const cmodule_extension = luaCmoduleExtension();
+    const lua_cpath_val = try std.fmt.allocPrint(allocator, "{s}/?{s};{s}/?/init{s};;", .{ lib_path, cmodule_extension, lib_path, cmodule_extension });
     errdefer allocator.free(lua_cpath_val);
 
     const old_path = base_env.get("PATH") orelse "";
