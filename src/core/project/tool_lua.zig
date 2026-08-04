@@ -227,15 +227,12 @@ fn findPathLua(allocator: std.mem.Allocator, io: std.Io, required_abi: []const u
                 if (dir.len == 0) continue;
                 const binaries = [_][]const u8{ "luajit", "lua" };
                 for (binaries) |binary| {
-                    const candidate = try std.fs.path.join(allocator, &.{ dir, binary });
-                    if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| {
+                    if (try @import("../platform/executable.zig").resolveInDirectory(allocator, io, dir, binary)) |candidate| {
                         return LuaCandidate{
                             .executable = candidate,
                             .runtime_name = try allocator.dupe(u8, binary),
                             .artifact_hash = null,
                         };
-                    } else |_| {
-                        allocator.free(candidate);
                     }
                 }
             }

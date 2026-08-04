@@ -194,11 +194,8 @@ pub const ExecCommand = struct {
         defer allocator.free(argv);
 
         // Try to resolve executable in environment's bin directory first
-        const bin_exec = try std.fs.path.join(allocator, &.{ run_env.bin_path, self.positionals[0] });
-        defer allocator.free(bin_exec);
-
-        if (std.Io.Dir.openFileAbsolute(io, bin_exec, .{})) |file| {
-            file.close(io);
+        if (try moonstone.platform.executable.resolveInDirectory(allocator, io, run_env.bin_path, self.positionals[0])) |bin_exec| {
+            defer allocator.free(bin_exec);
             // In runtime mode, verify the binary is not dev-only
             var allow = true;
             if (!self.dev) {
@@ -211,11 +208,11 @@ pub const ExecCommand = struct {
                 ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "'{s}' is a development-only binary. Use 'moon exec --dev {s}' to run it.", .{ self.positionals[0], self.positionals[0] }) } };
                 return error.DevOnlyBinary;
             }
-        } else |err| {
+        } else {
             // If we are trying to run 'lua' or 'luac' and we didn't find them in the bin dir,
             // we should NOT fallback to bare name if we are called from a shim.
             if (depth > 0 and (std.mem.eql(u8, self.positionals[0], "lua") or std.mem.eql(u8, self.positionals[0], "luac"))) {
-                return err;
+                return error.FileNotFound;
             }
         }
 
@@ -226,12 +223,11 @@ pub const ExecCommand = struct {
                 var path_it = std.mem.splitScalar(u8, path_val, pathSeparator());
                 while (path_it.next()) |dir| {
                     if (dir.len == 0 or !std.fs.path.isAbsolute(dir)) continue;
-                    const candidate = try std.fs.path.join(allocator, &.{ dir, self.positionals[0] });
-                    defer allocator.free(candidate);
-                    if (std.Io.Dir.cwd().access(io, candidate, .{})) |_| {
+                    if (try moonstone.platform.executable.resolveInDirectory(allocator, io, dir, self.positionals[0])) |candidate| {
+                        defer allocator.free(candidate);
                         argv[0] = try allocator.dupe(u8, candidate);
                         break;
-                    } else |_| {}
+                    }
                 }
             }
         }
