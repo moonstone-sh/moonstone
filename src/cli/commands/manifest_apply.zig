@@ -60,7 +60,8 @@ pub const ManifestApplyCommand = struct {
             \\`moon manifest export --json`; stale requests change nothing.
             \\
             \\Initial operations: set_script, remove_script, set_runtime,
-            \\set_dependency, remove_dependency, set_registry, remove_registry.
+            \\add_dependency, set_dependency, remove_dependency, set_registry,
+            \\remove_registry.
             \\
         , .{});
     }
@@ -88,12 +89,12 @@ pub const ManifestApplyCommand = struct {
 
         if (loaded.manifest.manifest_version != 2) return error.ManifestVersionRequired;
 
-        const write_result: WriteResult = if (scriptOperationsOnly(request.operations)) blk: {
+        const write_result: WriteResult = if (sourcePreservingOperationsOnly(request.operations)) blk: {
             var source = try ctx.allocator.dupe(u8, loaded.source);
             errdefer ctx.allocator.free(source);
             for (request.operations) |operation| {
                 const previous = source;
-                source = try applyScriptOperation(ctx.allocator, previous, operation);
+                source = try applySourcePreservingOperation(ctx.allocator, previous, operation);
                 ctx.allocator.free(previous);
             }
             var validated = try moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, source);
@@ -117,15 +118,22 @@ pub const ManifestApplyCommand = struct {
     }
 };
 
-fn scriptOperationsOnly(operations: []const OperationInput) bool {
+fn sourcePreservingOperationsOnly(operations: []const OperationInput) bool {
     if (operations.len == 0) return false;
     for (operations) |operation| {
-        if (!std.mem.eql(u8, operation.kind, "set_script") and !std.mem.eql(u8, operation.kind, "remove_script")) return false;
+        if (!std.mem.eql(u8, operation.kind, "set_script") and
+            !std.mem.eql(u8, operation.kind, "remove_script") and
+            !std.mem.eql(u8, operation.kind, "add_dependency")) return false;
     }
     return true;
 }
 
-fn applyScriptOperation(allocator: std.mem.Allocator, source: []const u8, operation: OperationInput) ![]u8 {
+fn applySourcePreservingOperation(allocator: std.mem.Allocator, source: []const u8, operation: OperationInput) ![]u8 {
+    if (std.mem.eql(u8, operation.kind, "add_dependency")) {
+        const input = operation.dependency orelse return error.InvalidManifestEditOperation;
+        return moonstone.project.manifest_tidy.addDependency(allocator, source, input.name, input.constraint, input.registry, input.role, input.optional);
+    }
+
     const name = operation.name orelse return error.InvalidManifestEditOperation;
     if (std.mem.eql(u8, operation.kind, "set_script")) {
         return moonstone.project.manifest_tidy.setScript(allocator, source, name, operation.command orelse return error.InvalidManifestEditOperation);
@@ -197,6 +205,12 @@ fn applyOperation(allocator: std.mem.Allocator, manifest: *moonstone.domain.mani
             }
         }
         try manifest.dependencies.append(allocator, replacement);
+        return;
+    }
+    if (std.mem.eql(u8, operation.kind, "add_dependency")) {
+        const input = operation.dependency orelse return error.InvalidManifestEditOperation;
+        for (manifest.dependencies.items) |dependency| if (std.mem.eql(u8, dependency.name, input.name)) return error.DependencyAlreadyExists;
+        try manifest.dependencies.append(allocator, try buildDependency(allocator, input));
         return;
     }
     if (std.mem.eql(u8, operation.kind, "remove_script")) {

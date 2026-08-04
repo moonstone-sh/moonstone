@@ -154,6 +154,39 @@ pub fn removeScript(allocator: std.mem.Allocator, source: []const u8, name: []co
     return error.ScriptNotFound;
 }
 
+/// Appends one dependency declaration without serializing unrelated manifest
+/// domains. This intentionally models only a missing dependency; replacement
+/// remains a semantic editor operation that may canonicalize its target.
+pub fn addDependency(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    name: []const u8,
+    constraint: []const u8,
+    registry: ?[]const u8,
+    role: []const u8,
+    optional: bool,
+) ![]u8 {
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    try output.writer.writeAll(source);
+    if (source.len > 0 and source[source.len - 1] != '\n') try output.writer.writeByte('\n');
+    if (source.len > 0) try output.writer.writeByte('\n');
+    try output.writer.writeAll("[[dependencies]]\nname = ");
+    try writeTomlCommand(&output.writer, name);
+    try output.writer.writeAll("\nconstraint = ");
+    try writeTomlCommand(&output.writer, constraint);
+    if (registry) |value| {
+        try output.writer.writeAll("\nregistry = ");
+        try writeTomlCommand(&output.writer, value);
+    }
+    try output.writer.writeAll("\nrole = ");
+    try writeTomlCommand(&output.writer, role);
+    if (optional) try output.writer.writeAll("\noptional = true");
+    try output.writer.writeByte('\n');
+    try output.writer.flush();
+    return allocator.dupe(u8, output.writer.buffer[0..output.writer.end]);
+}
+
 fn appendScriptsSection(allocator: std.mem.Allocator, source: []const u8, name: []const u8, command: []const u8) ![]u8 {
     const assignment = try renderAssignment(allocator, name, command, null);
     defer allocator.free(assignment);
@@ -426,6 +459,24 @@ test "remove script removes its directly attached comments only" {
         "# Section note.\n" ++
         "\n" ++
         "zebra = \"z\"\n";
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
+test "add dependency appends without disturbing user-authored manifest source" {
+    const source =
+        "manifest_version = 2\n\n" ++
+        "# Keep this project note exactly where it is.\n" ++
+        "[package]\n" ++
+        "name = \"example\"\n" ++
+        "version = \"0.1.0\"\n" ++
+        "kind = \"script\"\n";
+    const actual = try addDependency(std.testing.allocator, source, "moonstone/meteorite", "^0.1.41", null, "tool", false);
+    defer std.testing.allocator.free(actual);
+    const expected = source ++
+        "\n[[dependencies]]\n" ++
+        "name = \"moonstone/meteorite\"\n" ++
+        "constraint = \"^0.1.41\"\n" ++
+        "role = \"tool\"\n";
     try std.testing.expectEqualStrings(expected, actual);
 }
 
