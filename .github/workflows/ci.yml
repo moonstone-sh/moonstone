@@ -29,7 +29,7 @@ jobs:
         # We ensure that changes don't break the cross-compilation matrix
         run: zig build
 
-      - name: Cross-compile Windows target
+      - name: Cross-compile Windows GNU target
         # Keep platform-specific type and API assumptions compile-time checked
         # even when native Windows execution remains exploratory.
         run: zig build -Dtarget=x86_64-windows-gnu
