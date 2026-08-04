@@ -62,7 +62,7 @@ pub const OrbitSyncCommand = struct {
         }
 
         var data = SyncWorkData{ .cmd = self, .ctx = ctx };
-        progress_runtime.runWithProgress(ctx.io, ctx.stderr, std.posix.STDERR_FILENO, ctx.allocator, ctx.env, orbitSyncWorker, &data) catch |err| {
+        progress_runtime.runWithProgress(ctx.io, ctx.stderr, ctx.allocator, ctx.env, orbitSyncWorker, &data) catch |err| {
             if (data.error_detail) |detail| {
                 ctx.error_detail = detail;
             }

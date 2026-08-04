@@ -8,52 +8,56 @@ const builtin = @import("builtin");
 /// Global pointer to the active cancellation flag.  Only one
 /// `runWithProgress` call is active at a time (it runs on the main
 /// thread), so a single global is safe.
-var global_cancel: ?*std.atomic.Value(bool) = null;
+const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) struct {
+    const Previous = void;
 
-fn sigintHandler(sig: std.c.SIG) callconv(.c) void {
-    _ = sig;
-    if (global_cancel) |c| c.store(true, .release);
-}
-
-/// Installs SIGINT/SIGTERM handlers that set the cancel flag.
-/// Returns the previous sigaction so it can be restored on exit.
-fn installCancelHandler(cancel: *std.atomic.Value(bool)) ?std.c.Sigaction {
-    if (builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return null;
-
-    global_cancel = cancel;
-
-    const act = std.c.Sigaction{
-        .handler = .{ .handler = &sigintHandler },
-        .mask = std.mem.zeroes(std.c.sigset_t),
-        .flags = 0,
-    };
-
-    // Use the C library sigaction which returns -1 on error instead of
-    // panicking.  In sandboxed environments sigaction may return EPERM.
-    var old_int: std.c.Sigaction = undefined;
-    if (std.c.sigaction(.INT, &act, &old_int) != 0) {
-        global_cancel = null;
-        return null;
-    }
-    var old_term: std.c.Sigaction = undefined;
-    if (std.c.sigaction(.TERM, &act, &old_term) != 0) {
-        // Restore INT handler and bail.
-        _ = std.c.sigaction(.INT, &old_int, null);
-        global_cancel = null;
+    fn install(_: *std.atomic.Value(bool)) ?Previous {
         return null;
     }
 
-    return old_int;
-}
+    fn uninstall(_: ?Previous) void {}
+} else struct {
+    var global_cancel: ?*std.atomic.Value(bool) = null;
 
-fn uninstallCancelHandler(old: ?std.c.Sigaction) void {
-    if (builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return;
-    if (old) |*o| {
-        _ = std.c.sigaction(.INT, o, null);
-        _ = std.c.sigaction(.TERM, o, null);
+    fn sigintHandler(sig: std.c.SIG) callconv(.c) void {
+        _ = sig;
+        if (global_cancel) |cancel| cancel.store(true, .release);
     }
-    global_cancel = null;
-}
+
+    const Previous = std.c.Sigaction;
+
+    fn install(cancel: *std.atomic.Value(bool)) ?Previous {
+        global_cancel = cancel;
+
+        const act = std.c.Sigaction{
+            .handler = .{ .handler = &sigintHandler },
+            .mask = std.mem.zeroes(std.c.sigset_t),
+            .flags = 0,
+        };
+
+        var old_int: std.c.Sigaction = undefined;
+        if (std.c.sigaction(.INT, &act, &old_int) != 0) {
+            global_cancel = null;
+            return null;
+        }
+        var old_term: std.c.Sigaction = undefined;
+        if (std.c.sigaction(.TERM, &act, &old_term) != 0) {
+            _ = std.c.sigaction(.INT, &old_int, null);
+            global_cancel = null;
+            return null;
+        }
+
+        return old_int;
+    }
+
+    fn uninstall(old: ?Previous) void {
+        if (old) |*action| {
+            _ = std.c.sigaction(.INT, action, null);
+            _ = std.c.sigaction(.TERM, action, null);
+        }
+        global_cancel = null;
+    }
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 //  Events
@@ -227,7 +231,6 @@ const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "�
 
 pub const ProgressUi = struct {
     writer: *std.Io.Writer,
-    output_fd: std.posix.fd_t,
     is_tty: bool,
     io: std.Io,
 
@@ -255,13 +258,11 @@ pub const ProgressUi = struct {
 
     pub fn init(
         writer: *std.Io.Writer,
-        output_fd: std.posix.fd_t,
         is_tty: bool,
         io: std.Io,
     ) ProgressUi {
         return .{
             .writer = writer,
-            .output_fd = output_fd,
             .is_tty = is_tty,
             .io = io,
             .warnings = .empty,
@@ -272,7 +273,7 @@ pub const ProgressUi = struct {
         self.warnings.deinit(std.heap.page_allocator);
     }
 
-    /// Write directly to stdout fd, bypassing the buffered Threaded I/O writer.
+    /// Write directly to stderr, bypassing the buffered Threaded I/O writer.
     /// This ensures spinner frames are written atomically so carriage-return
     /// actually returns the cursor to column 0 instead of being split across writes.
     fn rawWrite(self: *ProgressUi, data: []const u8) void {
@@ -282,12 +283,7 @@ pub const ProgressUi = struct {
             return;
         }
 
-        var file = std.Io.File{
-            .handle = self.output_fd,
-            .flags = .{ .nonblocking = false },
-        };
-
-        file.writeStreamingAll(self.io, data) catch {};
+        std.Io.File.stderr().writeStreamingAll(self.io, data) catch {};
     }
 
     pub fn apply(self: *ProgressUi, event: ProgressEvent) void {
@@ -504,17 +500,12 @@ pub const CancellationError = error{Cancelled};
 pub fn runWithProgress(
     io: std.Io,
     progress_writer: *std.Io.Writer,
-    progress_fd: std.posix.fd_t,
     allocator: std.mem.Allocator,
     env: *std.process.Environ.Map,
     work_fn: *const fn (*WorkerContext) anyerror!void,
     cmd_data: ?*anyopaque,
 ) !void {
-    const progress_file = std.Io.File{
-        .handle = progress_fd,
-        .flags = .{ .nonblocking = false },
-    };
-    const is_tty = progress_file.isTty(io) catch false;
+    const is_tty = std.Io.File.stderr().isTty(io) catch false;
 
     var queue = try ProgressQueue.init(allocator, io);
     defer queue.deinit(allocator);
@@ -531,8 +522,8 @@ pub fn runWithProgress(
     };
 
     // Install SIGINT/SIGTERM handlers for cooperative cancellation.
-    const old_sa = installCancelHandler(&cancel);
-    defer uninstallCancelHandler(old_sa);
+    const old_sa = CancelHandler.install(&cancel);
+    defer CancelHandler.uninstall(old_sa);
 
     // Spawn worker thread with a larger stack size (8MB) to avoid stack overflows
     // when parsing large structures (like MoonstoneToml) on platforms with small defaults.
@@ -541,7 +532,7 @@ pub fn runWithProgress(
     defer thread.join();
 
     // Run UI loop on the main thread.
-    var ui = ProgressUi.init(progress_writer, progress_fd, is_tty, io);
+    var ui = ProgressUi.init(progress_writer, is_tty, io);
     defer ui.deinit();
 
     const poll_sleep = std.Io.Duration.fromMilliseconds(16);

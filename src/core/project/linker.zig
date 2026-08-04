@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const UNIQUE_BUILD_MARKER = "UNIQUE_BUILD_MARKER_20250608_1847";
 const manifest = @import("../domain/manifest.zig");
 const package_spec = @import("../domain/package_spec.zig");
@@ -586,7 +587,9 @@ fn writeLiveLinkScriptShim(
     const file = try bin_dir.createFile(io, bin_name, .{});
     defer file.close(io);
     try file.writeStreamingAll(io, shim);
-    try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+    if (comptime builtin.os.tag != .windows) {
+        try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+    }
 }
 
 fn packageLocalName(pkg_name: []const u8) []const u8 {

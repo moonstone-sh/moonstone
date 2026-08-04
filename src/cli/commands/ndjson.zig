@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 pub const MessageKind = enum {
@@ -47,7 +48,10 @@ pub const Emitter = struct {
             .allocator = allocator,
             .stdout = stdout,
             .command = command,
-            .pid = std.c.getpid(),
+            .pid = if (comptime builtin.os.tag == .windows)
+                @intCast(std.os.windows.GetCurrentProcessId())
+            else
+                std.c.getpid(),
         };
     }
 

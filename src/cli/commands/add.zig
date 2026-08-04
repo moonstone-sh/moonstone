@@ -296,7 +296,7 @@ pub const add_command = struct {
         }
 
         var data = AddWorkData{ .cmd = self, .ctx = ctx };
-        progress_runtime.runWithProgress(ctx.io, ctx.stderr, std.posix.STDERR_FILENO, ctx.allocator, ctx.env, addWorker, &data) catch |err| {
+        progress_runtime.runWithProgress(ctx.io, ctx.stderr, ctx.allocator, ctx.env, addWorker, &data) catch |err| {
             if (data.error_detail) |detail| {
                 ctx.error_detail = detail;
             }

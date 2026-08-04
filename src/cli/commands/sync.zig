@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
@@ -137,44 +138,51 @@ const JsonStderrSilencer = struct {
     pub fn init(io: std.Io, enabled: bool) !JsonStderrSilencer {
         var self = JsonStderrSilencer{ .io = io };
         if (!enabled) return self;
+        if (comptime builtin.os.tag == .windows) {
+            return self;
+        } else {
+            const saved = std.c.dup(std.posix.STDERR_FILENO);
+            if (saved < 0) return error.StderrRedirectFailed;
+            self.saved_fd = @intCast(saved);
 
-        const saved = std.c.dup(std.posix.STDERR_FILENO);
-        if (saved < 0) return error.StderrRedirectFailed;
-        self.saved_fd = @intCast(saved);
+            const devnull = std.posix.openatZ(std.posix.AT.FDCWD, "/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch |err| {
+                self.closeFd(self.saved_fd.?);
+                self.saved_fd = null;
+                return err;
+            };
+            self.devnull_fd = devnull;
 
-        const devnull = std.posix.openatZ(std.posix.AT.FDCWD, "/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch |err| {
-            self.closeFd(self.saved_fd.?);
-            self.saved_fd = null;
-            return err;
-        };
-        self.devnull_fd = devnull;
+            if (std.c.dup2(devnull, std.posix.STDERR_FILENO) < 0) {
+                self.closeFd(devnull);
+                self.closeFd(self.saved_fd.?);
+                self.devnull_fd = null;
+                self.saved_fd = null;
+                return error.StderrRedirectFailed;
+            }
 
-        if (std.c.dup2(devnull, std.posix.STDERR_FILENO) < 0) {
-            self.closeFd(devnull);
-            self.closeFd(self.saved_fd.?);
-            self.devnull_fd = null;
-            self.saved_fd = null;
-            return error.StderrRedirectFailed;
+            return self;
         }
-
-        return self;
     }
 
     pub fn deinit(self: *JsonStderrSilencer) void {
-        if (self.saved_fd) |fd| {
-            _ = std.c.dup2(fd, std.posix.STDERR_FILENO);
-            self.closeFd(fd);
-            self.saved_fd = null;
-        }
-        if (self.devnull_fd) |fd| {
-            self.closeFd(fd);
-            self.devnull_fd = null;
+        if (comptime builtin.os.tag != .windows) {
+            if (self.saved_fd) |fd| {
+                _ = std.c.dup2(fd, std.posix.STDERR_FILENO);
+                self.closeFd(fd);
+                self.saved_fd = null;
+            }
+            if (self.devnull_fd) |fd| {
+                self.closeFd(fd);
+                self.devnull_fd = null;
+            }
         }
     }
 
     fn closeFd(self: JsonStderrSilencer, fd: std.posix.fd_t) void {
-        const file = std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } };
-        file.close(self.io);
+        if (comptime builtin.os.tag != .windows) {
+            const file = std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } };
+            file.close(self.io);
+        }
     }
 };
 
@@ -498,7 +506,7 @@ pub const SyncCommand = struct {
         }
 
         var data = SyncWorkData{ .cmd = self, .ctx = ctx };
-        progress_runtime.runWithProgress(ctx.io, ctx.stderr, std.posix.STDERR_FILENO, ctx.allocator, ctx.env, syncWorker, &data) catch |err| {
+        progress_runtime.runWithProgress(ctx.io, ctx.stderr, ctx.allocator, ctx.env, syncWorker, &data) catch |err| {
             if (data.error_detail) |detail| {
                 ctx.error_detail = detail;
             }

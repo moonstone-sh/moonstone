@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 var enabled: bool = false;
 var start_ns: i64 = 0;
@@ -29,9 +30,17 @@ fn msSince(from_ns: i64) i64 {
 }
 
 fn timestampNs() i64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    return (@as(i64, ts.sec) * 1_000_000_000) + @as(i64, ts.nsec);
+    if (comptime builtin.os.tag == .windows) {
+        var counter: std.os.windows.LARGE_INTEGER = 0;
+        var frequency: std.os.windows.LARGE_INTEGER = 0;
+        if (!std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter).toBool()) return 0;
+        if (!std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency).toBool() or frequency == 0) return 0;
+        return @divTrunc(counter * 1_000_000_000, frequency);
+    } else {
+        var ts: std.c.timespec = undefined;
+        if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+        return (@as(i64, ts.sec) * 1_000_000_000) + @as(i64, ts.nsec);
+    }
 }
 
 pub fn mark(comptime label: []const u8) void {

@@ -97,7 +97,9 @@ fn writeConfig(io: std.Io, path: []const u8, content: []const u8) !void {
         if (err == error.PermissionDenied or err == error.ReadOnlyFileSystem) return error.ConfigFileReadOnly;
         return err;
     };
-    if (existing_stat) |stat| if (stat.permissions.readOnly()) return error.ConfigFileReadOnly;
+    if (comptime @import("builtin").os.tag != .windows) {
+        if (existing_stat) |stat| if (stat.permissions.readOnly()) return error.ConfigFileReadOnly;
+    }
 
     if (std.fs.path.dirname(path)) |parent| {
         std.Io.Dir.cwd().createDirPath(io, parent) catch |err| {
