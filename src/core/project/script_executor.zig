@@ -8,7 +8,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, manifest: *const manifest_m
     const script = manifest.findScript(name) orelse return error.ScriptNotFound;
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
-    if (@import("builtin").os.tag == .windows) {
+    if (comptime @import("builtin").os.tag == .windows) {
         try argv.appendSlice(allocator, &.{ "cmd", "/d", "/s", "/c", script.command });
     } else {
         try argv.appendSlice(allocator, &.{ "sh", "-c", script.command, script.name });

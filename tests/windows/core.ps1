@@ -41,10 +41,26 @@ if ($LASTEXITCODE -ne 0 -or $scripts.scripts[0].name -ne 'check') { throw 'scrip
 & $moon -C $project env --json | ConvertFrom-Json | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'environment projection failed' }
 
+$environment = & $moon -C $project env --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $environment.lua_cpath -notmatch '\?\.dll') { throw 'Windows Lua C module projection did not use .dll paths' }
+
 & $moon -C $project run check
 if ($LASTEXITCODE -ne 0) { throw 'cmd-hosted opaque script failed' }
 
 & $moon -C $project exec cmd /d /s /c 'exit /b 0'
 if ($LASTEXITCODE -ne 0) { throw 'projected exec failed' }
 
-Write-Output 'PASS: Moonstone Windows core CLI and process smoke test'
+$probeExe = Join-Path $project '.moonstone/env/bin/probe.exe'
+Copy-Item -Force $env:ComSpec $probeExe
+& $moon -C $project exec probe /d /s /c 'exit /b 0'
+if ($LASTEXITCODE -ne 0) { throw 'extensionless .exe resolution failed' }
+
+@'
+@echo off
+exit /b 0
+'@ | Set-Content -NoNewline (Join-Path $project '.moonstone/env/bin/live-tool.cmd')
+
+& $moon -C $project exec live-tool
+if ($LASTEXITCODE -ne 0) { throw 'extensionless .cmd launcher resolution failed' }
+
+Write-Output 'PASS: Moonstone Windows core CLI, projection, and launcher smoke test'

@@ -38,7 +38,11 @@ fn resolveWindows(
     if (try resolveUnix(allocator, io, directory, name)) |candidate| return candidate;
     if (std.fs.path.extension(name).len > 0) return null;
 
-    const executable_name = try std.fmt.allocPrint(allocator, "{s}.exe", .{name});
-    defer allocator.free(executable_name);
-    return resolveUnix(allocator, io, directory, executable_name);
+    inline for (.{ ".exe", ".cmd", ".bat" }) |extension| {
+        const executable_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, extension });
+        defer allocator.free(executable_name);
+        if (try resolveUnix(allocator, io, directory, executable_name)) |candidate| return candidate;
+    }
+
+    return null;
 }

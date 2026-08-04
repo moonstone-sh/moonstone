@@ -46,10 +46,10 @@ jobs:
         run: ./packages/contracts/tests/run.sh
 
   windows-core:
-    name: Windows Core CLI (exploratory)
+    name: Windows Core CLI and Environment
     runs-on: windows-latest
-    # Moonstone is not Windows-compilable yet. Keep the native smoke visible
-    # while the platform boundary is extracted, without blocking releases.
+    # Native coverage complements the Windows-GNU compile gate. Keep it
+    # non-blocking while runtime artifact materialization gains wider coverage.
     continue-on-error: true
 
     steps:
@@ -64,7 +64,7 @@ jobs:
       - name: Build Moonstone
         run: zig build
 
-      - name: Exercise project directory and process contracts
+      - name: Exercise project directory, projection, and launcher contracts
         shell: pwsh
         run: ./tests/windows/core.ps1
 

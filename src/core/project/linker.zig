@@ -548,7 +548,24 @@ fn writeLiveLinkScriptShim(
     script_command: []const u8,
 ) !void {
     const entry = if (std.mem.startsWith(u8, script_command, "lua ")) script_command[4..] else script_command;
-    const shim = try std.fmt.allocPrint(allocator,
+    const shim_name = if (comptime builtin.os.tag == .windows)
+        try std.fmt.allocPrint(allocator, "{s}.cmd", .{bin_name})
+    else
+        try allocator.dupe(u8, bin_name);
+    defer allocator.free(shim_name);
+
+    const shim = if (comptime builtin.os.tag == .windows) try std.fmt.allocPrint(allocator,
+        \\@echo off
+        \\setlocal EnableExtensions DisableDelayedExpansion
+        \\set "TOOL_ROOT={s}"
+        \\set "LUA_BIN=%TOOL_ROOT%\\.moonstone\\env\\bin\\lua.exe"
+        \\if not exist "%LUA_BIN%" set "LUA_BIN=lua.exe"
+        \\set "LUA_PATH=%TOOL_ROOT%\\src\\?.lua;%TOOL_ROOT%\\src\\?\\init.lua;%LUA_PATH%;;"
+        \\set "LUA_CPATH=%TOOL_ROOT%\\.moonstone\\env\\lib\\lua\\?.dll;%LUA_CPATH%;;"
+        \\"%LUA_BIN%" "%TOOL_ROOT%\\{s}" %*
+        \\exit /b %ERRORLEVEL%
+        \\
+    , .{ source_path, entry }) else try std.fmt.allocPrint(allocator,
         \\#!/usr/bin/env sh
         \\set -eu
         \\TOOL_ROOT="{s}"
@@ -582,15 +599,93 @@ fn writeLiveLinkScriptShim(
     , .{ source_path, entry });
     defer allocator.free(shim);
 
-    bin_dir.deleteFile(io, bin_name) catch |err| {
+    bin_dir.deleteFile(io, shim_name) catch |err| {
         if (err != error.FileNotFound) return err;
     };
-    const file = try bin_dir.createFile(io, bin_name, .{});
+    const file = try bin_dir.createFile(io, shim_name, .{});
     defer file.close(io);
     try file.writeStreamingAll(io, shim);
     if (comptime builtin.os.tag != .windows) {
         try file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
     }
+}
+
+fn projectFile(
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+    destination_name: []const u8,
+) !void {
+    destination_dir.deleteFile(io, destination_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+
+    if (comptime builtin.os.tag == .windows) {
+        destination_dir.symLink(io, source_path, destination_name, .{}) catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied => {
+                try std.Io.Dir.cwd().copyFile(source_path, destination_dir, destination_name, io, .{ .replace = true });
+            },
+            else => return err,
+        };
+        return;
+    }
+
+    try destination_dir.symLink(io, source_path, destination_name, .{});
+}
+
+fn projectTree(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+) !void {
+    var source_dir = std.Io.Dir.openDirAbsolute(io, source_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer source_dir.close(io);
+
+    var iterator = source_dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        const source_file = try std.fs.path.join(allocator, &.{ source_path, entry.name });
+        defer allocator.free(source_file);
+
+        if (entry.kind == .directory) {
+            try destination_dir.createDirPath(io, entry.name);
+            var child_destination_dir = try destination_dir.openDir(io, entry.name, .{});
+            defer child_destination_dir.close(io);
+            try projectTree(allocator, io, child_destination_dir, source_file);
+        } else {
+            try projectFile(io, destination_dir, source_file, entry.name);
+        }
+    }
+}
+
+fn projectDirectory(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+    destination_name: []const u8,
+) !void {
+    destination_dir.deleteTree(io, destination_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+
+    if (comptime builtin.os.tag == .windows) {
+        destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true }) catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied => {
+                try destination_dir.createDirPath(io, destination_name);
+                var materialized_dir = try destination_dir.openDir(io, destination_name, .{});
+                defer materialized_dir.close(io);
+                try projectTree(allocator, io, materialized_dir, source_path);
+            },
+            else => return err,
+        };
+        return;
+    }
+
+    try destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true });
 }
 
 fn packageLocalName(pkg_name: []const u8) []const u8 {
@@ -1029,14 +1124,7 @@ pub fn link_project_env_at(
             break :blk provision_path;
         };
 
-        bin_dir.symLink(io, target_path, name, .{}) catch |err| {
-            if (err == error.PathAlreadyExists) {
-                try bin_dir.deleteFile(io, name);
-                try bin_dir.symLink(io, target_path, name, .{});
-            } else {
-                return err;
-            }
-        };
+        try projectFile(io, bin_dir, target_path, name);
 
         // If this public binary comes from a package with an isolated runtime
         // that differs from the project runtime, create a bin-runtime scope so
@@ -1103,14 +1191,7 @@ pub fn link_project_env_at(
         };
         defer dest_dir.close(io);
 
-        dest_dir.symLink(io, target_path, dest_name, .{}) catch |err| {
-            if (err == error.PathAlreadyExists) {
-                try dest_dir.deleteFile(io, dest_name);
-                try dest_dir.symLink(io, target_path, dest_name, .{});
-            } else {
-                return err;
-            }
-        };
+        try projectFile(io, dest_dir, target_path, dest_name);
     }
 
     // 4c. Link Lua modules from store artifacts
@@ -1169,14 +1250,7 @@ pub fn link_project_env_at(
         };
         defer dest_dir.close(io);
 
-        dest_dir.symLink(io, target_path, dest_name, .{}) catch |err| {
-            if (err == error.PathAlreadyExists) {
-                try dest_dir.deleteFile(io, dest_name);
-                try dest_dir.symLink(io, target_path, dest_name, .{});
-            } else {
-                return err;
-            }
-        };
+        try projectFile(io, dest_dir, target_path, dest_name);
     }
 
     // 5. Link live dependencies
@@ -1198,14 +1272,7 @@ pub fn link_project_env_at(
                 if (sub_entry.kind != .file) continue;
                 const src_file = try std.fs.path.join(allocator, &.{ src_bin_path, sub_entry.name });
                 defer allocator.free(src_file);
-                bin_dir.symLink(io, src_file, sub_entry.name, .{}) catch |err| {
-                    if (err == error.PathAlreadyExists) {
-                        try bin_dir.deleteFile(io, sub_entry.name);
-                        try bin_dir.symLink(io, src_file, sub_entry.name, .{});
-                    } else {
-                        return err;
-                    }
-                };
+                try projectFile(io, bin_dir, src_file, sub_entry.name);
                 if (policy.expose_tool_scope) {
                     try writeLiveLinkScope(allocator, io, env_dir, index, "bin-runtime", sub_entry.name, ll.source_path, lua_ver_dot, project_runtime_bin_path);
                 } else if (policy.expose_helper_scope) {
@@ -1261,7 +1328,7 @@ pub fn link_project_env_at(
                         return err;
                     };
                     defer ddir.close(io);
-                    try symlinkTree(allocator, io, ddir, module_subdir_path);
+                    try projectTree(allocator, io, ddir, module_subdir_path);
                 } else |err| {
                     if (err != error.FileNotFound) return err;
                 }
@@ -1273,9 +1340,7 @@ pub fn link_project_env_at(
                     env_dir.createDirPath(io, share_lua_dir) catch |create_err| {
                         return create_err;
                     };
-                    env_dir.symLink(io, module_single_path, module_lua_name, .{}) catch |link_err| {
-                        if (link_err != error.PathAlreadyExists) return link_err;
-                    };
+                    try projectFile(io, env_dir, module_single_path, module_lua_name);
                 } else |err| {
                     if (err != error.FileNotFound) return err;
                 }
@@ -1288,7 +1353,7 @@ pub fn link_project_env_at(
         const ll_policy = ll.role.getProjectionPolicy();
         if (ll_policy.metadata_only) continue;
         const ll_local = packageLocalName(ll.pkg_name);
-        try linkPackageIntoLibexec(io, libexec_dir, ll_local, ll.source_path);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, ll_local, ll.source_path);
     }
 
     // 6. Fallback linking for artifacts without successful module metadata linking
@@ -1321,9 +1386,9 @@ pub fn link_project_env_at(
                         try env_dir.createDirPath(io, mod_dest);
                         var ddir = try env_dir.openDir(io, mod_dest, .{});
                         defer ddir.close(io);
-                        try symlinkTree(allocator, io, ddir, mod_src);
+                        try projectTree(allocator, io, ddir, mod_src);
                     } else if (sub_entry.kind == .file) {
-                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                        try projectFile(io, env_dir, mod_src, mod_dest);
                     }
                 }
             }
@@ -1361,9 +1426,9 @@ pub fn link_project_env_at(
                         try env_dir.createDirPath(io, mod_dest);
                         var ddir = try env_dir.openDir(io, mod_dest, .{});
                         defer ddir.close(io);
-                        try symlinkTree(allocator, io, ddir, mod_src);
+                        try projectTree(allocator, io, ddir, mod_src);
                     } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
-                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                        try projectFile(io, env_dir, mod_src, mod_dest);
                     }
                 }
             }
@@ -1392,7 +1457,7 @@ pub fn link_project_env_at(
                     try env_dir.createDirPath(io, mod_dest);
                     var ddir = try env_dir.openDir(io, mod_dest, .{});
                     defer ddir.close(io);
-                    try symlinkTree(allocator, io, ddir, mod_src);
+                    try projectTree(allocator, io, ddir, mod_src);
                 }
             }
         } else |err| {
@@ -1422,9 +1487,9 @@ pub fn link_project_env_at(
                         try env_dir.createDirPath(io, mod_dest);
                         var ddir = try env_dir.openDir(io, mod_dest, .{});
                         defer ddir.close(io);
-                        try symlinkTree(allocator, io, ddir, mod_src);
+                        try projectTree(allocator, io, ddir, mod_src);
                     } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
-                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                        try projectFile(io, env_dir, mod_src, mod_dest);
                     }
                 }
             }
@@ -1455,9 +1520,9 @@ pub fn link_project_env_at(
                         try env_dir.createDirPath(io, mod_dest);
                         var ddir = try env_dir.openDir(io, mod_dest, .{});
                         defer ddir.close(io);
-                        try symlinkTree(allocator, io, ddir, mod_src);
+                        try projectTree(allocator, io, ddir, mod_src);
                     } else if (sub_entry.kind == .file and std.mem.endsWith(u8, sub_entry.name, ".lua")) {
-                        try env_dir.symLink(io, mod_src, mod_dest, .{});
+                        try projectFile(io, env_dir, mod_src, mod_dest);
                     }
                 }
             }
@@ -1473,7 +1538,7 @@ pub fn link_project_env_at(
         const pa_path = try index.get_artifact_path(pa2.artifact_hash) orelse continue;
         defer allocator.free(pa_path);
         const pa_local = packageLocalName(pa2.name);
-        try linkPackageIntoLibexec(io, libexec_dir, pa_local, pa_path);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, pa_path);
     }
 
     // 7. Generate env.toml
@@ -1582,48 +1647,13 @@ fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.
 }
 
 fn linkPackageIntoLibexec(
+    allocator: std.mem.Allocator,
     io: std.Io,
     libexec_dir: std.Io.Dir,
     local_name: []const u8,
     src_path: []const u8,
 ) !void {
-    libexec_dir.deleteTree(io, local_name) catch |err| {
-        if (err != error.FileNotFound) return err;
-    };
-    libexec_dir.symLink(io, src_path, local_name, .{}) catch |err| {
-        if (err == error.PathAlreadyExists) {
-            try libexec_dir.deleteFile(io, local_name);
-            try libexec_dir.symLink(io, src_path, local_name, .{});
-        } else return err;
-    };
-}
-
-fn symlinkTree(allocator: std.mem.Allocator, io: std.Io, dest_parent_dir: std.Io.Dir, src_path: []const u8) !void {
-    var src_dir = std.Io.Dir.openDirAbsolute(io, src_path, .{ .iterate = true }) catch |err| {
-        if (err == error.FileNotFound) return;
-        return err;
-    };
-    defer src_dir.close(io);
-
-    var it = src_dir.iterate();
-    while (try it.next(io)) |entry| {
-        const src_file = try std.fs.path.join(allocator, &.{ src_path, entry.name });
-        defer allocator.free(src_file);
-
-        if (entry.kind == .directory) {
-            try dest_parent_dir.createDirPath(io, entry.name);
-            var sub_dest_dir = try dest_parent_dir.openDir(io, entry.name, .{});
-            defer sub_dest_dir.close(io);
-            try symlinkTree(allocator, io, sub_dest_dir, src_file);
-        } else {
-            dest_parent_dir.symLink(io, src_file, entry.name, .{}) catch |err| {
-                if (err == error.PathAlreadyExists) {
-                    try dest_parent_dir.deleteFile(io, entry.name);
-                    try dest_parent_dir.symLink(io, src_file, entry.name, .{});
-                } else return err;
-            };
-        }
-    }
+    try projectDirectory(allocator, io, libexec_dir, src_path, local_name);
 }
 
 test "link_project_env basic" {
@@ -1632,24 +1662,27 @@ test "link_project_env basic" {
     _ = LiveLink{ .name = "test", .source_path = "/tmp", .mode = "live", .pkg_name = "test", .pkg_version = "0.1.0", .pkg_kind = .lib };
 }
 
-test "shim generation does not hardcode lua versions" {
+test "live-link shim uses the target launcher without hardcoded Lua versions" {
     const allocator = std.testing.allocator;
     const io = std.Io.default;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try liveLinkScriptCommand(allocator, io, tmp.dir, "dummy_bin", "/fake/source", "dummy_cmd");
+    try writeLiveLinkScriptShim(allocator, io, tmp.dir, "dummy_bin", "/fake/source", "lua src/main.lua");
 
-    const content = try tmp.dir.readFileAlloc(io, "dummy_bin", allocator, 4096);
+    const shim_name = if (comptime builtin.os.tag == .windows) "dummy_bin.cmd" else "dummy_bin";
+    const content = try tmp.dir.readFileAlloc(io, shim_name, allocator, 4096);
     defer allocator.free(content);
 
-    // Should contain the dynamic loop
-    try std.testing.expect(std.mem.indexOf(u8, content, "for d in \"$TOOL_ROOT/.moonstone/env/share/lua/\"*; do") != null);
-
-    // Should NOT contain the old hardcoded versions
-    try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.1/") == null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.4/") == null);
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expect(std.mem.indexOf(u8, content, "@echo off") != null);
+        try std.testing.expect(std.mem.indexOf(u8, content, "?.dll") != null);
+    } else {
+        try std.testing.expect(std.mem.indexOf(u8, content, "for d in \"$TOOL_ROOT/.moonstone/env/share/lua/\"*; do") != null);
+        try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.1/") == null);
+        try std.testing.expect(std.mem.indexOf(u8, content, "share/lua/5.4/") == null);
+    }
 }
 
 test "scope module roots preserve dotted Lua module paths" {
