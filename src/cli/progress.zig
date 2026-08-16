@@ -728,6 +728,14 @@ pub fn runWithProgress(
         // Drain all pending events.
         while (queue.tryRecv()) |event| {
             ui.apply(event);
+            // Task lifecycle transitions are low-volume, semantic events.
+            // Paint each transition before draining the next one so a fast
+            // worker cannot collapse `preparing → materializing → completed`
+            // into one invisible final row.
+            if (event == .task_state) {
+                ui.last_render_ns = ui.nowNs();
+                ui.render();
+            }
             switch (event) {
                 .done => {
                     ui.renderFinal();

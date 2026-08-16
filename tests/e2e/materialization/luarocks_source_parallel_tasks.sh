@@ -35,7 +35,9 @@ trap on_exit EXIT
 
 cp -R "${PROJECT_ROOT}/fixtures/sandbox-reference/mock-luarocks" "${MOCK_DIR}"
 cp "${MOCK_DIR}/fakebin-1.0-1.rockspec" "${MOCK_DIR}/fakealt-1.0-1.rockspec"
+cp "${MOCK_DIR}/fakebin-1.0.tar.gz" "${MOCK_DIR}/fakealt-1.0.tar.gz"
 perl -0pi -e 's/package = "fakebin"/package = "fakealt"/; s/fakebin = "fake\.lua"/fakealt = "fake.lua"/' "${MOCK_DIR}/fakealt-1.0-1.rockspec"
+perl -pi -e 's/fakebin-1\.0\.tar\.gz/fakealt-1.0.tar.gz/g' "${MOCK_DIR}/fakealt-1.0-1.rockspec"
 perl -pi -e "s/localhost:8641/127.0.0.1:${RANDOM_PORT}/g" "${MOCK_DIR}/fakebin-1.0-1.rockspec" "${MOCK_DIR}/fakealt-1.0-1.rockspec"
 cat >"${MOCK_DIR}/manifest-5.4.json" <<'MANIFEST'
 {"repository":{"fakealt":{"1.0-1":[{"arch":"rockspec"}]},"fakebin":{"1.0-1":[{"arch":"rockspec"}]}}}
