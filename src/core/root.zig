@@ -35,6 +35,7 @@ pub const platform = struct {
     pub const executable = @import("platform/executable.zig");
     pub const fs = @import("platform/fs.zig");
     pub const env = @import("platform/env.zig");
+    pub const target = @import("platform/target.zig");
     pub const fetcher = @import("platform/fetcher.zig");
     pub const http = @import("platform/http.zig");
 };
@@ -54,6 +55,7 @@ pub const registry = struct {
 pub const luarocks = struct {
     pub const rockspec = @import("luarocks/rockspec.zig");
     pub const translate = @import("luarocks/translate.zig");
+    pub const patch = @import("luarocks/patch.zig");
 };
 
 pub const runtime = struct {
@@ -83,7 +85,13 @@ pub const materialization = struct {
     };
 };
 
+pub const realization = struct {
+    pub const scheduler = @import("realization/scheduler.zig");
+    pub const request_coordinator = @import("realization/request_coordinator.zig");
+};
+
 pub const project = struct {
+    pub const build_scope = @import("project/build_scope.zig");
     pub const linker = @import("project/linker.zig");
     pub const run_env = @import("project/run_env.zig");
     pub const script_executor = @import("project/script_executor.zig");

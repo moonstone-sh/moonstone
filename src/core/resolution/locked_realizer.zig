@@ -39,12 +39,26 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
     return .exact_artifact_required;
 }
 
-/// A `native` lock selects the artifact for the host that replays it. Its
-/// package identity and provenance remain locked, but its byte-level artifact
-/// hash is necessarily platform-specific (for example, macOS versus Linux
-/// runtimes and native Lua modules).
+/// Every stored artifact identity is part of the replay contract. `native`
+/// selects the host realization when the lock is created; it does not weaken
+/// verification on the host that replays that lock. A project moving to a
+/// different target must create a new target realization explicitly rather
+/// than silently accepting a different artifact under the same lock entry.
 pub fn requiresExactArtifactHash(entry: *const LockEntry) bool {
-    return !std.mem.eql(u8, entry.target, "native");
+    return entry.artifact_hash.len > 0 and
+        !std.mem.eql(u8, entry.artifact_hash, "link") and
+        !std.mem.eql(u8, entry.artifact_hash, "path");
+}
+
+test "native locked artifacts retain exact identity" {
+    var entry = LockEntry{
+        .artifact_hash = "b3:artifact",
+        .target = "native",
+    };
+    try std.testing.expect(requiresExactArtifactHash(&entry));
+
+    entry.artifact_hash = "link";
+    try std.testing.expect(!requiresExactArtifactHash(&entry));
 }
 
 const graph_provider = @import("provider/graph_provider.zig");

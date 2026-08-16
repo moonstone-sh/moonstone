@@ -306,7 +306,7 @@ The audit highlights three distinct interpretations of `artifact_hash` during lo
 - **Model 2: Cache Hint**
   - `artifact_hash` is a primary lookup key for local/remote CAS. If absent, source rematerialization is performed. If the rematerialized artifact matches `recipe_hash` and `source_hash`, it is accepted even if `artifact_hash` differs, and `moonstone.lock` is updated with the new realization hash.
 - **Model 3: Target/Toolchain-Scoped Realization Identity**
-  - `artifact_hash` is scoped to `(target, lua_abi, toolchain_version)`. Pure-Lua packages require exact `artifact_hash` match. Native packages require exact match when compiled under identical toolchains.
+  - `artifact_hash` is scoped to `(target, lua_abi, toolchain_version)`. Every non-live locked package requires an exact `artifact_hash` match during replay. A new host or toolchain realization must be created explicitly rather than silently weakening an existing lock entry.
 
 **Note:** Per user directive, we do **not** recommend accepting artifact-hash mismatches based on `reproducible = false`. This remains an explicit open design decision for project leadership.
 

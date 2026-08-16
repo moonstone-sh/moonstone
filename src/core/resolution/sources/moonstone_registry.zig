@@ -4,6 +4,7 @@ const registry = @import("../../registry/registry.zig");
 const driver_mod = @import("../../store/driver.zig");
 const semver = @import("../../domain/semver.zig");
 const fs = @import("../../platform/fs.zig");
+const platform_target = @import("../../platform/target.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
 
@@ -238,18 +239,5 @@ fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
 }
 
 fn get_host_target(allocator: std.mem.Allocator) ![]const u8 {
-    const builtin = @import("builtin");
-    const arch = switch (builtin.cpu.arch) {
-        .x86_64 => "x86_64",
-        .aarch64 => "aarch64",
-        else => return error.UnsupportedArch,
-    };
-    const os = switch (builtin.os.tag) {
-        .linux => "linux-gnu",
-        .macos => "macos",
-        .windows => "windows-msvc",
-        .freebsd => "freebsd",
-        else => return error.UnsupportedOS,
-    };
-    return try std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
+    return platform_target.hostTarget(allocator);
 }

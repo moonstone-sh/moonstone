@@ -1,18 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const manifest = @import("../domain/manifest.zig");
-
-fn pathSeparator() u8 {
-    return if (builtin.os.tag == .windows) ';' else ':';
-}
-
-fn luaCmoduleExtension() []const u8 {
-    return switch (builtin.os.tag) {
-        .windows => ".dll",
-        .macos => ".dylib",
-        else => ".so",
-    };
-}
+const environment = @import("environment.zig");
 
 pub const RunEnv = struct {
     env_map: std.process.Environ.Map,
@@ -22,6 +11,7 @@ pub const RunEnv = struct {
     bin_path: []const u8,
     lua_path: []const u8,
     lua_cpath: []const u8,
+    native_lib_path: ?[]const u8,
     lua_ver_suffix: []const u8, // e.g. "5_4"
     lua_ver_dot: []const u8, // e.g. "5.4"
 
@@ -30,6 +20,7 @@ pub const RunEnv = struct {
         self.allocator.free(self.bin_path);
         self.allocator.free(self.lua_path);
         self.allocator.free(self.lua_cpath);
+        if (self.native_lib_path) |native_lib_path| self.allocator.free(native_lib_path);
         self.allocator.free(self.lua_ver_suffix);
         self.allocator.free(self.lua_ver_dot);
     }
@@ -128,8 +119,10 @@ pub fn get_run_env(
             const env_bin_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "bin" });
             const env_share_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "share", "lua", lua_ver_dot });
             const env_lib_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "lib", "lua", lua_ver_dot });
+            const native_lib_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "lib", "native" });
+            defer allocator.free(native_lib_path);
 
-            return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, lua_ver_dot);
+            return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, native_lib_path, lua_ver_dot);
         }
     }
 
@@ -190,7 +183,7 @@ pub fn get_run_env(
         const env_share_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "share", "lua", lua_ver_dot });
         const env_lib_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "lib", "lua", lua_ver_dot });
 
-        return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, lua_ver_dot);
+        return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, null, lua_ver_dot);
     }
 
     return error.NoActiveEnvironment;
@@ -203,9 +196,9 @@ fn build_run_env(
     bin_path: []const u8,
     share_path: []const u8,
     lib_path: []const u8,
+    native_lib_path: ?[]const u8,
     lua_ver_dot: []const u8,
 ) !RunEnv {
-    _ = io;
     const ver_suffix = try allocator.dupe(u8, lua_ver_dot);
     errdefer allocator.free(ver_suffix);
     for (ver_suffix) |*char| if (char.* == '.') {
@@ -218,17 +211,53 @@ fn build_run_env(
     const lua_path_val = try std.fmt.allocPrint(allocator, "{s}/?.lua;{s}/?/init.lua;;", .{ share_path, share_path });
     errdefer allocator.free(lua_path_val);
 
-    const cmodule_extension = luaCmoduleExtension();
-    const lua_cpath_val = try std.fmt.allocPrint(allocator, "{s}/?{s};{s}/?/init{s};;", .{ lib_path, cmodule_extension, lib_path, cmodule_extension });
+    var lua_cpath = std.ArrayList(u8).empty;
+    errdefer lua_cpath.deinit(allocator);
+    for (environment.luaCmoduleExtensions()) |extension| {
+        if (lua_cpath.items.len > 0) try lua_cpath.append(allocator, ';');
+        const patterns = try std.fmt.allocPrint(allocator, "{s}/?{s};{s}/?/init{s}", .{ lib_path, extension, lib_path, extension });
+        defer allocator.free(patterns);
+        try lua_cpath.appendSlice(allocator, patterns);
+    }
+    try lua_cpath.appendSlice(allocator, ";;");
+    const lua_cpath_val = try lua_cpath.toOwnedSlice(allocator);
     errdefer allocator.free(lua_cpath_val);
 
+    const active_native_lib_path = if (native_lib_path) |path| blk: {
+        var directory = std.Io.Dir.cwd().openDir(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => break :blk null,
+            else => return err,
+        };
+        directory.close(io);
+        break :blk path;
+    } else null;
     const old_path = base_env.get("PATH") orelse "";
-    const new_path = if (old_path.len > 0)
-        try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, pathSeparator(), old_path })
+    const new_path = if (comptime builtin.os.tag == .windows) blk: {
+        if (active_native_lib_path) |path| {
+            break :blk if (old_path.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}{c}{s}{c}{s}", .{ path, environment.pathSeparator(), bin_path, environment.pathSeparator(), old_path })
+            else
+                try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ path, environment.pathSeparator(), bin_path });
+        }
+        break :blk if (old_path.len > 0)
+            try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, environment.pathSeparator(), old_path })
+        else
+            try allocator.dupe(u8, bin_path);
+    } else if (old_path.len > 0)
+        try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, environment.pathSeparator(), old_path })
     else
         try allocator.dupe(u8, bin_path);
     defer allocator.free(new_path);
     try final_env.put("PATH", new_path);
+    if (active_native_lib_path) |path| if (environment.nativeLibraryEnvironmentVariable()) |key| {
+        const old_loader_path = base_env.get(key) orelse "";
+        const projected_loader_path = if (old_loader_path.len > 0)
+            try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ path, environment.pathSeparator(), old_loader_path })
+        else
+            try allocator.dupe(u8, path);
+        defer allocator.free(projected_loader_path);
+        try final_env.put(key, projected_loader_path);
+    };
 
     // Version-specific vars
     const lua_path_ver_key = try std.fmt.allocPrint(allocator, "LUA_PATH_{s}", .{ver_suffix});
@@ -249,6 +278,7 @@ fn build_run_env(
         .bin_path = try allocator.dupe(u8, bin_path),
         .lua_path = lua_path_val,
         .lua_cpath = lua_cpath_val,
+        .native_lib_path = if (active_native_lib_path) |path| try allocator.dupe(u8, path) else null,
         .lua_ver_suffix = ver_suffix,
         .lua_ver_dot = lua_ver_dot,
     };
@@ -317,4 +347,77 @@ pub fn isEnvEntryAllowed(
 
     // Not in lockfile (e.g. runtime), allow
     return true;
+}
+
+test "build_run_env projects an existing native library directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "share/lua/5.4");
+    try tmp.dir.createDirPath(io, "lib/lua/5.4");
+    try tmp.dir.createDirPath(io, "lib/native");
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const bin_path = try std.fs.path.join(allocator, &.{ root, "bin" });
+    defer allocator.free(bin_path);
+    const share_path = try std.fs.path.join(allocator, &.{ root, "share/lua/5.4" });
+    defer allocator.free(share_path);
+    const lib_path = try std.fs.path.join(allocator, &.{ root, "lib/lua/5.4" });
+    defer allocator.free(lib_path);
+    const native_lib_path = try std.fs.path.join(allocator, &.{ root, "lib/native" });
+    defer allocator.free(native_lib_path);
+
+    var base_env = std.process.Environ.Map.init(allocator);
+    defer base_env.deinit();
+    try base_env.put("PATH", "/host/bin");
+
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4");
+    defer run_env.deinit();
+
+    try std.testing.expectEqualStrings(native_lib_path, run_env.native_lib_path.?);
+    if (comptime builtin.os.tag == .windows) {
+        const expected_prefix = try std.fmt.allocPrint(allocator, "{s};{s}", .{ native_lib_path, bin_path });
+        defer allocator.free(expected_prefix);
+        try std.testing.expect(std.mem.startsWith(u8, run_env.env_map.get("PATH").?, expected_prefix));
+    } else {
+        const key = environment.nativeLibraryEnvironmentVariable().?;
+        try std.testing.expectEqualStrings(native_lib_path, run_env.env_map.get(key).?);
+        try std.testing.expect(std.mem.startsWith(u8, run_env.env_map.get("PATH").?, bin_path));
+    }
+}
+
+test "build_run_env omits absent native library directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "share/lua/5.4");
+    try tmp.dir.createDirPath(io, "lib/lua/5.4");
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const bin_path = try std.fs.path.join(allocator, &.{ root, "bin" });
+    defer allocator.free(bin_path);
+    const share_path = try std.fs.path.join(allocator, &.{ root, "share/lua/5.4" });
+    defer allocator.free(share_path);
+    const lib_path = try std.fs.path.join(allocator, &.{ root, "lib/lua/5.4" });
+    defer allocator.free(lib_path);
+    const native_lib_path = try std.fs.path.join(allocator, &.{ root, "lib/native" });
+    defer allocator.free(native_lib_path);
+
+    var base_env = std.process.Environ.Map.init(allocator);
+    defer base_env.deinit();
+    try base_env.put("PATH", "/host/bin");
+
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4");
+    defer run_env.deinit();
+
+    try std.testing.expect(run_env.native_lib_path == null);
+    if (comptime builtin.os.tag != .windows) {
+        try std.testing.expect(run_env.env_map.get(environment.nativeLibraryEnvironmentVariable().?) == null);
+    }
 }

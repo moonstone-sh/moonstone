@@ -294,12 +294,27 @@ fn deinitProvisions(allocator: std.mem.Allocator, provisions: anytype) void {
         var mutable_provision = provision;
         mutable_provision.deinit(allocator);
     }
+    for (provisions.scripts) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.assets) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
+    for (provisions.ballad_plugins) |provision| {
+        var mutable_provision = provision;
+        mutable_provision.deinit(allocator);
+    }
     allocator.free(provisions.bins);
     allocator.free(provisions.bin_luas);
     allocator.free(provisions.headers);
     allocator.free(provisions.libs);
     allocator.free(provisions.lua_modules);
     allocator.free(provisions.lua_cmodules);
+    allocator.free(provisions.scripts);
+    allocator.free(provisions.assets);
+    allocator.free(provisions.ballad_plugins);
 }
 
 fn luaAbiDigits(abi: []const u8) ?u32 {
@@ -520,9 +535,11 @@ fn writeRuntimeScope(
             defer allocator.free(module_root);
             const absolute_module_root = try std.fs.path.join(allocator, &.{ art_path, "files", module_root });
             defer allocator.free(absolute_module_root);
-            const pattern = try std.fmt.allocPrint(allocator, "?{s}", .{luaCmoduleExtension()});
-            defer allocator.free(pattern);
-            try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, pattern }));
+            for (luaCmoduleExtensions()) |extension| {
+                const pattern = try std.fmt.allocPrint(allocator, "?{s}", .{extension});
+                defer allocator.free(pattern);
+                try appendUniqueOwnedPath(allocator, &lua_cpaths, try std.fs.path.join(allocator, &.{ absolute_module_root, pattern }));
+            }
         }
     }
     if (effective_runtime_bin_path) |runtime_path| {
@@ -781,6 +798,17 @@ pub fn link_project_env_at(
         cmod_map.deinit(allocator);
     }
 
+    var native_lib_map = UnmanagedMap.empty;
+    defer {
+        var it = native_lib_map.iterator();
+        while (it.next()) |e| {
+            allocator.free(e.key_ptr.*);
+            allocator.free(e.value_ptr.path);
+            allocator.free(e.value_ptr.artifact_hash);
+        }
+        native_lib_map.deinit(allocator);
+    }
+
     var runtime_info: ?driver_mod.RuntimeProvision = null;
     defer if (runtime_info) |*r| r.deinit(allocator);
 
@@ -860,12 +888,27 @@ pub fn link_project_env_at(
                 var mut_p = p;
                 mut_p.deinit(allocator);
             }
+            for (provs.scripts) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.assets) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
+            for (provs.ballad_plugins) |p| {
+                var mut_p = p;
+                mut_p.deinit(allocator);
+            }
             allocator.free(provs.bins);
             allocator.free(provs.bin_luas);
             allocator.free(provs.headers);
             allocator.free(provs.libs);
             allocator.free(provs.lua_modules);
             allocator.free(provs.lua_cmodules);
+            allocator.free(provs.scripts);
+            allocator.free(provs.assets);
+            allocator.free(provs.ballad_plugins);
         }
 
         for (provs.bins) |b| {
@@ -1019,6 +1062,22 @@ pub fn link_project_env_at(
                 }
             }
         }
+
+        for (provs.libs) |library| {
+            if (!policy.link_cmodules_to_root) continue;
+            if (library.linkage == .static) continue;
+            const library_file_name = std.fs.path.basename(library.path);
+            if (native_lib_map.get(library_file_name)) |existing| {
+                if (!std.mem.eql(u8, existing.artifact_hash, hash)) return error.NativeLibraryConflict;
+                continue;
+            }
+            const absolute_library_path = try std.fs.path.join(allocator, &.{ art_path, "files", library.path });
+            try native_lib_map.put(allocator, try allocator.dupe(u8, library_file_name), .{
+                .path = absolute_library_path,
+                .artifact_hash = try allocator.dupe(u8, hash),
+                .role = pa.role,
+            });
+        }
     }
 
     if (runtime_info == null) {
@@ -1167,6 +1226,25 @@ pub fn link_project_env_at(
         defer dest_dir.close(io);
 
         try projectFile(io, dest_dir, target_path, dest_name);
+    }
+
+    // 4b-bis. Link runtime native libraries for the host dynamic loader.
+    if (native_lib_map.count() > 0) {
+        try env_dir.createDirPath(io, "lib/native");
+        var native_lib_dir = try env_dir.openDir(io, "lib/native", .{});
+        defer native_lib_dir.close(io);
+        var native_iterator = native_lib_map.iterator();
+        while (native_iterator.next()) |entry| {
+            const destination_name = entry.key_ptr.*;
+            if (std.fs.path.dirname(destination_name)) |parent| try native_lib_dir.createDirPath(io, parent);
+            if (std.fs.path.dirname(destination_name)) |parent| {
+                var destination_dir = try native_lib_dir.openDir(io, parent, .{});
+                defer destination_dir.close(io);
+                try projectFile(io, destination_dir, entry.value_ptr.path, std.fs.path.basename(destination_name));
+            } else {
+                try projectFile(io, native_lib_dir, entry.value_ptr.path, destination_name);
+            }
+        }
     }
 
     // 4c. Link Lua modules from store artifacts
@@ -1687,5 +1765,13 @@ fn luaCmoduleExtension() []const u8 {
         .windows => ".dll",
         .macos => ".dylib",
         else => ".so",
+    };
+}
+
+fn luaCmoduleExtensions() []const []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => &.{".dll"},
+        .macos => &.{ ".dylib", ".so" },
+        else => &.{".so"},
     };
 }

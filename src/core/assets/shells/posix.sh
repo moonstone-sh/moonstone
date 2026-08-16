@@ -1,4 +1,5 @@
 export PATH="{{bin_path}}:$PATH"
 export LUA_PATH="{{lua_path}}"
 export LUA_CPATH="{{lua_cpath}}"
+{{native_library_export}}export MOONSTONE_ENV_ACTIVE="{{project_root}}"
 export MOONSTONE_ENV_ACTIVE="{{project_root}}"

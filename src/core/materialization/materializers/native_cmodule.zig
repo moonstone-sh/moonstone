@@ -1,6 +1,131 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const manifest = @import("../../domain/manifest.zig");
 const c_api = @import("../../runtime/c_api.zig");
+
+fn is_macos_target(target: []const u8) bool {
+    if (std.mem.endsWith(u8, target, "-macos")) return true;
+    if (comptime builtin.os.tag == .macos) return std.mem.eql(u8, target, "native");
+    return false;
+}
+
+fn normalize_macos_uuid(io: std.Io, output_path: []const u8) !void {
+    const mach_header_64_magic: u32 = 0xfeedfacf;
+    const lc_uuid: u32 = 0x1b;
+
+    var file = try std.Io.Dir.cwd().openFile(io, output_path, .{ .mode = .read_write });
+    defer file.close(io);
+
+    var header: [32]u8 = undefined;
+    if (try file.readPositionalAll(io, &header, 0) != header.len) return error.InvalidMachO;
+    if (std.mem.readInt(u32, header[0..4], .little) != mach_header_64_magic) return error.InvalidMachO;
+
+    const command_count = std.mem.readInt(u32, header[16..20], .little);
+    var offset: u64 = header.len;
+    for (0..command_count) |_| {
+        var command_header: [8]u8 = undefined;
+        if (try file.readPositionalAll(io, &command_header, offset) != command_header.len) return error.InvalidMachO;
+
+        const command = std.mem.readInt(u32, command_header[0..4], .little);
+        const command_size = std.mem.readInt(u32, command_header[4..8], .little);
+        if (command_size < command_header.len) return error.InvalidMachO;
+        if (command == lc_uuid) {
+            if (command_size < 24) return error.InvalidMachO;
+            try file.writePositionalAll(io, &([_]u8{0} ** 16), offset + command_header.len);
+            return;
+        }
+        offset = std.math.add(u64, offset, command_size) catch return error.InvalidMachO;
+    }
+
+    return error.InvalidMachO;
+}
+
+const macos_signature = switch (builtin.os.tag) {
+    .macos => struct {
+        fn sign(allocator: std.mem.Allocator, io: std.Io, output_path: []const u8, module_name: []const u8) !void {
+            const identifier = try std.fmt.allocPrint(allocator, "sh.moonstone.native.{s}", .{module_name});
+            defer allocator.free(identifier);
+            const result = try std.process.run(allocator, io, .{
+                .argv = &.{ "codesign", "--force", "--sign", "-", "--identifier", identifier, "--timestamp=none", output_path },
+            });
+            defer allocator.free(result.stdout);
+            defer allocator.free(result.stderr);
+            if (result.term != .exited or result.term.exited != 0) return error.MacOSCodeSignatureFailed;
+        }
+    },
+    else => struct {
+        fn sign(_: std.mem.Allocator, _: std.Io, _: []const u8, _: []const u8) !void {}
+    },
+};
+
+const macos_sdk = switch (builtin.os.tag) {
+    .macos => struct {
+        fn path(allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
+            const result = try std.process.run(allocator, io, .{ .argv = &.{ "xcrun", "--show-sdk-path" } });
+            defer allocator.free(result.stdout);
+            defer allocator.free(result.stderr);
+            if (result.term != .exited or result.term.exited != 0) return error.MacOSSDKUnavailable;
+            const value = std.mem.trim(u8, result.stdout, " \t\r\n");
+            if (value.len == 0) return error.MacOSSDKUnavailable;
+            return try allocator.dupe(u8, value);
+        }
+    },
+    else => struct {
+        fn path(_: std.mem.Allocator, _: std.Io) !?[]const u8 {
+            return null;
+        }
+    },
+};
+
+fn append_external_path_flag(
+    allocator: std.mem.Allocator,
+    env_map: *const std.process.Environ.Map,
+    argv: *std.ArrayList([]const u8),
+    owned_flags: *std.ArrayList([]const u8),
+    flag: []const u8,
+) !void {
+    const prefix = if (std.mem.startsWith(u8, flag, "-I")) "-I" else if (std.mem.startsWith(u8, flag, "-L")) "-L" else {
+        try argv.append(allocator, flag);
+        return;
+    };
+    const value_reference = flag[prefix.len..];
+    if (!std.mem.startsWith(u8, value_reference, "$(") or !std.mem.endsWith(u8, value_reference, ")")) {
+        try argv.append(allocator, flag);
+        return;
+    }
+
+    const variable_name = value_reference[2 .. value_reference.len - 1];
+    const value = env_map.get(variable_name) orelse return error.LuaRocksExternalDependencyPathRequired;
+    if (value.len == 0) return error.LuaRocksExternalDependencyPathRequired;
+
+    const expanded = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, value });
+    errdefer allocator.free(expanded);
+    try owned_flags.append(allocator, expanded);
+    try argv.append(allocator, expanded);
+}
+
+test "native C modules require declared external path variables" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    var owned_flags = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_flags.items) |flag| allocator.free(flag);
+        owned_flags.deinit(allocator);
+    }
+
+    try std.testing.expectError(
+        error.LuaRocksExternalDependencyPathRequired,
+        append_external_path_flag(allocator, &env, &argv, &owned_flags, "-I$(SQLITE_INCDIR)"),
+    );
+
+    try env.put("SQLITE_INCDIR", "/sdk/include");
+    try append_external_path_flag(allocator, &env, &argv, &owned_flags, "-I$(SQLITE_INCDIR)");
+    try std.testing.expectEqualStrings("-I/sdk/include", argv.items[0]);
+}
 
 fn find_lua_include(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8) ![]const u8 {
     const inc_files = try std.fs.path.join(allocator, &.{ runtime_path, "files", "include" });
@@ -54,8 +179,7 @@ pub fn build(
     on_event: ?@import("../../resolution/options.zig").ResolveCallback,
     on_event_context: ?*anyopaque,
 ) !void {
-    const builtin = @import("builtin");
-    const is_macos = builtin.os.tag == .macos;
+    const target_is_macos = is_macos_target(target);
 
     // 1. Resolve Lua headers path
     const lua_include = try find_lua_include(allocator, io, runtime_path);
@@ -65,8 +189,21 @@ pub fn build(
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
 
+    var expanded_flags = std.ArrayList([]const u8).empty;
+    defer {
+        for (expanded_flags.items) |flag| allocator.free(flag);
+        expanded_flags.deinit(allocator);
+    }
+
     try argv.append(allocator, "zig");
     try argv.append(allocator, "cc");
+
+    const sdk_path = if (target_is_macos) try macos_sdk.path(allocator, io) else null;
+    defer if (sdk_path) |path| allocator.free(path);
+    var sdk_include_path: ?[]const u8 = null;
+    defer if (sdk_include_path) |path| allocator.free(path);
+    var sdk_library_path: ?[]const u8 = null;
+    defer if (sdk_library_path) |path| allocator.free(path);
 
     if (target.len > 0) {
         try argv.append(allocator, "-target");
@@ -76,10 +213,24 @@ pub fn build(
     try argv.append(allocator, "-shared");
     try argv.append(allocator, "-fPIC");
 
-    if (is_macos) {
+    if (target_is_macos) {
         // macOS specific flags for Lua modules
         try argv.append(allocator, "-undefined");
         try argv.append(allocator, "dynamic_lookup");
+    }
+
+    if (sdk_path) |path| {
+        // Apple system libraries and headers belong to the selected SDK, not
+        // the temporary LuaRocks workspace. This is required for explicit
+        // external dependencies such as SQLite on Command Line Tools hosts.
+        sdk_include_path = try std.fs.path.join(allocator, &.{ path, "usr", "include" });
+        sdk_library_path = try std.fs.path.join(allocator, &.{ path, "usr", "lib" });
+        try argv.append(allocator, "-isysroot");
+        try argv.append(allocator, path);
+        try argv.append(allocator, "-I");
+        try argv.append(allocator, sdk_include_path.?);
+        try argv.append(allocator, "-L");
+        try argv.append(allocator, sdk_library_path.?);
     }
 
     try argv.append(allocator, "-I");
@@ -99,7 +250,14 @@ pub fn build(
 
     // Apply custom CFLAGS (stored in .args)
     for (config.args) |flag| {
-        try argv.append(allocator, flag);
+        try append_external_path_flag(allocator, env_map, &argv, &expanded_flags, flag);
+    }
+
+    if (target_is_macos) {
+        // Native module artifacts are release closures, not debugger payloads.
+        // Suppress temporary source paths in DWARF before normalizing the Mach-O
+        // UUID and applying the deterministic ad-hoc signature below.
+        try argv.append(allocator, "-g0");
     }
 
     // Output path
@@ -110,25 +268,31 @@ pub fn build(
     const output_dir = std.fs.path.dirname(output_abs_path) orelse return error.InvalidOutputPath;
     try std.Io.Dir.cwd().createDirPath(io, output_dir);
 
+    var install_name: ?[]const u8 = null;
+    defer if (install_name) |value| allocator.free(value);
+    if (target_is_macos) {
+        // Zig's Mach-O linker otherwise writes the absolute temporary output
+        // path into LC_ID_DYLIB. A stable module-relative install name keeps
+        // equivalent source builds byte-identical across workspaces.
+        install_name = try std.fmt.allocPrint(allocator, "@rpath/{s}", .{std.fs.path.basename(config.output.?.path)});
+        try argv.append(allocator, "-install_name");
+        try argv.append(allocator, install_name.?);
+    }
+
     try argv.append(allocator, "-o");
     try argv.append(allocator, output_abs_path);
 
     // Apply custom LDFLAGS
     for (config.ldflags) |flag| {
-        try argv.append(allocator, flag);
+        try append_external_path_flag(allocator, env_map, &argv, &expanded_flags, flag);
     }
 
     // Add source files
-    var src_paths = std.ArrayList([]const u8).empty;
-    defer {
-        for (src_paths.items) |p| allocator.free(p);
-        src_paths.deinit(allocator);
-    }
-
     for (config.input.?.sources) |src| {
-        const src_abs = try std.fs.path.join(allocator, &.{ source_dir_path, src });
-        try src_paths.append(allocator, src_abs);
-        try argv.append(allocator, src_abs);
+        // The process cwd is source_dir_path. Retaining the manifest-relative
+        // spelling prevents __FILE__ and debug metadata from embedding the
+        // per-materialization temporary directory into the produced artifact.
+        try argv.append(allocator, src);
     }
 
     // 3. Spawn compilation
@@ -183,4 +347,23 @@ pub fn build(
         if (log_path) |lp| allocator.free(lp);
         return error.CompilationFailed;
     }
+
+    if (target_is_macos) {
+        // Zig's Mach-O linker emits a random LC_UUID. It is not required for
+        // Lua module loading, but it changes both the binary and its signature
+        // across otherwise identical materializations.
+        try normalize_macos_uuid(io, output_abs_path);
+        // Zig's linker derives its ad-hoc signature identifier from the
+        // temporary output path. Re-sign with a Moonstone-owned stable id so
+        // the valid signature, UUID, and linkedit closure replay byte-for-byte.
+        try macos_signature.sign(allocator, io, output_abs_path, std.fs.path.basename(config.output.?.path));
+    }
+}
+
+test "macOS target detection is independent of the build host" {
+    try std.testing.expect(is_macos_target("aarch64-macos"));
+    try std.testing.expect(is_macos_target("x86_64-macos"));
+    try std.testing.expect(!is_macos_target("x86_64-linux-gnu"));
+    try std.testing.expect(!is_macos_target("x86_64-windows-gnu"));
+    try std.testing.expectEqual(comptime builtin.os.tag == .macos, is_macos_target("native"));
 }

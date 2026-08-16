@@ -5,6 +5,9 @@ const Kind = manifest.Kind;
 const replay_mod = @import("replay_contract.zig");
 
 pub const LockEntry = struct {
+    /// Stable semantic identity for one target-specific realization. This is
+    /// intentionally independent of TOML ordering and formatting.
+    realization_hash: []const u8 = &.{},
     name: []const u8 = &.{},
     version: []const u8 = &.{},
     kind: Kind = .script,
@@ -33,6 +36,7 @@ pub const LockEntry = struct {
     replay_contract: ?replay_mod.ReplayContract = null,
 
     pub fn deinit(self: LockEntry, allocator: std.mem.Allocator) void {
+        if (self.realization_hash.len > 0) allocator.free(self.realization_hash);
         if (self.name.len > 0) allocator.free(self.name);
         if (self.version.len > 0) allocator.free(self.version);
         if (self.source_hash.len > 0) allocator.free(self.source_hash);
@@ -66,6 +70,7 @@ pub const LockEntry = struct {
 const res_profile = @import("resolution_profile.zig");
 
 pub const LockFile = struct {
+    version: u32 = 3,
     packages: std.ArrayList(LockEntry) = .empty,
     profiles: std.ArrayList(res_profile.ResolutionProfile) = .empty,
     allocator: std.mem.Allocator,
@@ -96,19 +101,88 @@ pub const LockFile = struct {
         return null;
     }
 
+    pub fn findProfileById(self: *const LockFile, id: []const u8) ?*const res_profile.ResolutionProfile {
+        for (self.profiles.items) |*profile| {
+            if (std.mem.eql(u8, profile.id, id)) return profile;
+        }
+        return null;
+    }
+
+    pub fn findExactProfile(self: *const LockFile, target: []const u8, runtime: []const u8, lua_abi: []const u8) ?*const res_profile.ResolutionProfile {
+        for (self.profiles.items) |*profile| {
+            if (!std.mem.eql(u8, profile.target, target) or !std.mem.eql(u8, profile.runtime, runtime)) continue;
+            if (profile.lua_abi) |profile_abi| {
+                if (std.mem.eql(u8, profile_abi, lua_abi)) return profile;
+            }
+        }
+        return null;
+    }
+
+    pub fn findRealization(self: *const LockFile, realization_hash: []const u8) ?*const LockEntry {
+        for (self.packages.items) |*entry| {
+            if (std.mem.eql(u8, entry.realization_hash, realization_hash)) return entry;
+        }
+        return null;
+    }
+
+    pub fn upsertProfile(self: *LockFile, profile: res_profile.ResolutionProfile) !void {
+        for (self.profiles.items, 0..) |existing, index| {
+            if (!std.mem.eql(u8, existing.id, profile.id)) continue;
+            self.profiles.items[index].deinit(self.allocator);
+            self.profiles.items[index] = profile;
+            return;
+        }
+        try self.profiles.append(self.allocator, profile);
+    }
+
+    /// Use the canonical lock representation as the cloning boundary. This
+    /// keeps all target profiles and realization records independent of the
+    /// legacy v2 storage layout.
+    pub fn clone(self: *const LockFile, allocator: std.mem.Allocator) !LockFile {
+        var writer = std.Io.Writer.Allocating.init(allocator);
+        defer writer.deinit();
+        try self.serialize(allocator, &writer.writer);
+        return LockFile.parse(allocator, writer.written());
+    }
+
+    /// Profiles are references to realizations, not a second copy of package
+    /// records. Validate that every reference resolves to the exact package
+    /// identity it declares.
+    pub fn validateProfiles(self: *const LockFile) !void {
+        for (self.profiles.items) |profile| {
+            for (profile.packages) |reference| {
+                const entry = self.findRealization(reference.realization_hash) orelse return error.UnknownProfileRealization;
+                if (!std.mem.eql(u8, entry.name, reference.package_name) or
+                    !std.mem.eql(u8, entry.version, reference.package_version))
+                {
+                    return error.ProfileRealizationIdentityMismatch;
+                }
+            }
+        }
+    }
+
     pub fn serialize(self: LockFile, allocator: std.mem.Allocator, writer: anytype) !void {
         // Manual serialization to avoid comptime branch limit in toml.serialize
         // when the LockEntry struct has many fields.
-        _ = allocator;
-        try writer.print("lockfile_version = 2\n\n", .{});
+        const emit_v3 = self.profiles.items.len > 0;
+        try writer.print("lockfile_version = {d}\n\n", .{if (emit_v3) @as(u32, 3) else @as(u32, 2)});
         for (self.packages.items, 0..) |entry, i| {
             if (i > 0) try writer.print("\n", .{});
-            try writer.print("[[package]]\n", .{});
+            if (emit_v3) {
+                const computed_hash = if (entry.realization_hash.len == 0) try computeRealizationHash(allocator, entry) else null;
+                defer if (computed_hash) |hash| allocator.free(hash);
+                const realization_hash = computed_hash orelse entry.realization_hash;
+                try writer.print("[[realization]]\n", .{});
+                try writer.print("realization_hash = \"{s}\"\n", .{realization_hash});
+            } else {
+                try writer.print("[[package]]\n", .{});
+            }
             try writer.print("name = \"{s}\"\n", .{entry.name});
             try writer.print("version = \"{s}\"\n", .{entry.version});
             try writer.print("kind = \"{s}\"\n", .{@tagName(entry.kind)});
             if (entry.source_hash.len > 0) try writer.print("source_hash = \"{s}\"\n", .{entry.source_hash});
             try writer.print("recipe_hash = \"{s}\"\n", .{entry.recipe_hash});
+            if (entry.plan_schema.len > 0) try writer.print("plan_schema = \"{s}\"\n", .{entry.plan_schema});
             if (entry.plan_hash.len > 0) try writer.print("plan_hash = \"{s}\"\n", .{entry.plan_hash});
             try writer.print("artifact_hash = \"{s}\"\n", .{entry.artifact_hash});
             try writer.print("replay_mode = \"{s}\"\n", .{entry.replay_mode.toString()});
@@ -165,7 +239,20 @@ pub const LockFile = struct {
         var lf = LockFile.init(allocator);
         errdefer lf.deinit();
 
-        if (root.get("package")) |v| {
+        const lockfile_version: u32 = blk: {
+            if (root.get("lockfile_version")) |value| {
+                if (value != .integer or value.integer < 2 or value.integer > 3) return error.UnsupportedLockfileVersion;
+                break :blk @intCast(value.integer);
+            }
+            break :blk 2;
+        };
+        lf.version = lockfile_version;
+
+        if (lockfile_version == 3 and root.get("package") != null) return error.InvalidLockFile;
+        if (lockfile_version == 2 and root.get("realization") != null) return error.InvalidLockFile;
+        const entry_key = if (lockfile_version == 3) "realization" else "package";
+
+        if (root.get(entry_key)) |v| {
             if (v != .array) return error.InvalidLockFile;
             for (v.array.items) |pkg_val| {
                 const t = pkg_val.table;
@@ -201,11 +288,13 @@ pub const LockFile = struct {
                     replay_mod.ReplayMode.artifact_only;
 
                 try lf.packages.append(allocator, .{
+                    .realization_hash = if (getStr(t, "realization_hash")) |s| try allocator.dupe(u8, s) else &.{},
                     .name = try allocator.dupe(u8, getStr(t, "name") orelse return error.MissingName),
                     .version = try allocator.dupe(u8, getStr(t, "version") orelse return error.MissingVersion),
                     .kind = try Kind.from_string(getStr(t, "kind") orelse return error.MissingKind),
                     .source_hash = if (getStr(t, "source_hash")) |s| try allocator.dupe(u8, s) else &.{},
                     .recipe_hash = try allocator.dupe(u8, getStr(t, "recipe_hash") orelse return error.MissingRecipeHash),
+                    .plan_schema = if (getStr(t, "plan_schema")) |p| try allocator.dupe(u8, p) else &.{},
                     .plan_hash = if (getStr(t, "plan_hash")) |p| try allocator.dupe(u8, p) else &.{},
                     .artifact_hash = try allocator.dupe(u8, getStr(t, "artifact_hash") orelse return error.MissingArtifactHash),
                     .runtime = try allocator.dupe(u8, getStr(t, "runtime") orelse return error.MissingRuntime),
@@ -239,6 +328,15 @@ pub const LockFile = struct {
                         break :blk &.{};
                     },
                 });
+
+                var entry = &lf.packages.items[lf.packages.items.len - 1];
+                const expected_hash = try computeRealizationHash(allocator, entry.*);
+                if (entry.realization_hash.len == 0) {
+                    entry.realization_hash = expected_hash;
+                } else {
+                    defer allocator.free(expected_hash);
+                    if (!std.mem.eql(u8, entry.realization_hash, expected_hash)) return error.RealizationHashMismatch;
+                }
             }
         }
 
@@ -289,6 +387,7 @@ pub const LockFile = struct {
             }
         }
 
+        if (lockfile_version == 3) try lf.validateProfiles();
         return lf;
     }
 
@@ -318,6 +417,36 @@ pub const LockFile = struct {
         }
     }
 };
+
+/// Canonical BLAKE3 identity for a stored realization. The preimage contains
+/// only domain facts, never TOML spelling, field ordering, or comments.
+pub fn computeRealizationHash(allocator: std.mem.Allocator, entry: LockEntry) ![]const u8 {
+    var preimage = std.Io.Writer.Allocating.init(allocator);
+    defer preimage.deinit();
+    const writer = &preimage.writer;
+    try writer.writeAll("moonstone:realization:v1\n");
+    try writer.print("name={s}\nversion={s}\nkind={s}\n", .{ entry.name, entry.version, @tagName(entry.kind) });
+    try writer.print("source_hash={s}\nrecipe_hash={s}\nplan_schema={s}\nplan_hash={s}\nartifact_hash={s}\n", .{ entry.source_hash, entry.recipe_hash, entry.plan_schema, entry.plan_hash, entry.artifact_hash });
+    try writer.print("runtime={s}\nlua_abi={s}\ntarget={s}\nconstellation={s}\n", .{ entry.runtime, entry.lua_abi, entry.target, entry.constellation });
+    try writer.print("source={s}\nsource_kind={s}\nsource_payload={s}\nsource_url={s}\n", .{ entry.source, entry.source_kind, entry.source_payload, entry.source_url });
+    try writer.print("rockspec={s}\nrockspec_hash={s}\nrockspec_payload={s}\n", .{ entry.rockspec, entry.rockspec_hash, entry.rockspec_payload });
+    try writer.print("resolver={s}\nregistry={s}\nlink_mode={s}\nreproducible={}\nreplay_mode={s}\n", .{ entry.resolver, entry.registry, entry.link_mode, entry.reproducible, entry.replay_mode.toString() });
+
+    const roles = try allocator.alloc([]const u8, entry.roles.len);
+    defer allocator.free(roles);
+    @memcpy(roles, entry.roles);
+    std.mem.sort([]const u8, roles, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+    for (roles) |role| try writer.print("role={s}\n", .{role});
+
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.Blake3.hash(preimage.written(), &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return std.fmt.allocPrint(allocator, "b3:{s}", .{&hex});
+}
 
 test "lockfile roundtrip" {
     const allocator = std.testing.allocator;
@@ -412,6 +541,57 @@ test "lockfile findIgnoreCase matches LuaRocks canonical casing" {
     try std.testing.expect(lf.find("luasec") == null);
     const entry = lf.findIgnoreCase("luasec") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("LuaSec", entry.name);
+}
+
+test "realization lockfile v3 validates profile references" {
+    const allocator = std.testing.allocator;
+    var entry = LockEntry{
+        .name = try allocator.dupe(u8, "demo"),
+        .version = try allocator.dupe(u8, "1.0.0"),
+        .kind = .lib,
+        .recipe_hash = try allocator.dupe(u8, "b3:recipe"),
+        .artifact_hash = try allocator.dupe(u8, "b3:artifact"),
+        .runtime = try allocator.dupe(u8, "lua@5.4"),
+        .lua_abi = try allocator.dupe(u8, "lua54"),
+        .target = try allocator.dupe(u8, "x86_64-linux-gnu"),
+        .constellation = try allocator.dupe(u8, "default"),
+    };
+    defer entry.deinit(allocator);
+    const realization_hash = try computeRealizationHash(allocator, entry);
+    defer allocator.free(realization_hash);
+    try std.testing.expect(std.mem.startsWith(u8, realization_hash, "b3:"));
+    try std.testing.expectEqual(@as(usize, 67), realization_hash.len);
+
+    const content = try std.fmt.allocPrint(allocator,
+        \\lockfile_version = 3
+        \\
+        \\[[realization]]
+        \\realization_hash = "{s}"
+        \\name = "demo"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\recipe_hash = "b3:recipe"
+        \\artifact_hash = "b3:artifact"
+        \\runtime = "lua@5.4"
+        \\lua_abi = "lua54"
+        \\target = "x86_64-linux-gnu"
+        \\constellation = "default"
+        \\
+        \\[[profile]]
+        \\id = "x86_64-linux-gnu+lua@5.4+lua54"
+        \\target = "x86_64-linux-gnu"
+        \\runtime = "lua@5.4"
+        \\lua_abi = "lua54"
+        \\packages = [{{ name = "demo", version = "1.0.0", realization_hash = "{s}" }}]
+        \\edges = []
+    , .{ realization_hash, realization_hash });
+    defer allocator.free(content);
+
+    var lock = try LockFile.parse(allocator, content);
+    defer lock.deinit();
+    try std.testing.expectEqual(@as(u32, 3), lock.version);
+    try std.testing.expect(lock.findRealization(realization_hash) != null);
+    try std.testing.expect(lock.findProfileById("x86_64-linux-gnu+lua@5.4+lua54") != null);
 }
 
 test "lockfile source_url round-trips through serialize and parse" {

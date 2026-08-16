@@ -7,7 +7,7 @@ const executor_mod = moonstone.materialization.executor;
 const host_resolver = moonstone.tools.host_resolver;
 const locked_realizer = moonstone.resolution.locked_realizer;
 
-test "replay contract v2 lockfile parse and roundtrip" {
+test "replay contract v2 lockfile migrates to realization lockfile v3" {
     const allocator = std.testing.allocator;
     const content =
         \\lockfile_version = 2
@@ -43,6 +43,7 @@ test "replay contract v2 lockfile parse and roundtrip" {
     try aw.writer.flush();
 
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "lockfile_version = 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "[[package]]") != null);
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "replay_mode = \"declared_host\"") != null);
 }
 
@@ -70,7 +71,7 @@ test "legacy binary registry entries require their exact artifact" {
     try std.testing.expectEqual(replay_mod.ReplayMode.artifact_only, lf.packages.items[0].replay_mode);
 }
 
-test "native locks select host artifacts without pinning one platform hash" {
+test "native locks retain the selected host artifact identity" {
     const allocator = std.testing.allocator;
     const content =
         \\[[package]]
@@ -104,7 +105,7 @@ test "native locks select host artifacts without pinning one platform hash" {
     var lf = try lockfile_mod.LockFile.parse(allocator, content);
     defer lf.deinit();
 
-    try std.testing.expect(!locked_realizer.requiresExactArtifactHash(&lf.packages.items[0]));
+    try std.testing.expect(locked_realizer.requiresExactArtifactHash(&lf.packages.items[0]));
     try std.testing.expect(locked_realizer.requiresExactArtifactHash(&lf.packages.items[1]));
 }
 

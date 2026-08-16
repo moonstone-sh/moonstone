@@ -46,6 +46,7 @@ pub const ArtifactCandidate = struct {
 pub const ArtifactProvision = struct {
     name: []const u8,
     path: []const u8,
+    linkage: manifest.NativeLibraryLinkage = .unknown,
 
     pub fn deinit(self: *ArtifactProvision, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -149,8 +150,8 @@ pub const ArtifactStore = struct {
         try self.replaceProvisions("provides_native_lib", sm.artifact.artifact_hash);
         for (sm.provides.native_lib) |l| {
             try self.driver.exec(
-                "INSERT INTO provides_native_lib (artifact_hash, name, path) VALUES (?, ?, ?);",
-                .{ sm.artifact.artifact_hash, l.name, l.path },
+                "INSERT INTO provides_native_lib (artifact_hash, name, path, linkage) VALUES (?, ?, ?, ?);",
+                .{ sm.artifact.artifact_hash, l.name, l.path, @tagName(l.linkage) },
             );
         }
 
@@ -352,10 +353,36 @@ pub const ArtifactStore = struct {
         return .{
             .bins = try self.loadSimpleProvisions("provides_bin", artifact_hash),
             .headers = try self.loadSimpleProvisions("provides_headers", artifact_hash),
-            .libs = try self.loadSimpleProvisions("provides_native_lib", artifact_hash),
+            .libs = try self.loadNativeLibraryProvisions(artifact_hash),
             .lua_modules = try self.loadSimpleProvisions("provides_lua_module", artifact_hash),
             .lua_cmodules = try self.loadSimpleProvisions("provides_lua_cmodule", artifact_hash),
         };
+    }
+
+    fn loadNativeLibraryProvisions(self: @This(), artifact_hash: []const u8) ![]const ArtifactProvision {
+        var list = std.ArrayList(ArtifactProvision).empty;
+        errdefer {
+            for (list.items) |*item| item.deinit(self.allocator());
+            list.deinit(self.allocator());
+        }
+
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(try self.db(), "SELECT name, path, linkage FROM provides_native_lib WHERE artifact_hash = ?;", -1, &stmt, null) != c.SQLITE_OK) {
+            return error.SQLitePrepareError;
+        }
+        defer _ = c.sqlite3_finalize(stmt);
+
+        const transient = driver_mod.moonstone_sqlite_transient_ptr;
+        _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            try list.append(self.allocator(), .{
+                .name = try self.allocator().dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
+                .path = try self.allocator().dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                .linkage = std.meta.stringToEnum(manifest.NativeLibraryLinkage, std.mem.span(c.sqlite3_column_text(stmt, 2))) orelse .unknown,
+            });
+        }
+
+        return try list.toOwnedSlice(self.allocator());
     }
 
     fn loadSimpleProvisions(

@@ -4,11 +4,14 @@ const fs = @import("platform/fs.zig");
 const driver_mod = @import("store/driver.zig");
 const hash = @import("identity/hash.zig");
 
+var staging_counter: std.atomic.Value(u64) = .init(0);
+
 pub const RecipeOptions = struct {
     kind: []const u8,
     name: []const u8,
     version: []const u8,
     source_hash: []const u8 = "",
+    source_transform_hash: []const u8 = "",
     materializer: []const u8 = "prebuilt",
     strategy: []const u8 = "registry",
     zig_version: []const u8 = "",
@@ -21,7 +24,9 @@ pub const RecipeOptions = struct {
     output_module: []const u8 = "",
     output_path: []const u8 = "",
     collect: manifest.CollectConfig = .{},
+    build_steps: []const manifest.CommandStep = &.{},
     build_env: []const []const u8 = &.{},
+    build_artifacts: []const []const u8 = &.{},
 };
 
 pub const SourcePayloadOptions = struct {
@@ -46,6 +51,9 @@ pub fn computeRecipeHash(
     const ldflags_str = try std.mem.join(allocator, ",", options.ldflags);
     defer allocator.free(ldflags_str);
 
+    const build_steps_str = try encodeBuildSteps(allocator, options.build_steps);
+    defer allocator.free(build_steps_str);
+
     var collect_str = std.ArrayList(u8).empty;
     defer collect_str.deinit(allocator);
     for (options.collect.lua_cmodules) |p| {
@@ -69,7 +77,12 @@ pub fn computeRecipeHash(
         try collect_str.appendSlice(allocator, s);
     }
     for (options.collect.native_lib) |p| {
-        const s = try std.fmt.allocPrint(allocator, "lib:{s}:{s},", .{ p.name, p.path });
+        const s = try std.fmt.allocPrint(allocator, "lib:{s}:{s}:{s},", .{ p.name, p.path, @tagName(p.linkage) });
+        defer allocator.free(s);
+        try collect_str.appendSlice(allocator, s);
+    }
+    for (options.collect.assets) |p| {
+        const s = try std.fmt.allocPrint(allocator, "asset:{s}:{s},", .{ p.name, p.path });
         defer allocator.free(s);
         try collect_str.appendSlice(allocator, s);
     }
@@ -87,12 +100,26 @@ pub fn computeRecipeHash(
     const build_env_str = try std.mem.join(allocator, ",", sorted_build_env.items);
     defer allocator.free(build_env_str);
 
+    var sorted_build_artifacts = std.ArrayList([]const u8).empty;
+    defer sorted_build_artifacts.deinit(allocator);
+    for (options.build_artifacts) |artifact| {
+        try sorted_build_artifacts.append(allocator, artifact);
+    }
+    std.mem.sort([]const u8, sorted_build_artifacts.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    const build_artifacts_str = try std.mem.join(allocator, ",", sorted_build_artifacts.items);
+    defer allocator.free(build_artifacts_str);
+
     const recipe_str = try std.fmt.allocPrint(allocator,
-        \\moonstone:recipe:v2
+        \\moonstone:recipe:v5
         \\kind={s}
         \\name={s}
         \\version={s}
         \\source_hash={s}
+        \\source_transform_hash={s}
         \\materializer={s}
         \\strategy={s}
         \\zig_version={s}
@@ -105,13 +132,16 @@ pub fn computeRecipeHash(
         \\output_module={s}
         \\output_path={s}
         \\collect={s}
+        \\build_steps={s}
         \\build_env={s}
+        \\build_artifacts={s}
         \\
     , .{
         options.kind,
         options.name,
         options.version,
         options.source_hash,
+        options.source_transform_hash,
         options.materializer,
         options.strategy,
         options.zig_version,
@@ -124,7 +154,9 @@ pub fn computeRecipeHash(
         options.output_module,
         options.output_path,
         collect_str.items,
+        build_steps_str,
         build_env_str,
+        build_artifacts_str,
     });
     defer allocator.free(recipe_str);
 
@@ -132,6 +164,46 @@ pub fn computeRecipeHash(
     std.crypto.hash.Blake3.hash(recipe_str, &hash_buf, .{});
     const hex = std.fmt.bytesToHex(hash_buf, .lower);
     return try std.fmt.allocPrint(allocator, "b3:{s}", .{hex});
+}
+
+fn encodeBuildSteps(
+    allocator: std.mem.Allocator,
+    steps: []const manifest.CommandStep,
+) ![]const u8 {
+    var encoded = std.ArrayList(u8).empty;
+    defer encoded.deinit(allocator);
+
+    try appendCount(&encoded, allocator, steps.len);
+    for (steps) |step| {
+        try appendLengthPrefixed(&encoded, allocator, step.command);
+        try appendCount(&encoded, allocator, step.args.len);
+        for (step.args) |arg| {
+            try appendLengthPrefixed(&encoded, allocator, arg);
+        }
+    }
+
+    return try encoded.toOwnedSlice(allocator);
+}
+
+fn appendCount(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    value: usize,
+) !void {
+    const prefix = try std.fmt.allocPrint(allocator, "{d};", .{value});
+    defer allocator.free(prefix);
+    try output.appendSlice(allocator, prefix);
+}
+
+fn appendLengthPrefixed(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    value: []const u8,
+) !void {
+    const prefix = try std.fmt.allocPrint(allocator, "{d}:", .{value.len});
+    defer allocator.free(prefix);
+    try output.appendSlice(allocator, prefix);
+    try output.appendSlice(allocator, value);
 }
 
 /// Materialize a local project into the content-addressed store.
@@ -350,9 +422,21 @@ pub fn commit_to_store_with_sources(
     const final_art_path = try std.fs.path.join(allocator, &.{ shard_path, art_folder_name });
     defer allocator.free(final_art_path);
 
-    // 1. Move unpacked files to art_path/files
-    const files_path = try std.fs.path.join(allocator, &.{ final_art_path, "files" });
-    defer allocator.free(files_path);
+    // All publishers for one content-addressed artifact share this advisory
+    // lock. The operating system releases it on process exit, avoiding stale
+    // directory locks while ensuring only one process can replace an
+    // incomplete final artifact at a time.
+    const locks_dir = try std.fs.path.join(allocator, &.{ paths.tmp, "store-locks" });
+    defer allocator.free(locks_dir);
+    try std.Io.Dir.cwd().createDirPath(io, locks_dir);
+    const lock_name = try std.fmt.allocPrint(allocator, "{s}.lock", .{art_hash});
+    defer allocator.free(lock_name);
+    const lock_path = try std.fs.path.join(allocator, &.{ locks_dir, lock_name });
+    defer allocator.free(lock_path);
+    const lock_file = try std.Io.Dir.cwd().createFile(io, lock_path, .{});
+    defer lock_file.close(io);
+    try lock_file.lock(io, .exclusive);
+    defer lock_file.unlock(io);
 
     if (try isCompleteArtifact(allocator, io, final_art_path, remote_art.hash)) {
         try registerCompleteArtifact(allocator, io, paths.index, final_art_path);
@@ -366,18 +450,38 @@ pub fn commit_to_store_with_sources(
 
     if (isPathWithin(unpacked_path, final_art_path)) return error.InvalidStoreCommitPath;
 
-    // Atomic rename isn't possible across devices if store is elsewhere,
-    // but in v0 we assume local tmp/store.
-    std.Io.Dir.cwd().deleteTree(io, final_art_path) catch |err| {
+    // Assemble the artifact beside its final location. The final path is only
+    // replaced once files, provenance payloads, and the manifest are complete,
+    // so readers never observe a half-published CAS entry.
+    const final_parent_path = std.fs.path.dirname(final_art_path) orelse shard_path;
+    try std.Io.Dir.cwd().createDirPath(io, final_parent_path);
+    const final_name = std.fs.path.basename(final_art_path);
+    const staging_name = try std.fmt.allocPrint(allocator, ".{s}.staging-{d}-{d}", .{
+        final_name,
+        std.Thread.getCurrentId(),
+        staging_counter.fetchAdd(1, .monotonic),
+    });
+    defer allocator.free(staging_name);
+    const staging_art_path = try std.fs.path.join(allocator, &.{ final_parent_path, staging_name });
+    defer allocator.free(staging_art_path);
+    std.Io.Dir.cwd().deleteTree(io, staging_art_path) catch |err| {
         if (err != error.FileNotFound) return err;
     };
-    try std.Io.Dir.cwd().createDirPath(io, final_art_path);
+    try std.Io.Dir.cwd().createDir(io, staging_art_path, .default_dir);
+    var staging_published = false;
+    defer if (!staging_published) {
+        std.Io.Dir.cwd().deleteTree(io, staging_art_path) catch {};
+    };
+
+    // 1. Move unpacked files to the staging artifact.
+    const files_path = try std.fs.path.join(allocator, &.{ staging_art_path, "files" });
+    defer allocator.free(files_path);
 
     var stored_source_payload: []const u8 = "";
     var stored_rockspec_payload: []const u8 = "";
 
     if (source_payloads.source_payload_path != null or source_payloads.rockspec_payload_path != null) {
-        const sources_dir = try std.fs.path.join(allocator, &.{ final_art_path, "sources" });
+        const sources_dir = try std.fs.path.join(allocator, &.{ staging_art_path, "sources" });
         defer allocator.free(sources_dir);
         try std.Io.Dir.cwd().createDirPath(io, sources_dir);
 
@@ -385,10 +489,7 @@ pub fn commit_to_store_with_sources(
             const dest_name = std.fs.path.basename(payload_path);
             const dest_path = try std.fs.path.join(allocator, &.{ sources_dir, dest_name });
             defer allocator.free(dest_path);
-            const cp_res = try std.process.run(allocator, io, .{ .argv = &.{ "cp", payload_path, dest_path } });
-            defer allocator.free(cp_res.stdout);
-            defer allocator.free(cp_res.stderr);
-            if (cp_res.term != .exited or cp_res.term.exited != 0) return error.CopyFailed;
+            try std.Io.Dir.copyFileAbsolute(payload_path, dest_path, io, .{ .replace = true });
             stored_source_payload = try std.fmt.allocPrint(allocator, "sources/{s}", .{dest_name});
         }
 
@@ -396,10 +497,7 @@ pub fn commit_to_store_with_sources(
             const dest_name = std.fs.path.basename(payload_path);
             const dest_path = try std.fs.path.join(allocator, &.{ sources_dir, dest_name });
             defer allocator.free(dest_path);
-            const cp_res = try std.process.run(allocator, io, .{ .argv = &.{ "cp", payload_path, dest_path } });
-            defer allocator.free(cp_res.stdout);
-            defer allocator.free(cp_res.stderr);
-            if (cp_res.term != .exited or cp_res.term.exited != 0) return error.CopyFailed;
+            try std.Io.Dir.copyFileAbsolute(payload_path, dest_path, io, .{ .replace = true });
             stored_rockspec_payload = try std.fmt.allocPrint(allocator, "sources/{s}", .{dest_name});
         }
     }
@@ -410,9 +508,8 @@ pub fn commit_to_store_with_sources(
     std.Io.Dir.renameAbsolute(unpacked_path, files_path, io) catch |err| {
         // Fallback if renaming across mount points fails, though in cache it should be on the same volume
         if (err == error.RenameAcrossMountPoints) {
-            _ = try std.process.run(allocator, io, .{
-                .argv = &.{ "mv", unpacked_path, files_path },
-            });
+            try fs.copyTreeAbsolute(allocator, io, unpacked_path, files_path);
+            try std.Io.Dir.cwd().deleteTree(io, unpacked_path);
         } else {
             return err;
         }
@@ -467,9 +564,9 @@ pub fn commit_to_store_with_sources(
         .dependencies = dependencies,
     };
 
-    const manifest_path = try std.fs.path.join(allocator, &.{ final_art_path, "manifest.toml" });
-    defer allocator.free(manifest_path);
-    const manifest_file = try std.Io.Dir.cwd().createFile(io, manifest_path, .{});
+    const staging_manifest_path = try std.fs.path.join(allocator, &.{ staging_art_path, "manifest.toml" });
+    defer allocator.free(staging_manifest_path);
+    const manifest_file = try std.Io.Dir.cwd().createFile(io, staging_manifest_path, .{});
     defer manifest_file.close(io);
 
     var aw = std.Io.Writer.Allocating.init(allocator);
@@ -477,6 +574,17 @@ pub fn commit_to_store_with_sources(
     try sm.serialize(allocator, &aw.writer);
     try aw.writer.flush();
     try manifest_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+
+    // An incomplete directory can only be a prior interrupted publication.
+    // Delete it immediately before publishing the complete staging directory.
+    std.Io.Dir.cwd().deleteTree(io, final_art_path) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+    try std.Io.Dir.renameAbsolute(staging_art_path, final_art_path, io);
+    staging_published = true;
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ final_art_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
 
     // 3. Register in SQLite index
     const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
@@ -601,6 +709,54 @@ test "computeRecipeHash differs by inputs" {
     });
     defer allocator.free(h2);
     try std.testing.expect(!std.mem.eql(u8, h1, h2));
+}
+
+test "computeRecipeHash includes ordered command steps and collection rules" {
+    const allocator = std.testing.allocator;
+    const baseline_steps = [_]manifest.CommandStep{.{
+        .command = "make",
+        .args = &.{ "PREFIX=/out", "install" },
+    }};
+    const changed_steps = [_]manifest.CommandStep{.{
+        .command = "make",
+        .args = &.{ "PREFIX=/out", "build" },
+    }};
+    const collected_bins = [_]manifest.FeatureProvision{.{
+        .name = "tool",
+        .path = "bin/tool",
+    }};
+
+    const baseline = try computeRecipeHash(allocator, .{
+        .kind = "lib",
+        .name = "recipe-contract",
+        .version = "1.0.0",
+        .materializer = "command",
+        .strategy = "multi-step",
+        .build_steps = &baseline_steps,
+    });
+    defer allocator.free(baseline);
+    const changed_command = try computeRecipeHash(allocator, .{
+        .kind = "lib",
+        .name = "recipe-contract",
+        .version = "1.0.0",
+        .materializer = "command",
+        .strategy = "multi-step",
+        .build_steps = &changed_steps,
+    });
+    defer allocator.free(changed_command);
+    const changed_collect = try computeRecipeHash(allocator, .{
+        .kind = "lib",
+        .name = "recipe-contract",
+        .version = "1.0.0",
+        .materializer = "command",
+        .strategy = "multi-step",
+        .build_steps = &baseline_steps,
+        .collect = .{ .bins = &collected_bins },
+    });
+    defer allocator.free(changed_collect);
+
+    try std.testing.expect(!std.mem.eql(u8, baseline, changed_command));
+    try std.testing.expect(!std.mem.eql(u8, baseline, changed_collect));
 }
 
 test "commit_to_store reuses complete artifacts without deleting staging or itself" {

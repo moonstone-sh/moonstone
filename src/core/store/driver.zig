@@ -49,6 +49,26 @@ test "findCandidates can match LuaRocks names case-insensitively" {
     try std.testing.expectEqualStrings("LuaSec", folded[0].name);
 }
 
+test "findCandidates can match a stored recipe hash" {
+    const allocator = std.testing.allocator;
+    var driver = try StoreDriver.init(allocator, ":memory:");
+    defer driver.deinit();
+
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required, recipe_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:artifact", "dkjson", "2.8-1", "lib", "native", "5.4", "", "/tmp/dkjson", "/tmp/dkjson/manifest.toml", "5.4", "b3:runtime", "rocks", "https://luarocks.org", "1", "b3:recipe" },
+    );
+
+    const candidates = try driver.findCandidates(.{ .name = "dkjson", .resolver = "rocks", .recipe_hash = "b3:recipe" });
+    defer {
+        for (candidates) |*candidate| candidate.deinit(allocator);
+        allocator.free(candidates);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("b3:recipe", candidates[0].recipe_hash.?);
+}
+
 pub const Candidate = struct {
     name: []const u8,
     version: []const u8,
@@ -60,6 +80,7 @@ pub const Candidate = struct {
     runtime_artifact_hash: ?[]const u8 = null,
     resolver: ?[]const u8 = null,
     source: ?[]const u8 = null,
+    recipe_hash: ?[]const u8 = null,
     path: []const u8,
 
     pub fn deinit(self: *Candidate, allocator: std.mem.Allocator) void {
@@ -72,6 +93,7 @@ pub const Candidate = struct {
         if (self.runtime_artifact_hash) |h| allocator.free(h);
         if (self.resolver) |r| allocator.free(r);
         if (self.source) |s| allocator.free(s);
+        if (self.recipe_hash) |h| allocator.free(h);
         allocator.free(self.path);
 
         self.* = undefined;
@@ -90,6 +112,7 @@ pub const ArtifactQuery = struct {
     lua_api: ?[]const u8 = null,
     runtime_artifact_hash: ?[]const u8 = null,
     native_compat_required: ?bool = null,
+    recipe_hash: ?[]const u8 = null,
 };
 
 pub const ArtifactProvision = struct {
@@ -141,15 +164,25 @@ pub const StoreDriver = struct {
             .allocator = allocator,
         };
 
+        // Configure contention handling before schema work. Multiple project
+        // syncs share this store index and may open it for the first time at
+        // exactly the same moment.
+        try self.exec("PRAGMA busy_timeout=5000;", .{});
         try self.run_migrations();
         try self.exec("PRAGMA journal_mode=WAL;", .{});
         try self.exec("PRAGMA synchronous=NORMAL;", .{});
-        try self.exec("PRAGMA busy_timeout=5000;", .{});
 
         return self;
     }
 
     fn run_migrations(self: StoreDriver) !void {
+        // A migration decision and its schema changes must be one critical
+        // section. Without this transaction, two fresh Moonstone processes
+        // can both observe version zero, then race while creating tables or
+        // adding the recipe_hash column.
+        try self.exec("BEGIN IMMEDIATE;", .{});
+        errdefer self.exec("ROLLBACK;", .{}) catch {};
+
         // Create schema_migrations table if it doesn't exist
         try self.exec(
             \\CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -179,6 +212,20 @@ pub const StoreDriver = struct {
             try self.backfillArtifactNameTrigrams();
             try self.ensure_indexes();
         }
+        if (current_version < 2) {
+            const schema_v2 = @embedFile("migrations/0002_recipe_hash.sql");
+            const rc = c.sqlite3_exec(self.db, schema_v2, null, null, null);
+            if (rc != c.SQLITE_OK) return sqliteError(rc);
+            try self.exec("INSERT INTO schema_migrations (version) VALUES (2);", .{});
+        }
+        if (current_version < 3) {
+            const schema_v3 = @embedFile("migrations/0003_native_library_linkage.sql");
+            const rc = c.sqlite3_exec(self.db, schema_v3, null, null, null);
+            if (rc != c.SQLITE_OK) return sqliteError(rc);
+            try self.exec("INSERT INTO schema_migrations (version) VALUES (3);", .{});
+        }
+
+        try self.exec("COMMIT;", .{});
     }
     pub fn deinit(self: *StoreDriver) void {
         if (self.db) |db| {
@@ -323,8 +370,8 @@ pub const StoreDriver = struct {
 
         const sql =
             \\INSERT OR REPLACE INTO artifacts
-            \\  (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required)
-            \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            \\  (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required, recipe_hash)
+            \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         ;
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
@@ -347,6 +394,7 @@ pub const StoreDriver = struct {
         _ = c.sqlite3_bind_text(stmt, 12, sm.origin.resolver.ptr, @intCast(sm.origin.resolver.len), transient);
         _ = c.sqlite3_bind_text(stmt, 13, sm.origin.source.ptr, @intCast(sm.origin.source.len), transient);
         _ = c.sqlite3_bind_int(stmt, 14, if (sm.compat.runtime_artifact_hash.len > 0) 1 else 0);
+        _ = c.sqlite3_bind_text(stmt, 15, sm.artifact.recipe_hash.ptr, @intCast(sm.artifact.recipe_hash.len), transient);
 
         const step_res = c.sqlite3_step(stmt);
         if (step_res != c.SQLITE_DONE and step_res != c.SQLITE_ROW) return error.SQLiteStepError;
@@ -371,7 +419,7 @@ pub const StoreDriver = struct {
         }
         try self.exec("DELETE FROM provides_native_lib WHERE artifact_hash = ?;", .{sm.artifact.artifact_hash});
         for (sm.provides.native_lib) |l| {
-            try self.exec("INSERT INTO provides_native_lib (artifact_hash, name, path) VALUES (?, ?, ?);", .{ sm.artifact.artifact_hash, l.name, l.path });
+            try self.exec("INSERT INTO provides_native_lib (artifact_hash, name, path, linkage) VALUES (?, ?, ?, ?);", .{ sm.artifact.artifact_hash, l.name, l.path, @tagName(l.linkage) });
         }
         try self.exec("DELETE FROM provides_lua_module WHERE artifact_hash = ?;", .{sm.artifact.artifact_hash});
         for (sm.provides.lua_module) |l| {
@@ -553,13 +601,14 @@ pub const StoreDriver = struct {
         // Libs
         {
             var stmt: ?*c.sqlite3_stmt = null;
-            if (c.sqlite3_prepare_v2(self.db, "SELECT name, path FROM provides_native_lib WHERE artifact_hash = ?;", -1, &stmt, null) == c.SQLITE_OK) {
+            if (c.sqlite3_prepare_v2(self.db, "SELECT name, path, linkage FROM provides_native_lib WHERE artifact_hash = ?;", -1, &stmt, null) == c.SQLITE_OK) {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
                     try libs.append(self.allocator, .{
                         .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
                         .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .linkage = std.meta.stringToEnum(manifest.NativeLibraryLinkage, std.mem.span(c.sqlite3_column_text(stmt, 2))) orelse .unknown,
                     });
                 }
             }
@@ -690,7 +739,7 @@ pub const StoreDriver = struct {
     }
 
     pub fn get_candidate_by_hash(self: StoreDriver, artifact_hash: []const u8) !?Candidate {
-        const sql = "SELECT artifact_hash, name, version, kind, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, path FROM artifacts WHERE artifact_hash = ? LIMIT 1;";
+        const sql = "SELECT artifact_hash, name, version, kind, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, recipe_hash, path FROM artifacts WHERE artifact_hash = ? LIMIT 1;";
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
         defer _ = c.sqlite3_finalize(stmt);
@@ -710,7 +759,8 @@ pub const StoreDriver = struct {
                 .runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 7)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
                 .resolver = if (c.sqlite3_column_text(stmt, 8)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
                 .source = if (c.sqlite3_column_text(stmt, 9)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null,
-                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 10))),
+                .recipe_hash = if (c.sqlite3_column_text(stmt, 10)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
+                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 11))),
             };
         }
 
@@ -732,11 +782,12 @@ pub const StoreDriver = struct {
         if (query.runtime) |_| try where_parts.append(self.allocator, "runtime = ?");
         if (query.runtime_artifact_hash) |_| try where_parts.append(self.allocator, "interpreter_artifact_hash = ?");
         if (query.native_compat_required) |_| try where_parts.append(self.allocator, "native_compat_required = ?");
+        if (query.recipe_hash) |_| try where_parts.append(self.allocator, "recipe_hash = ?");
 
         const where_clause = try std.mem.join(self.allocator, " AND ", where_parts.items);
         defer self.allocator.free(where_clause);
 
-        const sql_text = try std.fmt.allocPrint(self.allocator, "SELECT artifact_hash, name, version, kind, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, path FROM artifacts WHERE {s} ORDER BY version DESC;", .{where_clause});
+        const sql_text = try std.fmt.allocPrint(self.allocator, "SELECT artifact_hash, name, version, kind, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, recipe_hash, path FROM artifacts WHERE {s} ORDER BY version DESC;", .{where_clause});
         defer self.allocator.free(sql_text);
         const sql = try self.allocator.dupeZ(u8, sql_text);
         defer self.allocator.free(sql);
@@ -782,6 +833,10 @@ pub const StoreDriver = struct {
             _ = c.sqlite3_bind_int(stmt, param_idx, if (n) 1 else 0);
             param_idx += 1;
         }
+        if (query.recipe_hash) |h| {
+            _ = c.sqlite3_bind_text(stmt, param_idx, h.ptr, @intCast(h.len), transient);
+            param_idx += 1;
+        }
 
         while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
             try candidates.append(self.allocator, .{
@@ -795,7 +850,8 @@ pub const StoreDriver = struct {
                 .runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 7)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
                 .resolver = if (c.sqlite3_column_text(stmt, 8)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
                 .source = if (c.sqlite3_column_text(stmt, 9)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null,
-                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 10))),
+                .recipe_hash = if (c.sqlite3_column_text(stmt, 10)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
+                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 11))),
             });
         }
 

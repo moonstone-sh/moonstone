@@ -3,6 +3,36 @@ const toml = @import("toml");
 const env_utils = @import("env.zig");
 const build_options = @import("build_options");
 
+pub fn copyTreeAbsolute(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+    destination_path: []const u8,
+) !void {
+    try std.Io.Dir.cwd().createDirPath(io, destination_path);
+    var source_dir = try std.Io.Dir.cwd().openDir(io, source_path, .{ .iterate = true });
+    defer source_dir.close(io);
+
+    var iterator = source_dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        const source_entry = try std.fs.path.join(allocator, &.{ source_path, entry.name });
+        defer allocator.free(source_entry);
+        const destination_entry = try std.fs.path.join(allocator, &.{ destination_path, entry.name });
+        defer allocator.free(destination_entry);
+
+        switch (entry.kind) {
+            .directory => try copyTreeAbsolute(allocator, io, source_entry, destination_entry),
+            .file => try std.Io.Dir.copyFileAbsolute(source_entry, destination_entry, io, .{ .replace = true }),
+            .sym_link => {
+                var target_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const target_len = try std.Io.Dir.readLinkAbsolute(io, source_entry, &target_buffer);
+                try std.Io.Dir.cwd().symLink(io, target_buffer[0..target_len], destination_entry, .{});
+            },
+            else => return error.UnsupportedTreeEntry,
+        }
+    }
+}
+
 pub const MOONSTONE_PATHS = struct {
     data: []const u8,
     bin: []const u8,

@@ -20,6 +20,8 @@ assert_last_json_field "${install_json}" "kind" "RESULT"
 assert_last_json_field "${install_json}" "value" "sync.complete"
 python3 -c 'import json, sys
 messages = [json.loads(line) for line in sys.stdin if line.strip()]
+assert all(message["contract"] == "moonstone:cli-events:v1" for message in messages), messages
+assert all(message.get("run_id") for message in messages), messages
 summary = messages[-1]["data"]["summary"]
 expected = ["requested_targets", "resolved_packages", "store_hits", "downloads", "materializations", "path_link_projections", "linked", "env_refreshed", "resolve_ms", "materialize_ms", "link_ms", "total_ms"]
 missing = [field for field in expected if field not in summary]
@@ -39,6 +41,15 @@ messages = [json.loads(line) for line in sys.stdin if line.strip()]
 summary = messages[-1]["data"]["summary"]
 assert summary["store_hits"] >= 1, summary
 assert summary["linked"] >= 1, summary' <<<"${reinstall_json}"
+
+quiet_output=$(moon sync --quiet 2>&1)
+test -z "${quiet_output}"
+
+invalid_jobs_json=$(moon sync --json --jobs 0 2>&1 || true)
+assert_json_valid "${invalid_jobs_json}"
+assert_ndjson_terminator "${invalid_jobs_json}"
+assert_last_json_field "${invalid_jobs_json}" "kind" "ERROR"
+assert_last_json_field "${invalid_jobs_json}" "value" "error.InvalidJobs"
 
 # Add a dependency to moonstone.toml that is NOT in the lockfile.
 # Now that all deps use [[dependencies]] format, we can safely append

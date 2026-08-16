@@ -10,10 +10,12 @@ pub fn writeExport(allocator: std.mem.Allocator, lock: *const lockfile.LockFile,
     try json(writer, export_contract);
     try writer.writeAll(",\"storage_revision\":");
     try json(writer, revision);
-    try writer.writeAll(",\"lockfile_version\":2,\"packages\":[");
+    try writer.print(",\"lockfile_version\":{d},\"realizations\":[", .{lock.version});
     for (lock.packages.items, 0..) |entry, index| {
         if (index > 0) try writer.writeAll(",");
-        try writer.writeAll("{\"name\":");
+        try writer.writeAll("{\"realization_hash\":");
+        try json(writer, entry.realization_hash);
+        try writer.writeAll(",\"name\":");
         try json(writer, entry.name);
         try writer.writeAll(",\"version\":");
         try json(writer, entry.version);
@@ -58,7 +60,8 @@ pub fn writeExport(allocator: std.mem.Allocator, lock: *const lockfile.LockFile,
 pub fn storageRevision(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.Blake3.hash(raw, &digest, .{});
-    return std.fmt.allocPrint(allocator, "b3:{s}", .{std.fmt.bytesToHex(digest, .lower)});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return std.fmt.allocPrint(allocator, "b3:{s}", .{&hex});
 }
 
 fn json(writer: anytype, value: []const u8) !void {
