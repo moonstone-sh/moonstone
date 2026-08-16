@@ -1,0 +1,17 @@
+schema = "moonstone:luarocks-rockspec-parser-corpus:v1"
+upstream = "https://github.com/luarocks/luarocks.git"
+revision = "665f160b4d0b79e85e66c6cc83e442d72eb40868"
+retrieved_at = "2026-08-08"
+
+# This snapshot contains every `.rockspec` fixture in the pinned LuaRocks tree
+# plus Moonstone-owned schema-surface fixtures. It is a parser preservation
+# corpus, not an assertion of LuaRocks CLI or build-backend parity.
+
+[coverage]
+upstream_fixture_count = 25
+moonstone_fixture_count = 18
+syntax_rejection_count = 1
+semantic_rejection_count = 10
+expected_parser_acceptance_count = 32
+fixture_hashes = "fixtures.sha256"
+expectations = "expectations.tsv"

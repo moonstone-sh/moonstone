@@ -11,6 +11,7 @@ const rocks_resolver = @import("../sources/luarocks.zig");
 const moonstone_registry_resolver = @import("../sources/moonstone_registry.zig");
 const path_resolver = @import("../sources/path.zig");
 const links_mod = @import("../../store/links.zig");
+const platform_target = @import("../../platform/target.zig");
 const package_spec = @import("../../domain/package_spec.zig");
 const DependencyRole = @import("../../domain/dependency_role.zig").DependencyRole;
 
@@ -364,10 +365,12 @@ pub const RegistryProvider = struct {
             }
         }
 
-        // Safety-net: if this is a LuaRocks transitive dependency that
-        // hasn't been built yet, build it on-demand.  Normally the inline
-        // materialization in getDependencies handles this, but this guard
-        // catches edge cases (e.g. solution extraction after backtracking).
+        // Fresh LuaRocks resolution deliberately returns a selected source
+        // request rather than materializing inside PubGrub solution
+        // extraction. `moon sync` realizes these candidates after the whole
+        // graph is accepted, through its bounded realization scheduler.
+        // Locked replay retains the existing concrete-artifact path until it
+        // is migrated to that same post-solve scheduler.
         if (!self.options.offline and self.env != null) {
             var is_rocks = request.resolver == .rocks;
             if (!is_rocks) {
@@ -376,6 +379,25 @@ pub const RegistryProvider = struct {
                 }
             }
             if (is_rocks) {
+                if (!self.options.locked) {
+                    const base = self.env.?.get("MOONSTONE_LUAROCKS_URL") orelse self.registryUrlFor(null, "rocks") orelse "https://luarocks.org";
+                    return candidate_mod.Candidate{
+                        .name = try self.allocator.dupe(u8, request.name),
+                        .version = try self.allocator.dupe(u8, request.version),
+                        .kind = .lib,
+                        .artifact_hash = try self.allocator.dupe(u8, ""),
+                        .lua_abi = if (self.options.runtime) |abi| try self.allocator.dupe(u8, abi) else null,
+                        .runtime_artifact_hash = if (self.options.runtime_artifact_hash) |artifact_hash| try self.allocator.dupe(u8, artifact_hash) else try self.allocator.dupe(u8, ""),
+                        .registry_name = try self.allocator.dupe(u8, "rocks"),
+                        .registry_url = try self.allocator.dupe(u8, base),
+                        .origin = .{ .luarocks = .{
+                            .url = try self.allocator.dupe(u8, base),
+                            .rockspec_path = try self.allocator.dupe(u8, ""),
+                        } },
+                        .location = .remote,
+                    };
+                }
+
                 var opts = self.options;
                 opts.lua_exe = self.lua_exe;
                 const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?, null, null) catch |err| {
@@ -764,20 +786,7 @@ pub const RegistryProvider = struct {
     }
 
     fn get_host_target_sync(allocator: std.mem.Allocator) ![]const u8 {
-        const builtin = @import("builtin");
-        const arch = switch (builtin.cpu.arch) {
-            .x86_64 => "x86_64",
-            .aarch64 => "aarch64",
-            else => return error.UnsupportedArch,
-        };
-        const os = switch (builtin.os.tag) {
-            .linux => "linux-gnu",
-            .macos => "macos",
-            .windows => "windows-msvc",
-            .freebsd => "freebsd",
-            else => return error.UnsupportedOS,
-        };
-        return try std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
+        return platform_target.hostTarget(allocator);
     }
 
     fn artifactMatchesRuntimeAbi(kind: manifest.Kind, art: manifest.RemoteArtifact, options: root.ResolveOptions) bool {
@@ -837,64 +846,94 @@ pub const RegistryProvider = struct {
             }
         }
 
-        // -- Inline materialization for LuaRocks transitive deps ----------
-        // When pubgrub asks for the dependencies of a rocks package that
-        // has not been built yet, build it on-demand so its manifest.toml
-        // (which lists transitive deps) becomes available.  This implements
-        // the "Inline Materialization" design from ARCHITECTURE.md section 9.
-        if (artifact == null) {
-            var dep_resolver: ?root.ResolverKind = null;
-            var dep_registry: ?[]const u8 = null;
+        // -- Metadata-only LuaRocks transitive dependency discovery -------
+        // PubGrub needs rockspec dependency terms, not a materialized CAS
+        // artifact. Building here makes rejected/backtracked candidates leave
+        // side effects; use the normalized rockspec intent instead.
+        var rocks_dependency_resolver: ?root.ResolverKind = null;
+        var rocks_dependency_registry: ?[]const u8 = null;
+        if (artifact) |art| switch (art.origin) {
+            .luarocks => {
+                rocks_dependency_resolver = .rocks;
+                rocks_dependency_registry = art.registry_name;
+            },
+            else => {},
+        };
+        if (rocks_dependency_resolver == null) {
             for (self.targets) |t| {
                 if (std.mem.eql(u8, t.name, name)) {
-                    dep_resolver = t.resolver;
-                    dep_registry = t.registry;
+                    rocks_dependency_resolver = t.resolver;
+                    rocks_dependency_registry = t.registry;
                     break;
                 }
             }
-            if (dep_resolver == null) {
-                if (self.findStoreDependencyOrigin(name, null)) |origin| {
-                    dep_resolver = origin.child_resolver;
-                    dep_registry = origin.child_registry;
-                }
+        }
+        if (rocks_dependency_resolver == null) {
+            if (self.findStoreDependencyOrigin(name, null)) |origin| {
+                rocks_dependency_resolver = origin.child_resolver;
+                rocks_dependency_registry = origin.child_registry;
             }
+        }
 
-            if (dep_resolver == .rocks and self.env != null and !self.options.offline) {
-                const v_str = try version.toString(self.allocator);
-                defer self.allocator.free(v_str);
+        if (rocks_dependency_resolver == .rocks and self.env != null and !self.options.offline) {
+            const v_str = try version.toString(self.allocator);
+            defer self.allocator.free(v_str);
 
-                var opts = self.options;
-                opts.lua_exe = self.lua_exe;
+            var opts = self.options;
+            opts.lua_exe = self.lua_exe;
 
-                const built = rocks_resolver.resolve(self.allocator, self.io, name, v_str, opts, self.env.?, self.registryUrlFor(dep_registry, "rocks"), dep_registry) catch |err| {
-                    if (err == error.PackageNotFound or err == error.RockspecNotFound or
-                        err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
-                        err == error.RocksVersionDiscoveryFailed)
-                    {
-                        // Cannot build this package; return empty deps so
-                        // pubgrub can try a different version or backtrack.
-                        return try terms.toOwnedSlice(self.allocator);
-                    }
-                    return err;
-                };
-                defer built.deinit(self.allocator);
-
-                // Clone into the arena and mark as local_store so the
-                // manifest.toml reader below picks it up.
-                var cloned = try built.clone(arena);
-                cloned.location = .local_store;
-                try self.artifacts.append(arena, cloned);
-
-                // Re-scan artifacts to find the freshly-built candidate.
-                for (self.artifacts.items) |*art| {
-                    if (!packageNamesMatch(art.name, name)) continue;
-                    const v = semver.Version.parse(art.version) catch continue;
-                    if (version.compare(v) == 0) {
-                        artifact = art.*;
-                        break;
-                    }
+            var dependencies = rocks_resolver.query_dependencies(
+                self.allocator,
+                self.io,
+                name,
+                v_str,
+                opts,
+                self.env.?,
+                self.registryUrlFor(rocks_dependency_registry, "rocks"),
+            ) catch |err| {
+                if (err == error.PackageNotFound or err == error.RockspecNotFound or
+                    err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed)
+                {
+                    return try terms.toOwnedSlice(self.allocator);
                 }
-            }
+                return err;
+            };
+            defer dependencies.deinit(self.allocator);
+
+            const dependency_sets = [_]struct {
+                values: []const []const u8,
+                role: DependencyRole,
+            }{
+                .{ .values = dependencies.runtime, .role = .runtime },
+                .{ .values = dependencies.build, .role = .build },
+            };
+            for (dependency_sets) |set| for (set.values) |dependency| {
+                var parsed = try @import("../../luarocks/rockspec.zig").parse_dependency_string(self.allocator, dependency);
+                defer parsed.deinit(self.allocator);
+                if (std.ascii.eqlIgnoreCase(parsed.name, "lua")) continue;
+
+                try self.store_dependency_origins.append(self.allocator, .{
+                    .child_name = try self.allocator.dupe(u8, parsed.name),
+                    .child_constraint = try self.allocator.dupe(u8, parsed.constraint orelse "*"),
+                    .child_resolver = .rocks,
+                    .child_registry = if (rocks_dependency_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                    .child_role = set.role,
+                    .parent_name = try self.allocator.dupe(u8, name),
+                    .parent_version = try self.allocator.dupe(u8, v_str),
+                    .parent_resolver = .rocks,
+                    .parent_manifest_path = try self.allocator.dupe(u8, "<rockspec metadata>"),
+                });
+
+                try terms.append(self.allocator, .{
+                    .name = try arena.dupe(u8, parsed.name),
+                    .range = try semver.VersionRange.parse(arena, parsed.constraint orelse "*"),
+                    .registry = if (rocks_dependency_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                    .resolver = .rocks,
+                    .role = set.role,
+                });
+            };
+
+            return try terms.toOwnedSlice(self.allocator);
         }
 
         if (artifact) |art| {

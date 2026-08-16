@@ -2,6 +2,7 @@ const std = @import("std");
 const manifest = @import("../domain/manifest.zig");
 const registry = @import("../registry/registry.zig");
 const fs = @import("../platform/fs.zig");
+const platform_target = @import("../platform/target.zig");
 const store = @import("../store.zig");
 const resolver = @import("../resolution/root.zig");
 const package_spec = @import("../domain/package_spec.zig");
@@ -371,6 +372,17 @@ pub const Materializer = struct {
                         "";
                     defer if (had_runtime) self.allocator.free(runtime_hash);
 
+                    var direct_command_step: [1]manifest.CommandStep = undefined;
+                    const build_steps: []const manifest.CommandStep = if (m.steps.len > 0)
+                        m.steps
+                    else blk: {
+                        direct_command_step[0] = .{
+                            .command = m.command orelse return error.MissingCommand,
+                            .args = m.args,
+                        };
+                        break :blk direct_command_step[0..];
+                    };
+
                     const recipe_hash = try store.computeRecipeHash(self.allocator, .{
                         .kind = @tagName(desc.package.kind),
                         .name = desc.package.name,
@@ -381,6 +393,8 @@ pub const Materializer = struct {
                         .runtime_hash = runtime_hash,
                         .lua_abi = art.lua_abi,
                         .target = host_target,
+                        .collect = m.collect,
+                        .build_steps = build_steps,
                         .build_env = build_env_items.items,
                     });
                     defer self.allocator.free(recipe_hash);
@@ -455,20 +469,7 @@ pub const Materializer = struct {
     }
 
     fn get_host_target(self: Materializer) ![]const u8 {
-        const builtin = @import("builtin");
-        const arch = switch (builtin.cpu.arch) {
-            .x86_64 => "x86_64",
-            .aarch64 => "aarch64",
-            else => return error.UnsupportedArch,
-        };
-        const os = switch (builtin.os.tag) {
-            .linux => "linux-gnu",
-            .macos => "macos",
-            .windows => "windows-msvc",
-            .freebsd => "freebsd",
-            else => return error.UnsupportedOS,
-        };
-        return try std.fmt.allocPrint(self.allocator, "{s}-{s}", .{ arch, os });
+        return platform_target.hostTarget(self.allocator);
     }
 
     /// Enriches an already-materialized store artifact with source provenance

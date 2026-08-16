@@ -1,5 +1,6 @@
 const std = @import("std");
 const manifest = @import("../../domain/manifest.zig");
+const executable = @import("../../platform/executable.zig");
 
 pub fn build(
     allocator: std.mem.Allocator,
@@ -93,7 +94,9 @@ pub fn build_internal(
     for (steps.items) |step| {
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
-        try argv.append(allocator, step.cmd);
+        const resolved_command = try resolve_command_from_path(allocator, io, &final_env, step.cmd);
+        defer allocator.free(resolved_command);
+        try argv.append(allocator, resolved_command);
         try argv.appendSlice(allocator, step.args);
 
         const res = try std.process.run(allocator, io, .{
@@ -144,6 +147,30 @@ pub fn build_internal(
 
     // 4. Collect outputs
     try collectOutputs(allocator, io, src_abs, out_abs, bdir, config.collect, lua_abi, lua_include, lua_lib, lua_bin_dir);
+}
+
+pub fn resolve_command_from_path(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    command: []const u8,
+) ![]const u8 {
+    if (std.fs.path.isAbsolute(command) or
+        std.mem.indexOfAny(u8, command, "/\\") != null)
+    {
+        return try allocator.dupe(u8, command);
+    }
+
+    const path_value = env_map.get("PATH") orelse return error.CommandNotFound;
+    const separator: u8 = if (comptime @import("builtin").os.tag == .windows) ';' else ':';
+    var directories = std.mem.splitScalar(u8, path_value, separator);
+    while (directories.next()) |directory| {
+        if (directory.len == 0 or !std.fs.path.isAbsolute(directory)) continue;
+        if (try executable.resolveInDirectory(allocator, io, directory, command)) |candidate| {
+            return candidate;
+        }
+    }
+    return error.CommandNotFound;
 }
 
 fn expandVariables(

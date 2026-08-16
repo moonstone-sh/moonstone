@@ -13,6 +13,7 @@ pub const ProjectionPolicy = struct {
 pub const DependencyRole = enum {
     runtime,
     dev,
+    build,
     tool,
     helper,
     external,
@@ -52,6 +53,15 @@ pub const DependencyRole = enum {
                 .expose_tool_scope = false,
                 .expose_helper_scope = false,
                 .metadata_only = false,
+                .export_default = false,
+            },
+            .build => .{
+                .link_lua_modules_to_root = false,
+                .link_cmodules_to_root = false,
+                .expose_public_bins = false,
+                .expose_tool_scope = false,
+                .expose_helper_scope = false,
+                .metadata_only = true,
                 .export_default = false,
             },
             .tool => .{
