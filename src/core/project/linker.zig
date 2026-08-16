@@ -1206,8 +1206,7 @@ pub fn link_project_env_at(
             break :blk target_path[pos..];
         } else blk: {
             const cmodule_extension = luaCmoduleExtension();
-            const ext = if (std.mem.endsWith(u8, mod_name, cmodule_extension)) cmodule_extension.len else @as(usize, 0);
-            const clean_name = mod_name[0 .. mod_name.len - ext];
+            const clean_name = luaCmoduleLogicalName(mod_name);
             const slash_name = try std.mem.replaceOwned(u8, allocator, clean_name, ".", "/");
             defer allocator.free(slash_name);
             break :blk try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, slash_name, cmodule_extension });
@@ -1768,10 +1767,24 @@ fn luaCmoduleExtension() []const u8 {
     };
 }
 
+fn luaCmoduleLogicalName(name: []const u8) []const u8 {
+    const known_extensions = [_][]const u8{ ".dylib", ".dll", ".so" };
+    for (known_extensions) |extension| {
+        if (std.mem.endsWith(u8, name, extension)) return name[0 .. name.len - extension.len];
+    }
+    return name;
+}
+
 fn luaCmoduleExtensions() []const []const u8 {
     return switch (builtin.os.tag) {
         .windows => &.{".dll"},
         .macos => &.{ ".dylib", ".so" },
         else => &.{".so"},
     };
+}
+
+test "native module projection ignores source-library suffixes" {
+    try std.testing.expectEqualStrings("synthetic_make_module", luaCmoduleLogicalName("synthetic_make_module.so"));
+    try std.testing.expectEqualStrings("platform.core", luaCmoduleLogicalName("platform.core.dylib"));
+    try std.testing.expectEqualStrings("platform.core", luaCmoduleLogicalName("platform.core.dll"));
 }
