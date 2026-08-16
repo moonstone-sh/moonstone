@@ -83,7 +83,20 @@ if moon orbit add --name outside --path "${OUTSIDE_DIR}/child" >/tmp/moonstone-o
 fi
 grep -q 'must be a subdirectory' /tmp/moonstone-orbit-outside.log
 
-moon orbit sync child
+moon orbit sync child --json > "${WORKDIR}/orbit-sync.ndjson"
+grep -Eq '^\{"contract":"moonstone:cli-events:v1"' "${WORKDIR}/orbit-sync.ndjson"
+grep -Fq '"task_id":"orbit-sync:child"' "${WORKDIR}/orbit-sync.ndjson"
+grep -Fq '"state":"completed"' "${WORKDIR}/orbit-sync.ndjson"
+moon orbit sync child --quiet > "${WORKDIR}/orbit-sync-quiet.stdout" 2> "${WORKDIR}/orbit-sync-quiet.stderr"
+test ! -s "${WORKDIR}/orbit-sync-quiet.stdout"
+test ! -s "${WORKDIR}/orbit-sync-quiet.stderr"
+moon orbit sync child --progress plain > "${WORKDIR}/orbit-sync-plain.stdout" 2> "${WORKDIR}/orbit-sync-plain.stderr"
+grep -Fq 'running orbit-sync:child: child' "${WORKDIR}/orbit-sync-plain.stderr"
+grep -Fq 'completed orbit-sync:child: child' "${WORKDIR}/orbit-sync-plain.stderr"
+if grep -q $'\033' "${WORKDIR}/orbit-sync-plain.stderr"; then
+    echo "ERROR: plain orbit sync emitted terminal control sequences"
+    exit 1
+fi
 moon orbit remove child --json | grep -Fq '"kind":"RESULT"'
 if grep -q '\[\[orbits.member\]\]' moonstone.toml; then
     echo "ERROR: orbit declaration remained after removal"

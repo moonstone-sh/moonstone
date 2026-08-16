@@ -15,6 +15,15 @@ pub const ResolveOptions = struct {
     lua_exe: ?[]const u8 = null,
     on_event_context: ?*anyopaque = null,
     build_env: []const @import("../domain/manifest.zig").EnvPair = &.{},
+    build_artifacts: []const BuildArtifact = &.{},
+};
+
+/// One already-resolved artifact made visible only to a foreign build. The
+/// identity participates in its dependent recipe; its filesystem projection is
+/// assembled separately by `project.build_scope`.
+pub const BuildArtifact = struct {
+    name: []const u8,
+    artifact_hash: []const u8,
 };
 
 pub const ResolveEvent = union(enum) {

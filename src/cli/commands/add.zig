@@ -186,6 +186,8 @@ pub const add_command = struct {
     prefer_local: bool = false,
     no_sync: bool = false,
     update: bool = false,
+    jobs_arg: ?[]const u8 = null,
+    progress_arg: ?[]const u8 = null,
     global: bool = false,
     positionals: []const []const u8 = &.{},
 
@@ -212,6 +214,8 @@ pub const add_command = struct {
             \\  --prefer-local   Prefer local candidates over remote
             \\  --no-sync        Do not run sync after adding
             \\  --update         Re-resolve during the follow-up sync
+            \\  --jobs <N>       Limit workers used by the follow-up sync
+            \\  --progress <mode>  Follow-up sync output: auto, fancy, or plain
             \\  --global         Add tool dependency to the global tools environment
             \\  --json           Output results as JSON
             \\
@@ -287,11 +291,26 @@ pub const add_command = struct {
     }
 
     pub fn run(self: add_command, ctx: *router.Context) !void {
+        if (self.json and self.progress_arg != null) return error.InvalidOutputMode;
+        if (self.jobs_arg) |jobs_arg| {
+            const jobs = std.fmt.parseUnsigned(usize, jobs_arg, 10) catch return error.InvalidJobs;
+            if (jobs == 0) return error.InvalidJobs;
+        }
+        if (self.progress_arg) |mode| {
+            if (!std.mem.eql(u8, mode, "auto") and !std.mem.eql(u8, mode, "fancy") and !std.mem.eql(u8, mode, "plain")) {
+                return error.InvalidOutputMode;
+            }
+        }
         if (self.json) {
             return self.runImpl(ctx, .{ .direct = ctx.stdout });
         }
 
-        if (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null) {
+        if (self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) {
+            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+        }
+
+        const force_fancy = self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "fancy");
+        if (!force_fancy and (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null)) {
             return self.runImpl(ctx, .{ .direct = ctx.stderr });
         }
 
@@ -405,18 +424,22 @@ pub const add_command = struct {
         const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
             .direct => @import("command.zig").onResolveEvent,
             .queue => progress_runtime.onResolveEventProgress,
+            .silent => null,
         };
         const on_resolve_ctx: ?*anyopaque = switch (backend) {
             .direct => @ptrCast(&resolve_cb_ctx),
             .queue => @ptrCast(backend.queue),
+            .silent => null,
         };
         const on_solver_cb: ?moonstone.resolution.solver.report.SolverCallback = switch (backend) {
             .direct => @import("command.zig").onSolverEvent,
             .queue => progress_runtime.onSolverEventProgress,
+            .silent => null,
         };
         const on_solver_ctx: ?*anyopaque = switch (backend) {
             .direct => @ptrCast(&resolve_cb_ctx),
             .queue => @ptrCast(backend.queue),
+            .silent => null,
         };
 
         var resolver = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
@@ -647,6 +670,7 @@ pub const add_command = struct {
                     .build_env = build_env,
                 }, kind, env, parsed.registry) catch |err| {
                     if (err == error.RocksVersionDiscoveryFailed and parsed.resolver == null) continue;
+                    if (err == error.UnsupportedLuaRocksBuildType and parsed.resolver != null) return err;
                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
                 };
@@ -713,6 +737,7 @@ pub const add_command = struct {
         var sit = solution.iterator();
         var materialize_index: usize = 0;
         const materialize_total = solution.count();
+        var deferred_luarocks_sources = false;
         while (sit.next()) |entry| {
             materialize_index += 1;
             const pkg_name = entry.key_ptr.*;
@@ -752,6 +777,32 @@ pub const add_command = struct {
             }
             defer if (explicit_prefix) |r| allocator.free(r);
             defer if (explicit_spec) |spec| allocator.free(spec);
+
+            // LuaRocks source materialization has a post-solve build closure:
+            // foreign `build_dependencies` must be realized and projected
+            // before the parent build. Keep all source Rocks candidates under
+            // `moon sync` rather than invoking the legacy eager coordinator
+            // path below. Transitive Rocks candidates are not manifest roots
+            // and are therefore left entirely to that scheduler.
+            if (resolved_art.origin == .luarocks) {
+                if (!is_explicit) continue;
+                if (self.no_sync) {
+                    ctx.error_detail = .{ .message = .{ .msg = "LuaRocks source dependencies require `moon sync` so Moonstone can materialize their build-only closure. Remove `--no-sync` and retry." } };
+                    return error.LuaRocksAddRequiresSync;
+                }
+
+                const range_prefix = blk: {
+                    if (self.save_exact) break :blk "";
+                    if (self.save_tilde) break :blk "~";
+                    break :blk "^";
+                };
+                const final_ver = try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved_art.version });
+                defer allocator.free(final_ver);
+                try mt.add_dependency_with_registry(allocator, pkg_name, final_ver, target_role, self.optional, explicit_prefix);
+                try added_list.append(allocator, try allocator.dupe(u8, pkg_name));
+                deferred_luarocks_sources = true;
+                continue;
+            }
 
             // Determine resolver order
             var kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
@@ -806,6 +857,7 @@ pub const add_command = struct {
                     .on_event = on_resolve_cb,
                     .on_event_context = on_resolve_ctx,
                 }, kind, env, explicit_prefix) catch |err| {
+                    if (err == error.UnsupportedLuaRocksBuildType and explicit_prefix != null) return err;
                     if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
                     return err;
                 };
@@ -976,6 +1028,8 @@ pub const add_command = struct {
             } else {
                 if (self.dry_run) {
                     try stdout.print("Dry-run: would have added {d} packages and updated moonstone.lock.\n", .{added_list.items.len});
+                } else if (deferred_luarocks_sources) {
+                    try stdout.print("Added {d} packages; LuaRocks sources will materialize during sync.\n", .{added_list.items.len});
                 } else {
                     try stdout.print("Added {d} packages and updated moonstone.lock.\n", .{added_list.items.len});
                 }
@@ -990,6 +1044,8 @@ pub const add_command = struct {
             const sync = @import("sync.zig").sync_command{
                 .json = self.json,
                 .update = self.update,
+                .jobs_arg = self.jobs_arg,
+                .progress_arg = self.progress_arg,
             };
 
             try sync.runImpl(ctx, backend);

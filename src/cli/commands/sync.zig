@@ -4,6 +4,7 @@ const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
 const progress_runtime = @import("../progress.zig");
+const task_protocol = @import("../task_protocol.zig");
 const profiler = moonstone.diagnostics.profiler;
 
 pub const sync_command = SyncCommand;
@@ -194,6 +195,15 @@ fn elapsedMs(io: std.Io, start_ns: i128) i128 {
     return @divFloor(nowNs(io) - start_ns, std.time.ns_per_ms);
 }
 
+fn materializationJobs(arg: ?[]const u8) !usize {
+    if (arg) |value| {
+        const jobs = std.fmt.parseUnsigned(usize, value, 10) catch return error.InvalidJobs;
+        if (jobs == 0) return error.InvalidJobs;
+        return jobs;
+    }
+    return @max(@as(usize, 1), @min(std.Thread.getCpuCount() catch 1, @as(usize, 8)));
+}
+
 /// Command-specific data passed through WorkerContext.cmd_data.
 const SyncWorkData = struct {
     cmd: SyncCommand,
@@ -220,11 +230,157 @@ fn syncWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
 // ────────────────────────────────────────────────────────────────────────────
 
 const MatResult = moonstone.materialization.materializer.MaterializeResult;
+const ResolvedSolution = std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact);
+
+const BuildArtifactLocation = struct {
+    name: []const u8,
+    artifact_hash: []const u8,
+    artifact_path: []const u8,
+};
 
 const DownloadJob = struct {
     pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
     result: ?MatResult = null,
     err: ?anyerror = null,
+};
+
+const RocksJob = struct {
+    pkg: *moonstone.resolution.candidate.ResolvedArtifact,
+    preparation_leader: ?usize = null,
+    prepared: ?moonstone.resolution.sources.luarocks.PreparedResolution = null,
+    build_dependency_names: []const []const u8 = &.{},
+    scope_dependency_names: []const []const u8 = &.{},
+    materialization_leader: ?usize = null,
+    result: ?moonstone.resolution.candidate.ResolvedArtifact = null,
+    err: ?anyerror = null,
+
+    fn deinit(self: *RocksJob, allocator: std.mem.Allocator) void {
+        if (self.prepared) |*prepared| prepared.deinit(allocator);
+        for (self.build_dependency_names) |name| allocator.free(name);
+        if (self.build_dependency_names.len > 0) allocator.free(self.build_dependency_names);
+        for (self.scope_dependency_names) |name| allocator.free(name);
+        if (self.scope_dependency_names.len > 0) allocator.free(self.scope_dependency_names);
+        if (self.result) |result| result.deinit(allocator);
+    }
+};
+
+fn collectBuildDependencyNames(
+    allocator: std.mem.Allocator,
+    dependencies: []const []const u8,
+) ![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+    for (dependencies) |dependency| {
+        var parsed = try moonstone.luarocks.rockspec.parse_dependency_string(allocator, dependency);
+        defer parsed.deinit(allocator);
+        if (std.ascii.eqlIgnoreCase(parsed.name, "lua")) continue;
+        try names.append(allocator, try allocator.dupe(u8, parsed.name));
+    }
+    return names.toOwnedSlice(allocator);
+}
+
+fn collectScopeDependencyNames(
+    allocator: std.mem.Allocator,
+    runtime_dependencies: []const []const u8,
+    build_dependencies: []const []const u8,
+) ![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+    const dependency_sets = [_][]const []const u8{ runtime_dependencies, build_dependencies };
+    for (dependency_sets) |dependencies| for (dependencies) |dependency| {
+        var parsed = try moonstone.luarocks.rockspec.parse_dependency_string(allocator, dependency);
+        defer parsed.deinit(allocator);
+        if (std.ascii.eqlIgnoreCase(parsed.name, "lua")) continue;
+        var already_present = false;
+        for (names.items) |name| {
+            if (std.ascii.eqlIgnoreCase(name, parsed.name)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) try names.append(allocator, try allocator.dupe(u8, parsed.name));
+    };
+    return names.toOwnedSlice(allocator);
+}
+
+fn mergeDependencyNames(
+    allocator: std.mem.Allocator,
+    existing: []const []const u8,
+    discovered: []const []const u8,
+) ![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    for (existing) |candidate| {
+        var already_present = false;
+        for (names.items) |name| {
+            if (std.ascii.eqlIgnoreCase(name, candidate)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) try names.append(allocator, try allocator.dupe(u8, candidate));
+    }
+    for (discovered) |candidate| {
+        var already_present = false;
+        for (names.items) |name| {
+            if (std.ascii.eqlIgnoreCase(name, candidate)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) try names.append(allocator, try allocator.dupe(u8, candidate));
+    }
+    return names.toOwnedSlice(allocator);
+}
+
+fn collectSolvedRocksDependencyNames(
+    allocator: std.mem.Allocator,
+    origins: []const moonstone.resolution.provider.graph_provider.StoreDependencyOrigin,
+    solution: *const ResolvedSolution,
+    parent_name: []const u8,
+    include_runtime: bool,
+) ![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    for (origins) |origin| {
+        if (!std.ascii.eqlIgnoreCase(origin.parent_name, parent_name)) continue;
+        if (!solutionContainsPackage(solution, origin.child_name)) continue;
+        if (!include_runtime and origin.child_role != .build) continue;
+
+        var already_present = false;
+        for (names.items) |name| {
+            if (std.ascii.eqlIgnoreCase(name, origin.child_name)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) try names.append(allocator, try allocator.dupe(u8, origin.child_name));
+    }
+    return names.toOwnedSlice(allocator);
+}
+
+const LockedReplayJob = struct {
+    entry: *const moonstone.domain.lockfile.LockEntry,
+    result: ?moonstone.resolution.candidate.ResolvedArtifact = null,
+    err: ?anyerror = null,
+
+    fn deinit(self: *LockedReplayJob, allocator: std.mem.Allocator) void {
+        if (self.result) |result| result.deinit(allocator);
+    }
 };
 
 const MutexAllocator = struct {
@@ -275,9 +431,11 @@ const DownloadPool = struct {
     io: std.Io,
     env: *std.process.Environ.Map,
     jobs: []DownloadJob,
+    target: []const u8,
     runtime_path: ?[]const u8 = null,
     next: std.atomic.Value(usize) = .init(0),
     wctx: ?*progress_runtime.WorkerContext,
+    reporter: task_protocol.Reporter,
     on_resolve_cb: ?moonstone.resolution.options.ResolveCallback,
     on_resolve_ctx: ?*anyopaque,
 
@@ -296,6 +454,14 @@ const DownloadPool = struct {
     fn processJob(self: *DownloadPool, idx: usize) void {
         const job = &self.jobs[idx];
         const pkg = job.pkg.*;
+        var task_buf: [384]u8 = undefined;
+        const task_id = task_protocol.formatId(&task_buf, .realize, self.target, "moonstone", pkg.name, pkg.version) catch pkg.name;
+
+        self.reporter.report(self.io, task_id, 1, "running", task_id, .{
+            .package = pkg.name,
+            .version = pkg.version,
+            .resolver = "moonstone",
+        });
 
         // Progress: package started
         if (self.wctx) |w| {
@@ -323,6 +489,11 @@ const DownloadPool = struct {
             reg.artifact_idx,
         ) catch |err| {
             job.err = err;
+            self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{
+                .package = pkg.name,
+                .version = pkg.version,
+                .error_name = @errorName(err),
+            });
             if (self.wctx) |w| {
                 var buf: [256]u8 = undefined;
                 const tmp = std.fmt.bufPrint(&buf, "Failed to materialize {s}: {s}", .{ pkg.name, @errorName(err) }) catch return;
@@ -333,6 +504,12 @@ const DownloadPool = struct {
         };
 
         job.result = m_res;
+
+        self.reporter.report(self.io, task_id, 2, "completed", task_id, .{
+            .package = pkg.name,
+            .version = pkg.version,
+            .artifact_hash = m_res.artifact_hash,
+        });
 
         // Progress: package done
         if (self.wctx) |w| {
@@ -345,31 +522,631 @@ const DownloadPool = struct {
 
     /// Spawn `n` worker threads, then join them all.
     fn execute(self: *DownloadPool, n: usize) !void {
-        if (n <= 1 or self.jobs.len <= 1) {
-            // Serial fallback
-            self.run();
+        var scheduler = moonstone.realization.scheduler.Scheduler{
+            .allocator = self.allocator,
+            .io = self.io,
+            .task_count = self.jobs.len,
+            .context = @ptrCast(self),
+            .run_task = runScheduled,
+            .is_cancelled = isCancelled,
+        };
+        try scheduler.execute(n);
+    }
+
+    fn runScheduled(context: *anyopaque, task_index: usize) !void {
+        const self: *DownloadPool = @ptrCast(@alignCast(context));
+        self.processJob(task_index);
+        if (self.jobs[task_index].err) |err| return err;
+    }
+
+    fn isCancelled(context: *anyopaque) bool {
+        const self: *DownloadPool = @ptrCast(@alignCast(context));
+        return if (self.wctx) |wctx| wctx.isCancelled() else false;
+    }
+};
+
+const RocksPool = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    jobs: []RocksJob,
+    selected: ?*ResolvedSolution = null,
+    downloaded: []const DownloadJob = &.{},
+    target: []const u8,
+    options: moonstone.resolution.options.ResolveOptions,
+    wctx: ?*progress_runtime.WorkerContext,
+    reporter: task_protocol.Reporter,
+    preparation_coordinator: moonstone.realization.request_coordinator.RequestCoordinator,
+    request_coordinator: moonstone.realization.request_coordinator.RequestCoordinator,
+
+    fn deinit(self: *RocksPool) void {
+        self.preparation_coordinator.deinit();
+        self.request_coordinator.deinit();
+    }
+
+    fn preparationRequestKey(self: *RocksPool, pkg: *const moonstone.resolution.candidate.ResolvedArtifact) ![]const u8 {
+        const registry_name = pkg.registry_name orelse "rocks";
+        const runtime = self.options.runtime orelse "";
+        const runtime_artifact_hash = self.options.runtime_artifact_hash orelse "";
+        const target = self.options.target orelse "native";
+        const source_url = pkg.origin.luarocks.url;
+
+        const input = try std.fmt.allocPrint(self.allocator,
+            \\moonstone:rocks-preparation:v1
+            \\source={d}:{s}
+            \\registry={d}:{s}
+            \\package={d}:{s}
+            \\version={d}:{s}
+            \\runtime={d}:{s}
+            \\runtime_artifact={d}:{s}
+            \\target={d}:{s}
+            \\
+        , .{
+            source_url.len,
+            source_url,
+            registry_name.len,
+            registry_name,
+            pkg.name.len,
+            pkg.name,
+            pkg.version.len,
+            pkg.version,
+            runtime.len,
+            runtime,
+            runtime_artifact_hash.len,
+            runtime_artifact_hash,
+            target.len,
+            target,
+        });
+        defer self.allocator.free(input);
+        return moonstone.identity.hash.blake3_hex(self.allocator, input);
+    }
+
+    fn selectPreparationLeaders(self: *RocksPool) !void {
+        for (self.jobs, 0..) |*job, index| {
+            const key = try self.preparationRequestKey(job.pkg);
+            defer self.allocator.free(key);
+            job.preparation_leader = switch (try self.preparation_coordinator.claim(key, index)) {
+                .leader => index,
+                .follower => |leader| leader,
+            };
+        }
+    }
+
+    fn prepareJob(self: *RocksPool, idx: usize) void {
+        const job = &self.jobs[idx];
+        const pkg = job.pkg.*;
+        var task_buf: [384]u8 = undefined;
+        const task_id = task_protocol.formatId(&task_buf, .realize, self.target, "rocks", pkg.name, pkg.version) catch pkg.name;
+        const task_label = std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ pkg.name, pkg.version }) catch pkg.name;
+        defer if (task_label.ptr != pkg.name.ptr) self.allocator.free(task_label);
+        self.reporter.report(self.io, task_id, 1, "preparing", task_label, .{
+            .package = pkg.name,
+            .version = pkg.version,
+            .resolver = "rocks",
+        });
+
+        if (job.preparation_leader != null and job.preparation_leader.? != idx) {
+            self.reporter.report(self.io, task_id, 2, "waiting", "reusing in-flight preparation", .{
+                .package = pkg.name,
+                .version = pkg.version,
+                .resolver = "rocks",
+                .reused_preparation = true,
+            });
             return;
         }
-        const num = @min(n, self.jobs.len);
 
-        var threads: [8]std.Thread = undefined;
-        var spawned: usize = 0;
-        for (0..num) |i| {
-            threads[i] = std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, run, .{self}) catch |err| {
-                if (err == error.SystemResources or err == error.ResourceLimitReached or err == error.OutOfMemory) {
-                    // Can't spawn more threads; run remaining work on this thread.
+        const base = pkg.origin.luarocks.url;
+        const prepared = moonstone.resolution.sources.luarocks.prepare(
+            self.allocator,
+            self.io,
+            pkg.name,
+            pkg.version,
+            self.options,
+            self.env,
+            base,
+            pkg.registry_name,
+        ) catch |err| {
+            job.err = err;
+            self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+            return;
+        };
+
+        switch (prepared) {
+            .binary => |resolved| {
+                job.result = resolved;
+                self.reporter.report(self.io, task_id, 2, "completed", task_label, .{
+                    .package = pkg.name,
+                    .version = pkg.version,
+                    .resolver = "rocks",
+                    .source = "binary-rock",
+                });
+            },
+            .source => {
+                job.prepared = prepared;
+                const source = switch (job.prepared.?) {
+                    .source => |*value| value,
+                    .binary => unreachable,
+                };
+                const parsed_build_dependencies = collectBuildDependencyNames(self.allocator, source.parsed_rockspec.value.intent.build_dependencies) catch |err| {
+                    job.err = err;
+                    self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+                    return;
+                };
+                defer {
+                    for (parsed_build_dependencies) |name| self.allocator.free(name);
+                    if (parsed_build_dependencies.len > 0) self.allocator.free(parsed_build_dependencies);
+                }
+                const merged_build_dependencies = mergeDependencyNames(self.allocator, job.build_dependency_names, parsed_build_dependencies) catch |err| {
+                    job.err = err;
+                    self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+                    return;
+                };
+                for (job.build_dependency_names) |name| self.allocator.free(name);
+                if (job.build_dependency_names.len > 0) self.allocator.free(job.build_dependency_names);
+                job.build_dependency_names = merged_build_dependencies;
+
+                const parsed_scope_dependencies = collectScopeDependencyNames(
+                    self.allocator,
+                    source.parsed_rockspec.value.intent.dependencies,
+                    source.parsed_rockspec.value.intent.build_dependencies,
+                ) catch |err| {
+                    job.err = err;
+                    self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+                    return;
+                };
+                defer {
+                    for (parsed_scope_dependencies) |name| self.allocator.free(name);
+                    if (parsed_scope_dependencies.len > 0) self.allocator.free(parsed_scope_dependencies);
+                }
+                const merged_scope_dependencies = mergeDependencyNames(self.allocator, job.scope_dependency_names, parsed_scope_dependencies) catch |err| {
+                    job.err = err;
+                    self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+                    return;
+                };
+                for (job.scope_dependency_names) |name| self.allocator.free(name);
+                if (job.scope_dependency_names.len > 0) self.allocator.free(job.scope_dependency_names);
+                job.scope_dependency_names = merged_scope_dependencies;
+                self.reporter.report(self.io, task_id, 2, "prepared", task_label, .{
+                    .package = pkg.name,
+                    .version = pkg.version,
+                    .resolver = "rocks",
+                });
+            },
+        }
+    }
+
+    fn materializeJob(self: *RocksPool, idx: usize) void {
+        const job = &self.jobs[idx];
+        if (job.materialization_leader == null or job.materialization_leader.? != idx) return;
+
+        var prepared = job.prepared orelse return;
+        job.prepared = null;
+        defer prepared.deinit(self.allocator);
+
+        const source = switch (prepared) {
+            .source => |*value| value,
+            .binary => unreachable,
+        };
+        const pkg = job.pkg.*;
+        var task_buf: [384]u8 = undefined;
+        const task_id = task_protocol.formatId(&task_buf, .realize, self.target, "rocks", pkg.name, pkg.version) catch pkg.name;
+        const task_label = std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ pkg.name, pkg.version }) catch pkg.name;
+        defer if (task_label.ptr != pkg.name.ptr) self.allocator.free(task_label);
+        self.reporter.report(self.io, task_id, 3, "materializing", task_label, .{
+            .package = pkg.name,
+            .version = pkg.version,
+            .resolver = "rocks",
+        });
+
+        job.result = self.materializePreparedJob(idx, source) catch |err| {
+            job.err = err;
+            self.reporter.report(self.io, task_id, 4, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+            return;
+        };
+        self.reporter.report(self.io, task_id, 4, "completed", task_label, .{
+            .package = pkg.name,
+            .version = pkg.version,
+            .resolver = "rocks",
+        });
+    }
+
+    fn materializePreparedJob(
+        self: *RocksPool,
+        idx: usize,
+        source: *moonstone.resolution.sources.luarocks.PreparedRock,
+    ) !moonstone.resolution.candidate.ResolvedArtifact {
+        const job = &self.jobs[idx];
+        var scoped_environment: ?moonstone.project.build_scope.BuildScope = null;
+        defer if (scoped_environment) |*scope| scope.deinit();
+
+        var options = self.options;
+        var build_artifacts = std.ArrayList(moonstone.resolution.options.BuildArtifact).empty;
+        defer build_artifacts.deinit(self.allocator);
+        var roots = std.ArrayList(moonstone.project.build_scope.ArtifactRoot).empty;
+        defer roots.deinit(self.allocator);
+        var owned_root_paths = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_root_paths.items) |path| self.allocator.free(path);
+            owned_root_paths.deinit(self.allocator);
+        }
+
+        var build_env = self.env;
+        if (job.build_dependency_names.len > 0) {
+            const closure = try self.buildClosure(idx);
+            defer closure.deinit(self.allocator);
+            for (closure.items) |dependency_name| {
+                const dependency = self.buildArtifactFor(dependency_name) orelse return error.BuildDependencyResolutionMissing;
+                const files_path = try std.fs.path.join(self.allocator, &.{ dependency.artifact_path, "files" });
+                try owned_root_paths.append(self.allocator, files_path);
+                try roots.append(self.allocator, .{ .files_path = files_path });
+                try build_artifacts.append(self.allocator, .{
+                    .name = dependency.name,
+                    .artifact_hash = dependency.artifact_hash,
+                });
+            }
+
+            const runtime_path = options.runtime_path orelse return error.RuntimePathRequired;
+            const runtime_files_path = try std.fs.path.join(self.allocator, &.{ runtime_path, "files" });
+            try owned_root_paths.append(self.allocator, runtime_files_path);
+            try roots.append(self.allocator, .{ .files_path = runtime_files_path });
+
+            var runtime_buf: [8]u8 = undefined;
+            const lua_ver_dot = moonstone.resolution.options.normalizeRuntimeAbi(options.runtime orelse "lua54", &runtime_buf);
+            scoped_environment = try moonstone.project.build_scope.project(self.allocator, self.io, self.env, roots.items, lua_ver_dot);
+            build_env = &scoped_environment.?.env_map;
+            options.build_artifacts = build_artifacts.items;
+        }
+
+        return moonstone.resolution.sources.luarocks.materialize_prepared_rock(
+            self.allocator,
+            self.io,
+            job.pkg.name,
+            source.parsed_rockspec.value.version,
+            options,
+            build_env,
+            job.pkg.origin.luarocks.url,
+            job.pkg.registry_name,
+            source,
+        );
+    }
+
+    fn findJob(self: *RocksPool, name: []const u8) ?usize {
+        for (self.jobs, 0..) |job, index| {
+            if (std.ascii.eqlIgnoreCase(job.pkg.name, name)) return index;
+        }
+        return null;
+    }
+
+    const BuildClosure = struct {
+        items: []const []const u8,
+
+        fn deinit(self: BuildClosure, allocator: std.mem.Allocator) void {
+            for (self.items) |name| allocator.free(name);
+            allocator.free(self.items);
+        }
+    };
+
+    fn buildClosure(self: *RocksPool, idx: usize) !BuildClosure {
+        var queue = std.ArrayList([]const u8).empty;
+        defer queue.deinit(self.allocator);
+        var closure = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (closure.items) |name| self.allocator.free(name);
+            closure.deinit(self.allocator);
+        }
+
+        for (self.jobs[idx].build_dependency_names) |name| {
+            try queue.append(self.allocator, name);
+        }
+        var cursor: usize = 0;
+        while (cursor < queue.items.len) : (cursor += 1) {
+            const name = queue.items[cursor];
+            var already_present = false;
+            for (closure.items) |present| {
+                if (std.ascii.eqlIgnoreCase(present, name)) {
+                    already_present = true;
                     break;
                 }
-                return err;
+            }
+            if (already_present) continue;
+            try closure.append(self.allocator, try self.allocator.dupe(u8, name));
+
+            if (self.findJob(name)) |dependency_index| {
+                for (self.jobs[dependency_index].scope_dependency_names) |child_name| {
+                    try queue.append(self.allocator, child_name);
+                }
+            }
+        }
+
+        return .{ .items = try closure.toOwnedSlice(self.allocator) };
+    }
+
+    fn buildArtifactFor(self: *RocksPool, name: []const u8) ?BuildArtifactLocation {
+        if (self.findJob(name)) |index| {
+            const job = &self.jobs[index];
+            if (job.result) |*result| if (result.local_path) |path| {
+                return .{ .name = result.name, .artifact_hash = result.artifact_hash, .artifact_path = path };
             };
-            spawned += 1;
+            if (job.pkg.local_path) |path| {
+                return .{ .name = job.pkg.name, .artifact_hash = job.pkg.artifact_hash, .artifact_path = path };
+            }
         }
-        // Join all spawned threads.
-        for (0..spawned) |i| {
-            threads[i].join();
+        for (self.downloaded) |download| {
+            if (!std.ascii.eqlIgnoreCase(download.pkg.name, name)) continue;
+            if (download.result) |result| {
+                return .{ .name = download.pkg.name, .artifact_hash = result.artifact_hash, .artifact_path = result.path };
+            }
         }
-        // Any jobs not picked up (shouldn't happen, but just in case).
-        // The workers loop until next >= jobs.len, so all jobs are processed.
+        if (self.selected) |selected| {
+            var iterator = selected.iterator();
+            while (iterator.next()) |entry| {
+                if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) if (entry.value_ptr.local_path) |path| {
+                    return .{ .name = entry.value_ptr.name, .artifact_hash = entry.value_ptr.artifact_hash, .artifact_path = path };
+                };
+            }
+        }
+        return null;
+    }
+
+    fn selectMaterializationLeaders(self: *RocksPool) !void {
+        for (self.jobs, 0..) |*job, index| {
+            if (job.prepared == null) continue;
+            const source = switch (job.prepared.?) {
+                .source => |*value| value,
+                .binary => unreachable,
+            };
+            if (source.recipeKey()) |recipe_key| {
+                job.materialization_leader = switch (try self.request_coordinator.claim(recipe_key, index)) {
+                    .leader => index,
+                    .follower => |leader| leader,
+                };
+            } else {
+                job.materialization_leader = index;
+            }
+        }
+
+        for (self.jobs, 0..) |*job, index| {
+            const preparation_leader = job.preparation_leader orelse continue;
+            if (preparation_leader == index) continue;
+
+            const leader = &self.jobs[preparation_leader];
+            if (leader.result) |result| {
+                job.result = try result.clone(self.allocator);
+                continue;
+            }
+            job.materialization_leader = leader.materialization_leader;
+        }
+    }
+
+    fn completeFollowers(self: *RocksPool) !void {
+        for (self.jobs, 0..) |*job, index| {
+            const leader = job.materialization_leader orelse continue;
+            if (leader == index) continue;
+
+            const leader_result = self.jobs[leader].result orelse return error.MaterializationLeaderMissingResult;
+            job.result = try leader_result.clone(self.allocator);
+            if (job.prepared) |*prepared| prepared.deinit(self.allocator);
+            job.prepared = null;
+
+            const pkg = job.pkg.*;
+            var task_buf: [384]u8 = undefined;
+            const task_id = task_protocol.formatId(&task_buf, .realize, self.target, "rocks", pkg.name, pkg.version) catch pkg.name;
+            self.reporter.report(self.io, task_id, 3, "completed", "reused prepared recipe", .{
+                .package = pkg.name,
+                .version = pkg.version,
+                .resolver = "rocks",
+                .reused_recipe = true,
+            });
+        }
+    }
+
+    fn execute(self: *RocksPool, jobs: usize) !void {
+        try self.selectPreparationLeaders();
+
+        var scheduler = moonstone.realization.scheduler.Scheduler{
+            .allocator = self.allocator,
+            .io = self.io,
+            .task_count = self.jobs.len,
+            .context = @ptrCast(self),
+            .run_task = runScheduled,
+            .is_cancelled = isCancelled,
+        };
+        try scheduler.execute(jobs);
+
+        try self.selectMaterializationLeaders();
+        try self.materializeDependencyWaves(jobs);
+        try self.completeFollowers();
+    }
+
+    const MaterializationWave = struct {
+        pool: *RocksPool,
+        indexes: []const usize,
+    };
+
+    /// Materialize each dependency-ready wave concurrently. The previous
+    /// implementation switched the entire pool to a serial recursive walk as
+    /// soon as any Rock declared build dependencies, which made unrelated
+    /// source Rocks wait behind that one graph.
+    fn materializeDependencyWaves(self: *RocksPool, jobs: usize) !void {
+        var pending = try self.allocator.alloc(bool, self.jobs.len);
+        defer self.allocator.free(pending);
+        @memset(pending, true);
+
+        while (true) {
+            var ready = std.ArrayList(usize).empty;
+            defer ready.deinit(self.allocator);
+            var remaining: usize = 0;
+
+            for (self.jobs, 0..) |*job, index| {
+                if (!pending[index]) continue;
+
+                if (job.result != null) {
+                    pending[index] = false;
+                    continue;
+                }
+
+                const leader = job.materialization_leader orelse index;
+                if (leader != index) {
+                    pending[index] = false;
+                    continue;
+                }
+
+                remaining += 1;
+                if (job.prepared == null) return error.MaterializationPreparationMissing;
+                if (try self.materializationDependenciesReady(index)) {
+                    try ready.append(self.allocator, index);
+                }
+            }
+
+            if (remaining == 0) break;
+            if (ready.items.len == 0) return error.LuaRocksBuildDependencyCycle;
+
+            var wave = MaterializationWave{ .pool = self, .indexes = ready.items };
+            var scheduler = moonstone.realization.scheduler.Scheduler{
+                .allocator = self.allocator,
+                .io = self.io,
+                .task_count = wave.indexes.len,
+                .context = @ptrCast(&wave),
+                .run_task = runMaterializationWaveScheduled,
+                .is_cancelled = isMaterializationWaveCancelled,
+            };
+            try scheduler.execute(jobs);
+
+            for (ready.items) |index| {
+                if (self.jobs[index].err) |err| return err;
+                pending[index] = false;
+            }
+        }
+    }
+
+    fn materializationDependenciesReady(self: *RocksPool, idx: usize) !bool {
+        for (self.jobs[idx].scope_dependency_names) |dependency_name| {
+            if (self.findJob(dependency_name)) |dependency_index| {
+                const leader = self.jobs[dependency_index].materialization_leader orelse dependency_index;
+                if (self.jobs[leader].result == null) return false;
+            } else if (self.buildArtifactFor(dependency_name) == null) {
+                return error.BuildDependencyResolutionMissing;
+            }
+        }
+        return true;
+    }
+
+    fn runScheduled(context: *anyopaque, task_index: usize) !void {
+        const self: *RocksPool = @ptrCast(@alignCast(context));
+        self.prepareJob(task_index);
+        if (self.jobs[task_index].err) |err| return err;
+    }
+
+    fn runMaterializationWaveScheduled(context: *anyopaque, task_index: usize) !void {
+        const wave: *MaterializationWave = @ptrCast(@alignCast(context));
+        const job_index = wave.indexes[task_index];
+        wave.pool.materializeJob(job_index);
+        if (wave.pool.jobs[job_index].err) |err| return err;
+    }
+
+    fn isMaterializationWaveCancelled(context: *anyopaque) bool {
+        const wave: *MaterializationWave = @ptrCast(@alignCast(context));
+        return if (wave.pool.wctx) |wctx| wctx.isCancelled() else false;
+    }
+
+    fn isCancelled(context: *anyopaque) bool {
+        const self: *RocksPool = @ptrCast(@alignCast(context));
+        return if (self.wctx) |wctx| wctx.isCancelled() else false;
+    }
+};
+
+/// Lock replay cannot share the solver's RegistryProvider between workers: it
+/// owns an arena and mutable candidate cache. Each task instead opens an
+/// independent SQLite connection and provider over the immutable project
+/// registry/target configuration. Results are merged into the solution only
+/// after all replay tasks finish.
+const LockedReplayPool = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    index_db_path_z: [:0]const u8,
+    registries: []const moonstone.registry.core.ResolvedRegistry,
+    provider_options: moonstone.resolution.options.ResolveOptions,
+    targets: []const moonstone.resolution.solver.term.Term,
+    target: []const u8,
+    jobs: []LockedReplayJob,
+    policy: moonstone.resolution.locked_realizer.ReplayPolicy,
+    wctx: ?*progress_runtime.WorkerContext,
+    reporter: task_protocol.Reporter,
+
+    fn processJob(self: *LockedReplayPool, task_index: usize) void {
+        const job = &self.jobs[task_index];
+        const entry = job.entry;
+        var task_buf: [384]u8 = undefined;
+        const resolver = if (entry.resolver.len > 0) entry.resolver else "locked";
+        const task_id = task_protocol.formatId(&task_buf, .replay, self.target, resolver, entry.name, entry.version) catch entry.name;
+        self.reporter.report(self.io, task_id, 1, "running", task_id, .{
+            .package = entry.name,
+            .version = entry.version,
+            .resolver = resolver,
+        });
+
+        var worker_index = moonstone.store.driver.StoreDriver.init(self.allocator, self.index_db_path_z) catch |err| {
+            job.err = err;
+            return;
+        };
+        defer worker_index.deinit();
+
+        var worker_provider: moonstone.resolution.provider.graph_provider.RegistryProvider = undefined;
+        worker_provider.init(
+            self.allocator,
+            self.io,
+            worker_index,
+            self.registries,
+            self.provider_options,
+            self.env,
+            null,
+            self.targets,
+        );
+        defer worker_provider.deinit();
+
+        const real_res = moonstone.resolution.locked_realizer.ensureLockedArtifact(
+            self.allocator,
+            self.io,
+            self.env,
+            entry,
+            &worker_provider,
+            &worker_index,
+            self.policy,
+        ) catch |err| {
+            job.err = err;
+            self.reporter.report(self.io, task_id, 2, "failed", @errorName(err), .{ .error_name = @errorName(err) });
+            return;
+        };
+        job.result = real_res.candidate;
+        self.reporter.report(self.io, task_id, 2, "completed", task_id, .{
+            .package = entry.name,
+            .version = entry.version,
+            .resolver = resolver,
+        });
+    }
+
+    fn execute(self: *LockedReplayPool, jobs: usize) !void {
+        var scheduler = moonstone.realization.scheduler.Scheduler{
+            .allocator = self.allocator,
+            .io = self.io,
+            .task_count = self.jobs.len,
+            .context = @ptrCast(self),
+            .run_task = runScheduled,
+            .is_cancelled = isCancelled,
+        };
+        try scheduler.execute(jobs);
+    }
+
+    fn runScheduled(context: *anyopaque, task_index: usize) !void {
+        const self: *LockedReplayPool = @ptrCast(@alignCast(context));
+        self.processJob(task_index);
+        if (self.jobs[task_index].err) |err| return err;
+    }
+
+    fn isCancelled(context: *anyopaque) bool {
+        const self: *LockedReplayPool = @ptrCast(@alignCast(context));
+        return if (self.wctx) |wctx| wctx.isCancelled() else false;
     }
 };
 
@@ -478,6 +1255,10 @@ pub const SyncCommand = struct {
     check: bool = false,
     offline: bool = false,
     json: bool = false,
+    quiet: bool = false,
+    target_arg: ?[]const u8 = null,
+    jobs_arg: ?[]const u8 = null,
+    progress_arg: ?[]const u8 = null,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -490,18 +1271,43 @@ pub const SyncCommand = struct {
             \\  --update     Re-resolve dependencies and update moonstone.lock within constraints
             \\  --check      Validate lockfile/env without modifying files
             \\  --offline    Do not connect to remote registries
+            \\  --target <triple>  Resolve and lock a concrete target profile
+            \\  --jobs <N>   Limit concurrent realization workers (default: min(CPUs, 8))
+            \\  --progress <mode>  Human output: auto, fancy, or plain
+            \\  --quiet      Suppress all output; use exit status only
+            \\  --json       Emit moonstone:cli-events:v1 NDJSON on stdout
             \\
         , .{});
     }
 
     pub fn run(self: SyncCommand, ctx: *router.Context) !void {
+        if (self.quiet and (self.json or self.progress_arg != null)) return error.InvalidOutputMode;
+        if (self.json and self.progress_arg != null) return error.InvalidOutputMode;
+        if (self.jobs_arg) |jobs_arg| {
+            const jobs = std.fmt.parseUnsigned(usize, jobs_arg, 10) catch return error.InvalidJobs;
+            if (jobs == 0) return error.InvalidJobs;
+        }
+        if (self.progress_arg) |mode| {
+            if (!std.mem.eql(u8, mode, "auto") and !std.mem.eql(u8, mode, "fancy") and !std.mem.eql(u8, mode, "plain")) {
+                return error.InvalidOutputMode;
+            }
+        }
+
         // JSON mode: run synchronously with direct stdout (emitter handles output).
         // Non-JSON mode: run on a worker thread with the progress UI on the main thread.
         if (self.json) {
             return self.runImpl(ctx, .{ .direct = ctx.stdout });
         }
+        if (self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) {
+            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+        }
 
-        if (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null) {
+        if (self.quiet) {
+            return self.runImpl(ctx, .silent);
+        }
+
+        const force_fancy = self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "fancy");
+        if (!force_fancy and (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null)) {
             return self.runImpl(ctx, .{ .direct = ctx.stderr });
         }
 
@@ -520,8 +1326,9 @@ pub const SyncCommand = struct {
         const stdout = ctx.stdout;
         const env = ctx.env;
         const started_ns = nowNs(io);
+        const jobs = try materializationJobs(self.jobs_arg);
 
-        var stderr_silencer = try JsonStderrSilencer.init(io, self.json);
+        var stderr_silencer = try JsonStderrSilencer.init(io, self.json or self.quiet);
         defer stderr_silencer.deinit();
         profiler.mark("sync.begin");
 
@@ -606,30 +1413,51 @@ pub const SyncCommand = struct {
             .stdout = stdout,
             .emitter = emitter,
         };
+        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
 
         // Callback routing: direct mode uses the existing render callbacks,
         // queue mode sends events through the WorkerContext.
         const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
-            .direct => @import("command.zig").onResolveEvent,
+            .direct => if (plain_progress) null else @import("command.zig").onResolveEvent,
             .queue => progress_runtime.onResolveEventProgress,
+            .silent => null,
         };
         const on_resolve_ctx: ?*anyopaque = switch (backend) {
-            .direct => @ptrCast(&resolve_cb_ctx),
+            .direct => if (plain_progress) null else @ptrCast(&resolve_cb_ctx),
             .queue => @ptrCast(backend.queue),
+            .silent => null,
         };
         const on_solver_cb: ?moonstone.resolution.solver.report.SolverCallback = switch (backend) {
             .direct => @import("command.zig").onSolverEvent,
             .queue => progress_runtime.onSolverEventProgress,
+            .silent => null,
         };
         const on_solver_ctx: ?*anyopaque = switch (backend) {
             .direct => @ptrCast(&resolve_cb_ctx),
             .queue => @ptrCast(backend.queue),
+            .silent => null,
+        };
+        const plain_task_writer: ?*std.Io.Writer = if (plain_progress) switch (backend) {
+            .direct => |writer| writer,
+            .queue, .silent => null,
+        } else null;
+        var plain_task_mutex: std.Io.Mutex = .init;
+        const task_reporter = task_protocol.Reporter{
+            .emitter = emitter,
+            .wctx = switch (backend) {
+                .direct => null,
+                .queue => |worker| worker,
+                .silent => null,
+            },
+            .plain_writer = plain_task_writer,
+            .plain_mutex = if (plain_task_writer != null) &plain_task_mutex else null,
         };
 
         // Helper to check for user cancellation (Ctrl-C) in queue mode.
         const cancelled = switch (backend) {
             .direct => false,
             .queue => |w| w.isCancelled(),
+            .silent => false,
         };
         if (cancelled) return error.Cancelled;
 
@@ -637,6 +1465,33 @@ pub const SyncCommand = struct {
         const resolve_started_ns = nowNs(io);
         const pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName());
         const pkg_ver = mt.runtimeConstraint();
+        const host_target = try moonstone.platform.target.hostTarget(allocator);
+        defer allocator.free(host_target);
+        const lock_target = if (self.target_arg) |target| try allocator.dupe(u8, target) else try allocator.dupe(u8, host_target);
+        defer allocator.free(lock_target);
+        moonstone.platform.target.validate(lock_target) catch return error.UnsupportedTarget;
+        const target_is_host = std.mem.eql(u8, lock_target, host_target);
+
+        // Rockspec resolution itself may execute Lua tooling. Until the
+        // LuaRocks pipeline owns a target-native interpreter/toolchain, reject
+        // it before runtime resolution rather than accidentally running a
+        // foreign executable on the host.
+        if (!target_is_host) {
+            for (mt.dependencies.items) |dep| {
+                const raw_spec = try dep.toSpecString(allocator);
+                defer allocator.free(raw_spec);
+                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
+                defer spec.deinit(allocator);
+                if (try resolverForPackageSpec(&mt, spec) == .rocks) {
+                    moonstone.diagnostics.error_context.setFmt(
+                        allocator,
+                        "LuaRocks resolution is host-executed and cannot create foreign target `{s}` profiles yet. Use a target-specific Moonstone registry artifact or remove the rocks dependency from this target closure.",
+                        .{lock_target},
+                    );
+                    return error.ForeignTargetSourceUnsupported;
+                }
+            }
+        }
 
         if (!self.json) backend.phase("Resolving runtime {s}@{s}...", .{ pkg_name, pkg_ver });
 
@@ -647,6 +1502,7 @@ pub const SyncCommand = struct {
             .on_event_context = on_resolve_ctx,
             .offline = self.offline,
             .build_env = build_env,
+            .target = lock_target,
         }, env);
         profiler.span("sync.runtime.resolve", profile_span);
         defer rt_res.deinit(allocator);
@@ -676,13 +1532,26 @@ pub const SyncCommand = struct {
                 .artifact_hash = try allocator.dupe(u8, rt_res.artifact_hash),
             },
             .remote => switch (rt_res.origin) {
-                .moonstone_registry => |r| try mat.materialize_remote(
-                    r.url,
-                    r.token,
-                    r.descriptor_path,
-                    rt_res.remote_desc.?,
-                    r.artifact_idx,
-                ),
+                .moonstone_registry => |r| blk: {
+                    const materialized = mat.materialize_remote(
+                        r.url,
+                        r.token,
+                        r.descriptor_path,
+                        rt_res.remote_desc.?,
+                        r.artifact_idx,
+                    ) catch |err| {
+                        if (!target_is_host) {
+                            moonstone.diagnostics.error_context.setFmt(
+                                allocator,
+                                "Target `{s}` needs a compatible runtime artifact for {s}@{s}. The selected registry artifact could not be materialized ({s}); publish or configure that target runtime before syncing this profile.",
+                                .{ lock_target, rt_res.name, rt_res.version, @errorName(err) },
+                            );
+                            return error.ForeignTargetRuntimeUnavailable;
+                        }
+                        return err;
+                    };
+                    break :blk materialized;
+                },
                 else => return error.UnsupportedOriginForRuntime,
             },
         };
@@ -744,7 +1613,6 @@ pub const SyncCommand = struct {
 
         mat.runtime_path = rt_mat_res.path;
         const runtime_c_api = moonstone.runtime.c_api.fromRuntime(rt_res.name, rt_res.lua_api, active_lua_abi);
-
         const rt_recipe_options = moonstone.store.facade.RecipeOptions{
             .kind = @tagName(rt_res.kind),
             .name = rt_res.name,
@@ -753,7 +1621,7 @@ pub const SyncCommand = struct {
             .materializer = if (rt_res.remote_desc) |rd| (if (rd.artifact[0].materialize) |m| m.kind else "prebuilt") else "prebuilt",
             .strategy = if (rt_res.remote_desc) |rd| (if (rd.artifact[0].materialize) |m| m.strategy orelse "default" else "local") else "local",
             .lua_abi = active_lua_abi,
-            .target = "native",
+            .target = lock_target,
         };
 
         profile_span = profiler.now();
@@ -810,6 +1678,7 @@ pub const SyncCommand = struct {
             .runtime_artifact_hash = rt_res.artifact_hash,
             .runtime_path = rt_mat_res.path,
             .build_env = build_env,
+            .target = lock_target,
         }, env, null, targets.items);
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
@@ -842,6 +1711,24 @@ pub const SyncCommand = struct {
         };
         defer existing_lock.deinit();
 
+        // v3 locks carry multiple target profiles. Select only the requested
+        // target/runtime/ABI closure; legacy flat locks are migration input and
+        // must be refreshed before they can be replayed normally.
+        var replay_entries = std.ArrayList(*const moonstone.domain.lockfile.LockEntry).empty;
+        defer replay_entries.deinit(allocator);
+        const selected_profile = if (existing_lock.version == 3)
+            existing_lock.findExactProfile(lock_target, rt_res.name, active_lua_abi)
+        else
+            null;
+        if (selected_profile) |profile| {
+            for (profile.packages) |reference| {
+                const realization = existing_lock.findRealization(reference.realization_hash) orelse return error.LockfileOutOfSync;
+                try replay_entries.append(allocator, realization);
+            }
+        } else if (existing_lock.version == 2) {
+            for (existing_lock.packages.items) |*entry| try replay_entries.append(allocator, entry);
+        }
+
         var solution: std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact) = .empty;
         defer {
             var sit = solution.iterator();
@@ -852,13 +1739,43 @@ pub const SyncCommand = struct {
             solution.deinit(allocator);
         }
 
-        const lock_runtime_matches = lockedRuntimeMatches(&existing_lock, rt_res.name, rt_res.version, active_lua_abi);
-        const lock_deps_match = lockedDependenciesMatch(mt.dependencies.items, &existing_lock);
+        const lock_runtime_matches = lockedEntriesRuntimeMatch(replay_entries.items, rt_res.name, rt_res.version, active_lua_abi);
+        const lock_deps_match = lockedEntriesDependenciesMatch(mt.dependencies.items, replay_entries.items);
+        const lock_target_state = lockReplayEntriesTargetState(replay_entries.items, lock_target);
+        if (self.locked) {
+            if (existing_lock.version == 3 and selected_profile == null) {
+                moonstone.diagnostics.error_context.setFmt(
+                    allocator,
+                    "moonstone.lock has no profile for target `{s}`, runtime `{s}`, and Lua ABI `{s}`. Run `moon sync --target {s}` first.",
+                    .{ lock_target, rt_res.name, active_lua_abi, lock_target },
+                );
+                return error.LockedProfileMissing;
+            }
+            switch (lock_target_state) {
+                .compatible => {},
+                .legacy_native => {
+                    moonstone.diagnostics.error_context.setFmt(
+                        allocator,
+                        "moonstone.lock uses the legacy target `native`. Run `moon sync --update` to record the concrete host target `{s}` before using `--locked`.",
+                        .{lock_target},
+                    );
+                    return error.LegacyNativeLockTarget;
+                },
+                .incompatible => {
+                    moonstone.diagnostics.error_context.setFmt(
+                        allocator,
+                        "moonstone.lock targets a different host realization. Run `moon sync --update` on `{s}` to create its concrete target profile.",
+                        .{lock_target},
+                    );
+                    return error.LockedTargetIncompatible;
+                },
+            }
+        }
         if (!self.update and existing_lock.packages.items.len > 0 and (!lock_runtime_matches or !lock_deps_match)) {
             if (!lock_runtime_matches) profiler.mark("sync.lock.replay.skip.runtime_mismatch");
             if (!lock_deps_match) profiler.mark("sync.lock.replay.skip.dependencies_changed");
         }
-        const can_replay_lock = !self.update and existing_lock.packages.items.len > 0 and lock_runtime_matches and lock_deps_match;
+        const can_replay_lock = !self.update and existing_lock.version == 3 and selected_profile != null and replay_entries.items.len > 0 and lock_runtime_matches and lock_deps_match and lock_target_state == .compatible;
         const replay_lock = self.locked or can_replay_lock;
 
         if (replay_lock) {
@@ -866,13 +1783,18 @@ pub const SyncCommand = struct {
             // This is the default fast path; use --update to ask PubGrub for the newest
             // versions allowed by moonstone.toml constraints.
             if (emitter) |e| {
-                try e.emit(io, .STATUS, name, "resolution.locked_replay", .{ .packages = existing_lock.packages.items.len });
+                try e.emit(io, .STATUS, name, "resolution.locked_replay", .{ .packages = replay_entries.items.len });
             } else {
-                backend.phase("Replaying lockfile ({d} package{s})...", .{ existing_lock.packages.items.len, if (existing_lock.packages.items.len == 1) "" else "s" });
+                backend.phase("Replaying target profile ({d} package{s})...", .{ replay_entries.items.len, if (replay_entries.items.len == 1) "" else "s" });
             }
 
             profile_span = profiler.now();
-            for (existing_lock.packages.items) |entry| {
+            var locked_replay_jobs = std.ArrayList(LockedReplayJob).empty;
+            defer {
+                for (locked_replay_jobs.items) |*job| job.deinit(allocator);
+                locked_replay_jobs.deinit(allocator);
+            }
+            for (replay_entries.items) |entry| {
                 const is_link = std.mem.eql(u8, entry.artifact_hash, "link");
                 const is_path = std.mem.eql(u8, entry.artifact_hash, "path");
 
@@ -898,21 +1820,42 @@ pub const SyncCommand = struct {
                     continue;
                 }
 
-                const replay_policy = moonstone.resolution.locked_realizer.ReplayPolicy{
-                    .offline = self.offline,
-                    .allow_remote_artifacts = true,
-                    .allow_source_rematerialization = true,
-                };
+                try locked_replay_jobs.append(allocator, .{ .entry = entry });
+            }
 
-                var real_res = moonstone.resolution.locked_realizer.ensureLockedArtifact(
-                    allocator,
-                    io,
-                    env,
-                    &entry,
-                    provider_impl,
-                    &idx,
-                    replay_policy,
-                ) catch |err| {
+            if (locked_replay_jobs.items.len > 0) {
+                var mutex_alloc = MutexAllocator{
+                    .parent = allocator,
+                    .io = io,
+                };
+                var pool = LockedReplayPool{
+                    .allocator = mutex_alloc.allocator(),
+                    .io = io,
+                    .env = env,
+                    .index_db_path_z = index_db_path_z,
+                    .registries = registries,
+                    .provider_options = provider_impl.options,
+                    .targets = targets.items,
+                    .target = lock_target,
+                    .jobs = locked_replay_jobs.items,
+                    .policy = .{
+                        .offline = self.offline,
+                        .allow_remote_artifacts = true,
+                        .allow_source_rematerialization = true,
+                    },
+                    .wctx = switch (backend) {
+                        .direct => null,
+                        .queue => |w| w,
+                        .silent => null,
+                    },
+                    .reporter = task_reporter,
+                };
+                try pool.execute(jobs);
+            }
+
+            for (locked_replay_jobs.items) |*job| {
+                if (job.err) |err| {
+                    const entry = job.entry;
                     if (err == error.LockedArtifactMissing) {
                         if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
                         ctx.error_detail = .{
@@ -925,13 +1868,14 @@ pub const SyncCommand = struct {
                         };
                     }
                     return err;
-                };
-                defer real_res.deinit(allocator);
+                }
 
-                try solution.put(allocator, try allocator.dupe(u8, entry.name), try real_res.candidate.clone(allocator));
+                const candidate = job.result orelse return error.LockedReplayMissingResult;
+                try solution.put(allocator, try allocator.dupe(u8, job.entry.name), candidate);
+                job.result = null;
             }
 
-            report.requested_targets = existing_lock.packages.items.len;
+            report.requested_targets = replay_entries.items.len;
             report.resolved_packages = solution.count();
             report.resolve_ms = elapsedMs(io, resolve_started_ns);
             profiler.spanCount("sync.lock.replay", profile_span, "packages", solution.count());
@@ -943,7 +1887,7 @@ pub const SyncCommand = struct {
                 });
             }
         } else {
-            if (existing_lock.packages.items.len > 0 and !lock_deps_match and !self.json) {
+            if (replay_entries.items.len > 0 and !lock_deps_match and !self.json) {
                 backend.phase("moonstone.toml changed; resolving a new lockfile...", .{});
             } else if (self.update and !self.json) {
                 backend.phase("Updating lockfile within declared constraints...", .{});
@@ -1020,7 +1964,11 @@ pub const SyncCommand = struct {
                 const selected_resolver = try resolverForPackageSpec(&mt, spec);
                 const dep_name = if (selected_resolver == .rocks) spec.name else dep.name;
 
-                const force_direct = spec.resolver != null or spec.registry != null;
+                // LuaRocks source candidates must remain in the post-solve
+                // realization pool so their build-only closure can be
+                // materialized and projected before the parent build. Other
+                // explicit resolvers retain the legacy direct path below.
+                const force_direct = selected_resolver != .rocks and (spec.resolver != null or spec.registry != null);
                 if (solutionContainsPackage(&solution, dep_name) and !force_direct) continue;
 
                 var resolved_direct_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
@@ -1028,7 +1976,7 @@ pub const SyncCommand = struct {
                     .path, .link, .artifact => spec.name,
                     else => dep_name,
                 };
-                if (selected_resolver != .moonstone) {
+                if (selected_resolver != .moonstone and selected_resolver != .rocks) {
                     resolved_direct_opt = blk: {
                         break :blk coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
                             .offline = self.offline,
@@ -1041,6 +1989,7 @@ pub const SyncCommand = struct {
                             .on_event_context = on_resolve_ctx,
                             .build_env = build_env,
                         }, selected_resolver, env, spec.registry) catch |err| {
+                            if (err == error.UnsupportedLuaRocksBuildType and (spec.resolver != null or spec.registry != null)) return err;
                             if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) break :blk null;
                             return err;
                         };
@@ -1312,12 +2261,16 @@ pub const SyncCommand = struct {
         }
 
         // Step 2: Build dependency graph from resolved packages
-        var dep_graph = std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)).empty;
+        const DependencyGraphEdge = struct {
+            name: []const u8,
+            role: moonstone.domain.manifest.DependencyRole,
+        };
+        var dep_graph = std.StringArrayHashMapUnmanaged(std.ArrayList(DependencyGraphEdge)).empty;
         defer {
             var dit = dep_graph.iterator();
             while (dit.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
-                for (entry.value_ptr.items) |d| allocator.free(d);
+                for (entry.value_ptr.items) |edge| allocator.free(edge.name);
                 entry.value_ptr.deinit(allocator);
             }
             dep_graph.deinit(allocator);
@@ -1330,16 +2283,19 @@ pub const SyncCommand = struct {
                 const pkg = entry.value_ptr.*;
 
                 const deps = deps_blk: {
-                    var deps = std.ArrayList([]const u8).empty;
+                    var deps = std.ArrayList(DependencyGraphEdge).empty;
                     errdefer {
-                        for (deps.items) |d| allocator.free(d);
+                        for (deps.items) |edge| allocator.free(edge.name);
                         deps.deinit(allocator);
                     }
 
                     if (pkg.remote_desc) |desc| {
                         for (desc.dependencies) |dep| {
                             const dep_name = dep.name;
-                            try deps.append(allocator, try allocator.dupe(u8, dep_name));
+                            try deps.append(allocator, .{
+                                .name = try allocator.dupe(u8, dep_name),
+                                .role = dep.role,
+                            });
                         }
                     } else if (pkg.local_path) |lp| {
                         if (std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path")) {
@@ -1362,7 +2318,10 @@ pub const SyncCommand = struct {
                                     defer dspec.deinit(allocator);
                                     const selected_resolver = try resolverForPackageSpec(&mt, dspec);
                                     const dname = if (selected_resolver == .rocks) dspec.name else dep.name;
-                                    try deps.append(allocator, try allocator.dupe(u8, dname));
+                                    try deps.append(allocator, .{
+                                        .name = try allocator.dupe(u8, dname),
+                                        .role = dep.role,
+                                    });
                                 }
                             }
                         } else {
@@ -1379,7 +2338,10 @@ pub const SyncCommand = struct {
                                 var sm = try moonstone.domain.manifest.StoreManifest.parse(allocator, c);
                                 defer sm.deinit(allocator);
                                 for (sm.dependencies) |dep| {
-                                    try deps.append(allocator, try allocator.dupe(u8, dep.name));
+                                    try deps.append(allocator, .{
+                                        .name = try allocator.dupe(u8, dep.name),
+                                        .role = dep.role,
+                                    });
                                 }
                             }
                         }
@@ -1393,6 +2355,22 @@ pub const SyncCommand = struct {
                 }
                 gop.value_ptr.* = deps;
             }
+        }
+
+        // Source LuaRocks candidates are still remote at this point, so their
+        // manifest cannot yet provide edges above. Preserve the role-aware
+        // metadata captured by the graph provider during PubGrub discovery.
+        for (provider_impl.store_dependency_origins.items) |origin| {
+            if (!solutionContainsPackage(&solution, origin.parent_name) or !solutionContainsPackage(&solution, origin.child_name)) continue;
+            const gop = try dep_graph.getOrPut(allocator, origin.parent_name);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = try allocator.dupe(u8, origin.parent_name);
+                gop.value_ptr.* = std.ArrayList(DependencyGraphEdge).empty;
+            }
+            try gop.value_ptr.append(allocator, .{
+                .name = try allocator.dupe(u8, origin.child_name),
+                .role = origin.child_role,
+            });
         }
 
         // Step 3: Propagate groups via BFS
@@ -1438,10 +2416,12 @@ pub const SyncCommand = struct {
                 try group_ctx.addGroup(current.name, current.group);
 
                 if (dep_graph.get(current.name)) |children| {
-                    for (children.items) |child| {
+                    for (children.items) |edge| {
+                        const parent_role = moonstone.domain.manifest.parseDependencyRole(current.group) catch return error.InvalidDependencyRole;
+                        const child_role = if (edge.role == .runtime) parent_role else edge.role;
                         try queue.append(allocator, .{
-                            .name = try allocator.dupe(u8, child),
-                            .group = try allocator.dupe(u8, current.group),
+                            .name = try allocator.dupe(u8, edge.name),
+                            .group = try allocator.dupe(u8, @tagName(child_role)),
                         });
                     }
                 }
@@ -1461,6 +2441,7 @@ pub const SyncCommand = struct {
         if (switch (backend) {
             .direct => false,
             .queue => |w| w.isCancelled(),
+            .silent => false,
         }) return error.Cancelled;
 
         // ── Phase 1: Parallel download + materialize remote packages ───────
@@ -1468,6 +2449,11 @@ pub const SyncCommand = struct {
         defer download_jobs.deinit(allocator);
         var job_map = std.StringHashMap(usize).init(allocator);
         defer job_map.deinit();
+        var rocks_jobs = std.ArrayList(RocksJob).empty;
+        defer {
+            for (rocks_jobs.items) |*job| job.deinit(allocator);
+            rocks_jobs.deinit(allocator);
+        }
 
         {
             var prescan = solution.iterator();
@@ -1476,30 +2462,88 @@ pub const SyncCommand = struct {
                 if (p.location == .remote and p.origin == .moonstone_registry) {
                     try download_jobs.append(allocator, .{ .pkg = entry.value_ptr });
                     try job_map.put(try allocator.dupe(u8, entry.key_ptr.*), download_jobs.items.len - 1);
+                } else if (p.location == .remote and p.origin == .luarocks) {
+                    var job = RocksJob{ .pkg = entry.value_ptr };
+                    job.build_dependency_names = try collectSolvedRocksDependencyNames(
+                        allocator,
+                        provider_impl.store_dependency_origins.items,
+                        &solution,
+                        p.name,
+                        false,
+                    );
+                    errdefer {
+                        for (job.build_dependency_names) |dependency_name| allocator.free(dependency_name);
+                        if (job.build_dependency_names.len > 0) allocator.free(job.build_dependency_names);
+                    }
+                    job.scope_dependency_names = try collectSolvedRocksDependencyNames(
+                        allocator,
+                        provider_impl.store_dependency_origins.items,
+                        &solution,
+                        p.name,
+                        true,
+                    );
+                    try rocks_jobs.append(allocator, job);
                 }
             }
         }
 
-        if (download_jobs.items.len > 0) {
+        if (download_jobs.items.len > 0 or rocks_jobs.items.len > 0) {
             var mutex_alloc = MutexAllocator{
                 .parent = allocator,
                 .io = io,
             };
             const safe_allocator = mutex_alloc.allocator();
-            var pool = DownloadPool{
-                .allocator = safe_allocator,
-                .io = io,
-                .env = env,
-                .jobs = download_jobs.items,
-                .runtime_path = rt_mat_res.path,
-                .wctx = switch (backend) {
-                    .direct => null,
-                    .queue => |w| w,
-                },
-                .on_resolve_cb = on_resolve_cb,
-                .on_resolve_ctx = on_resolve_ctx,
-            };
-            try pool.execute(4);
+            if (download_jobs.items.len > 0) {
+                var pool = DownloadPool{
+                    .allocator = safe_allocator,
+                    .io = io,
+                    .env = env,
+                    .jobs = download_jobs.items,
+                    .target = lock_target,
+                    .runtime_path = rt_mat_res.path,
+                    .wctx = switch (backend) {
+                        .direct => null,
+                        .queue => |w| w,
+                        .silent => null,
+                    },
+                    .reporter = task_reporter,
+                    .on_resolve_cb = on_resolve_cb,
+                    .on_resolve_ctx = on_resolve_ctx,
+                };
+                try pool.execute(jobs);
+            }
+            if (rocks_jobs.items.len > 0) {
+                var pool = RocksPool{
+                    .allocator = safe_allocator,
+                    .io = io,
+                    .env = env,
+                    .jobs = rocks_jobs.items,
+                    .selected = &solution,
+                    .downloaded = download_jobs.items,
+                    .target = lock_target,
+                    .options = .{
+                        .on_event = on_resolve_cb,
+                        .on_event_context = on_resolve_ctx,
+                        .offline = self.offline,
+                        .runtime = active_lua_abi,
+                        .runtime_c_api = runtime_c_api,
+                        .runtime_artifact_hash = rt_res.artifact_hash,
+                        .runtime_path = rt_mat_res.path,
+                        .build_env = build_env,
+                        .target = lock_target,
+                    },
+                    .wctx = switch (backend) {
+                        .direct => null,
+                        .queue => |w| w,
+                        .silent => null,
+                    },
+                    .reporter = task_reporter,
+                    .preparation_coordinator = moonstone.realization.request_coordinator.RequestCoordinator.init(safe_allocator),
+                    .request_coordinator = moonstone.realization.request_coordinator.RequestCoordinator.init(safe_allocator),
+                };
+                defer pool.deinit();
+                try pool.execute(jobs);
+            }
         }
 
         // Check for download errors before proceeding to serial phase.
@@ -1510,6 +2554,19 @@ pub const SyncCommand = struct {
                     ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Failed to materialize {s}: {s}", .{ dj.pkg.name, @errorName(err) }) } };
                 }
                 return err;
+            }
+        }
+        for (rocks_jobs.items) |*job| {
+            if (job.err) |err| {
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "Failed to materialize {s}: {s}", .{ job.pkg.name, @errorName(err) }) } };
+                return err;
+            }
+            if (job.result) |result| {
+                job.pkg.*.deinit(allocator);
+                job.pkg.* = result;
+                job.pkg.*.location = .local_store;
+                job.result = null;
+                report.materializations += 1;
             }
         }
 
@@ -1556,8 +2613,41 @@ pub const SyncCommand = struct {
             try projected_artifacts.append(allocator, try projectedArtifactFromPkg(allocator, &mt, &rt_res, rt_mat_res.path, rt_mat_res.artifact_hash, .runtime));
         }
 
-        var next_lock = moonstone.domain.lockfile.LockFile.init(allocator);
+        // v2 and early v3 locks have a flat realization set without profile
+        // ownership. They are migration input, not a second target closure to
+        // preserve. Once v3 profiles exist, retain all other target profiles.
+        var next_lock = if (existing_lock.version == 3 and existing_lock.profiles.items.len > 0)
+            try existing_lock.clone(allocator)
+        else
+            moonstone.domain.lockfile.LockFile.init(allocator);
         defer next_lock.deinit();
+        const new_realization_start = next_lock.packages.items.len;
+
+        if (!replay_lock) {
+            try next_lock.packages.append(allocator, .{
+                .name = try allocator.dupe(u8, rt_res.name),
+                .version = try allocator.dupe(u8, rt_res.version),
+                .kind = rt_res.kind,
+                .source_hash = if (rt_res.remote_desc) |descriptor| try allocator.dupe(u8, descriptor.artifact[rt_res.artifact_idx orelse 0].hash) else &.{},
+                .recipe_hash = try allocator.dupe(u8, rt_recipe_hash),
+                .artifact_hash = try allocator.dupe(u8, rt_mat_res.artifact_hash),
+                .runtime = try allocator.dupe(u8, rt_res.name),
+                .lua_abi = try allocator.dupe(u8, active_lua_abi),
+                .target = try allocator.dupe(u8, lock_target),
+                .constellation = try allocator.dupe(u8, "default"),
+                .resolver = try allocator.dupe(u8, "moonstone"),
+                .registry = &.{},
+                .source = &.{},
+                .source_kind = try allocator.dupe(u8, "runtime"),
+                .source_payload = &.{},
+                .source_url = &.{},
+                .rockspec = &.{},
+                .rockspec_hash = &.{},
+                .rockspec_payload = &.{},
+                .replay_mode = .artifact_only,
+                .roles = &.{},
+            });
+        }
 
         var sit = solution.iterator();
         var materialize_index: usize = 0;
@@ -1569,6 +2659,23 @@ pub const SyncCommand = struct {
 
             if (!self.json) {
                 backend.status("materialize", "Materializing [{d}/{d}] {s}@{s}...", .{ materialize_index, materialize_total, pkg.name, pkg.version });
+            }
+
+            if (!target_is_host and pkg.local_path != null) {
+                moonstone.diagnostics.error_context.setFmt(
+                    allocator,
+                    "Cannot realize live {s} dependency {s}@{s} for foreign target `{s}`. Use a registry or artifact-backed dependency for cross-target profiles.",
+                    .{ if (std.mem.eql(u8, pkg.artifact_hash, "link")) "link" else "path", pkg.name, pkg.version, lock_target },
+                );
+                return error.ForeignTargetLiveSourceUnsupported;
+            }
+            if (!target_is_host and pkg.origin == .luarocks) {
+                moonstone.diagnostics.error_context.setFmt(
+                    allocator,
+                    "LuaRocks source materialization for {s}@{s} is host-executed and cannot create a foreign target `{s}` yet. Use a target-specific artifact or a Moonstone registry package for this profile.",
+                    .{ pkg.name, pkg.version, lock_target },
+                );
+                return error.ForeignTargetSourceUnsupported;
             }
 
             if (pkg.local_path) |lp| {
@@ -1596,7 +2703,7 @@ pub const SyncCommand = struct {
                         .artifact_hash = try allocator.dupe(u8, pkg.artifact_hash),
                         .runtime = try allocator.dupe(u8, active_lua_abi),
                         .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
-                        .target = try allocator.dupe(u8, "native"),
+                        .target = try allocator.dupe(u8, lock_target),
                         .constellation = try allocator.dupe(u8, "default"),
                         .resolver = try allocator.dupe(u8, if (is_link) "link" else "path"),
                         .registry = try lockRegistryForPackage(allocator, &pkg, &existing_lock),
@@ -1626,10 +2733,17 @@ pub const SyncCommand = struct {
                 if (pkg.artifact_hash.len > 0) {
                     if (std.mem.eql(u8, pkg.name, rt_res.name)) {
                         continue;
-                    } else if (self.locked) {
-                        const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
+                    } else if (replay_lock) {
+                        const lock_entry = findReplayEntry(replay_entries.items, pkg.name) orelse return error.LockfileOutOfSync;
                         if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
-                        if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) return error.LockfileOutOfSync;
+                        if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, pkg.artifact_hash)) {
+                            moonstone.diagnostics.error_context.setFmt(
+                                allocator,
+                                "Locked artifact hash mismatch for {s}@{s}. Expected {s}, but replay produced {s}. Restore the exact artifact or run 'moon sync --update' to create a new lockfile.",
+                                .{ pkg.name, pkg.version, lock_entry.artifact_hash, pkg.artifact_hash },
+                            );
+                            return error.ArtifactHashMismatch;
+                        }
                         if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
                     } else {
                         const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
@@ -1663,7 +2777,7 @@ pub const SyncCommand = struct {
                             .artifact_hash = try allocator.dupe(u8, pkg.artifact_hash),
                             .runtime = try allocator.dupe(u8, active_lua_abi),
                             .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
-                            .target = try allocator.dupe(u8, "native"),
+                            .target = try allocator.dupe(u8, lock_target),
                             .constellation = try allocator.dupe(u8, "default"),
                             .resolver = try allocator.dupe(u8, switch (pkg.origin) {
                                 .luarocks => "rocks",
@@ -1749,10 +2863,17 @@ pub const SyncCommand = struct {
             };
             defer m_res.deinit(allocator);
 
-            if (self.locked) {
-                const lock_entry = existing_lock.find(pkg.name) orelse return error.LockfileOutOfSync;
+            if (replay_lock) {
+                const lock_entry = findReplayEntry(replay_entries.items, pkg.name) orelse return error.LockfileOutOfSync;
                 if (!std.mem.eql(u8, lock_entry.version, pkg.version)) return error.LockfileOutOfSync;
-                if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) return error.LockfileOutOfSync;
+                if (moonstone.resolution.locked_realizer.requiresExactArtifactHash(lock_entry) and !std.mem.eql(u8, lock_entry.artifact_hash, m_res.artifact_hash)) {
+                    moonstone.diagnostics.error_context.setFmt(
+                        allocator,
+                        "Locked artifact hash mismatch for {s}@{s}. Expected {s}, but replay produced {s}. Restore the exact artifact or run 'moon sync --update' to create a new lockfile.",
+                        .{ pkg.name, pkg.version, lock_entry.artifact_hash, m_res.artifact_hash },
+                    );
+                    return error.ArtifactHashMismatch;
+                }
                 if (lock_entry.source_hash.len > 0 and pkg.source_hash.len > 0 and !std.mem.eql(u8, lock_entry.source_hash, pkg.source_hash)) return error.LockfileOutOfSync;
             } else if (!std.mem.eql(u8, pkg.name, rt_res.name)) {
                 const recipe_hash = if (pkg.remote_desc) |rd| rd.artifact[pkg.artifact_idx orelse 0].recipe_hash else "";
@@ -1786,7 +2907,7 @@ pub const SyncCommand = struct {
                     .artifact_hash = try allocator.dupe(u8, m_res.artifact_hash),
                     .runtime = try allocator.dupe(u8, active_lua_abi),
                     .lua_abi = try allocator.dupe(u8, pkg.lua_abi orelse active_lua_abi),
-                    .target = try allocator.dupe(u8, "native"),
+                    .target = try allocator.dupe(u8, lock_target),
                     .constellation = try allocator.dupe(u8, "default"),
                     .resolver = try allocator.dupe(u8, switch (pkg.origin) {
                         .luarocks => "rocks",
@@ -1833,25 +2954,28 @@ pub const SyncCommand = struct {
                 }
             }
         }
-        // Ensure any isolated runtimes required by tool-scope packages are present.
-        try ensureIsolatedRuntimes(
-            allocator,
-            io,
-            stdout,
-            ctx,
-            &solution,
-            &coordinator,
-            idx,
-            registries,
-            &mat,
-            active_lua_abi,
-            self.offline,
-            &report,
-            emitter,
-            backend,
-            on_resolve_cb,
-            on_resolve_ctx,
-        );
+        // Tool runtime scopes and .moonstone/env are host-process concepts.
+        // Foreign targets realize/store closures only in this first slice.
+        if (target_is_host) {
+            try ensureIsolatedRuntimes(
+                allocator,
+                io,
+                stdout,
+                ctx,
+                &solution,
+                &coordinator,
+                idx,
+                registries,
+                &mat,
+                active_lua_abi,
+                self.offline,
+                &report,
+                emitter,
+                backend,
+                on_resolve_cb,
+                on_resolve_ctx,
+            );
+        }
 
         report.materialize_ms = elapsedMs(io, materialize_started_ns);
         profiler.spanCount("sync.materialize", profile_span, "packages", solution.count());
@@ -1866,6 +2990,31 @@ pub const SyncCommand = struct {
         }
 
         if (!replay_lock) {
+            for (next_lock.packages.items[new_realization_start..]) |*entry| {
+                entry.realization_hash = try moonstone.domain.lockfile.computeRealizationHash(allocator, entry.*);
+            }
+            var profile_refs = std.ArrayList(moonstone.domain.resolution_profile.ProfilePackageRef).empty;
+            errdefer {
+                for (profile_refs.items) |reference| reference.deinit(allocator);
+                profile_refs.deinit(allocator);
+            }
+            for (next_lock.packages.items[new_realization_start..]) |entry| {
+                try profile_refs.append(allocator, .{
+                    .package_name = try allocator.dupe(u8, entry.name),
+                    .package_version = try allocator.dupe(u8, entry.version),
+                    .realization_hash = try allocator.dupe(u8, entry.realization_hash),
+                });
+            }
+            const profile_id = try moonstone.domain.resolution_profile.generateProfileId(allocator, lock_target, rt_res.name, active_lua_abi);
+            try next_lock.upsertProfile(.{
+                .id = profile_id,
+                .target = try allocator.dupe(u8, lock_target),
+                .runtime = try allocator.dupe(u8, rt_res.name),
+                .lua_abi = try allocator.dupe(u8, active_lua_abi),
+                .packages = try profile_refs.toOwnedSlice(allocator),
+                .edges = &.{},
+            });
+            try next_lock.validateProfiles();
             var aw = std.Io.Writer.Allocating.init(allocator);
             defer aw.deinit();
             try next_lock.serialize(allocator, &aw.writer);
@@ -1873,6 +3022,16 @@ pub const SyncCommand = struct {
             const lock_file = try std.Io.Dir.cwd().createFile(io, "moonstone.lock", .{});
             defer lock_file.close(io);
             try lock_file.writeStreamingAll(io, aw.written());
+        }
+
+        if (!target_is_host) {
+            report.total_ms = elapsedMs(io, started_ns);
+            if (emitter) |e| {
+                try e.terminate(io, name, "sync.complete", .{ .summary = report, .target = lock_target, .projected = false });
+            } else {
+                backend.phaseDone("Target profile synchronized; host environment was not projected.", .{});
+            }
+            return;
         }
 
         // ── Phase 3: Link environment (serial/finalized) ─────────────────────
@@ -2068,7 +3227,7 @@ fn lockedDependenciesMatch(
     if (deps.len == 0 and lf.packages.items.len > 0) return false;
 
     for (deps) |dep| {
-        const dep_name = dep.name;
+        const dep_name = normalizedLockDependencyName(dep.name);
 
         if (dep.resolver) |r| {
             if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
@@ -2079,6 +3238,37 @@ fn lockedDependenciesMatch(
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }
     return true;
+}
+
+fn findReplayEntry(entries: []const *const moonstone.domain.lockfile.LockEntry, name: []const u8) ?*const moonstone.domain.lockfile.LockEntry {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry;
+    }
+    for (entries) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
+    }
+    return null;
+}
+
+fn lockedEntriesDependenciesMatch(
+    deps: []const moonstone.domain.manifest.StoreDependency,
+    entries: []const *const moonstone.domain.lockfile.LockEntry,
+) bool {
+    if (deps.len == 0 and entries.len > 0) return false;
+    for (deps) |dep| {
+        if (dep.resolver) |resolver| {
+            if (std.mem.eql(u8, resolver, "link") or std.mem.eql(u8, resolver, "path") or std.mem.eql(u8, resolver, "artifact")) continue;
+        }
+        const entry = findReplayEntry(entries, normalizedLockDependencyName(dep.name)) orelse return false;
+        const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
+        if (!moonstone.domain.semver.matches(entry.version, constraint)) return false;
+    }
+    return true;
+}
+
+fn normalizedLockDependencyName(raw: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, raw, "rocks:")) return raw["rocks:".len..];
+    return raw;
 }
 
 fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {
@@ -2108,6 +3298,50 @@ fn lockedRuntimeMatches(
     }
 
     return true;
+}
+
+fn lockedEntriesRuntimeMatch(
+    entries: []const *const moonstone.domain.lockfile.LockEntry,
+    runtime_name: []const u8,
+    runtime_version: []const u8,
+    active_lua_abi: []const u8,
+) bool {
+    if (findReplayEntry(entries, runtime_name)) |entry| {
+        return std.mem.eql(u8, entry.version, runtime_version);
+    }
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.artifact_hash, "link") or std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (entry.runtime.len == 0) continue;
+        if (!moonstone.resolution.options.runtimeAbiMatches(active_lua_abi, entry.runtime)) return false;
+    }
+    return true;
+}
+
+const LockReplayTargetState = enum {
+    compatible,
+    legacy_native,
+    incompatible,
+};
+
+/// A lock records one concrete host realization. `native` was an older
+/// context-sensitive spelling and cannot prove that the selected artifact is
+/// valid for this host. Normal sync refreshes it; `--locked` refuses it.
+fn lockReplayTargetState(lf: *const moonstone.domain.lockfile.LockFile, host_target: []const u8) LockReplayTargetState {
+    for (lf.packages.items) |entry| {
+        if (std.mem.eql(u8, entry.artifact_hash, "link") or std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (std.mem.eql(u8, entry.target, "native")) return .legacy_native;
+        if (!std.mem.eql(u8, entry.target, host_target)) return .incompatible;
+    }
+    return .compatible;
+}
+
+fn lockReplayEntriesTargetState(entries: []const *const moonstone.domain.lockfile.LockEntry, target: []const u8) LockReplayTargetState {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.artifact_hash, "link") or std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (std.mem.eql(u8, entry.target, "native")) return .legacy_native;
+        if (!std.mem.eql(u8, entry.target, target)) return .incompatible;
+    }
+    return .compatible;
 }
 
 fn normalizedLockConstraint(raw: []const u8) []const u8 {
@@ -2456,4 +3690,50 @@ fn ensureIsolatedRuntimes(
             !is_link_or_path,
         );
     }
+}
+
+test "rocks preparation coordination elects one leader for an identical resolved source" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+
+    var first = moonstone.resolution.candidate.ResolvedArtifact{
+        .name = "same-rock",
+        .version = "1.0-1",
+        .kind = .lib,
+        .origin = .{ .luarocks = .{ .url = "https://rocks.example", .rockspec_path = "" } },
+        .registry_name = "rocks",
+    };
+    var second = moonstone.resolution.candidate.ResolvedArtifact{
+        .name = "same-rock",
+        .version = "1.0-1",
+        .kind = .lib,
+        .origin = .{ .luarocks = .{ .url = "https://rocks.example", .rockspec_path = "" } },
+        .registry_name = "rocks",
+    };
+    var jobs = [_]RocksJob{
+        .{ .pkg = &first },
+        .{ .pkg = &second },
+    };
+    var pool = RocksPool{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .env = &env,
+        .jobs = &jobs,
+        .target = "x86_64-linux-gnu",
+        .options = .{
+            .runtime = "lua54",
+            .runtime_artifact_hash = "b3:runtime",
+            .target = "x86_64-linux-gnu",
+        },
+        .wctx = null,
+        .reporter = .{},
+        .preparation_coordinator = moonstone.realization.request_coordinator.RequestCoordinator.init(allocator),
+        .request_coordinator = moonstone.realization.request_coordinator.RequestCoordinator.init(allocator),
+    };
+    defer pool.deinit();
+
+    try pool.selectPreparationLeaders();
+    try std.testing.expectEqual(@as(?usize, 0), jobs[0].preparation_leader);
+    try std.testing.expectEqual(@as(?usize, 0), jobs[1].preparation_leader);
 }

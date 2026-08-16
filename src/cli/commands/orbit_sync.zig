@@ -4,6 +4,7 @@ const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
 const command_mod = @import("command.zig");
 const progress_runtime = @import("../progress.zig");
+const task_protocol = @import("../task_protocol.zig");
 const sync_command = @import("sync.zig").sync_command;
 
 pub const OrbitSyncCommand = struct {
@@ -14,6 +15,8 @@ pub const OrbitSyncCommand = struct {
     locked: bool = false,
     update: bool = false,
     offline: bool = false,
+    quiet: bool = false,
+    progress_arg: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -26,6 +29,8 @@ pub const OrbitSyncCommand = struct {
             \\  --locked  Require moonstone.lock to be up-to-date
             \\  --update  Refresh the orbit lockfile within declared constraints
             \\  --offline Resolve from the local store and configured file registries only
+            \\  --progress <mode>  Human output: auto, fancy, or plain
+            \\  --quiet  Suppress human output; use exit status only
             \\  --json    Output results as JSON
             \\
         , .{});
@@ -54,10 +59,22 @@ pub const OrbitSyncCommand = struct {
     }
 
     pub fn run(self: OrbitSyncCommand, ctx: *router.Context) !void {
+        if (self.quiet and (self.json or self.progress_arg != null)) return error.InvalidOutputMode;
+        if (self.json and self.progress_arg != null) return error.InvalidOutputMode;
+        if (self.progress_arg) |mode| {
+            if (!std.mem.eql(u8, mode, "auto") and !std.mem.eql(u8, mode, "fancy") and !std.mem.eql(u8, mode, "plain")) {
+                return error.InvalidOutputMode;
+            }
+        }
         if (self.json) {
             return self.runImpl(ctx, .{ .direct = ctx.stdout });
         }
-        if (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null) {
+        if (self.quiet) return self.runImpl(ctx, .silent);
+        if (self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) {
+            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+        }
+        const force_fancy = self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "fancy");
+        if (!force_fancy and (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null)) {
             return self.runImpl(ctx, .{ .direct = ctx.stderr });
         }
 
@@ -76,6 +93,19 @@ pub const OrbitSyncCommand = struct {
 
         var emitter_obj = if (self.json) ndjson.Emitter.init(ctx.allocator, ctx.stdout, "orbit-sync") else null;
         const emitter = if (emitter_obj) |*e| e else null;
+        const wctx = switch (backend) {
+            .queue => |value| value,
+            .direct, .silent => null,
+        };
+        const plain_task_writer: ?*std.Io.Writer = if (!self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) switch (backend) {
+            .direct => |writer| writer,
+            .queue, .silent => null,
+        } else null;
+        const task_reporter = task_protocol.Reporter{
+            .emitter = emitter,
+            .wctx = wctx,
+            .plain_writer = plain_task_writer,
+        };
 
         const toml_path = "moonstone.toml";
         const content = try std.Io.Dir.cwd().readFileAlloc(ctx.io, toml_path, ctx.allocator, std.Io.Limit.limited(1024 * 1024));
@@ -117,32 +147,44 @@ pub const OrbitSyncCommand = struct {
             try target_orbits.appendSlice(ctx.allocator, orbits);
         }
 
-        backend.phase("Discovered {d} orbits.", .{orbits.len});
+        if (!self.json and !self.quiet) backend.phase("Discovered {d} orbits.", .{orbits.len});
 
         // project_root.path is already the absolute path of the root
         const root_cwd = project_root.path;
 
         for (target_orbits.items) |orbit| {
-            backend.phase("Syncing orbit {s}...", .{orbit.name});
+            if (!self.json and !self.quiet) backend.phase("Syncing orbit {s}...", .{orbit.name});
+
+            var task_buffer: [384]u8 = undefined;
+            const task_id = try task_protocol.formatOrbitSyncId(&task_buffer, orbit.name);
+            task_reporter.report(ctx.io, task_id, 1, "running", orbit.name, .{
+                .orbit = orbit.name,
+                .path = orbit.path,
+            });
 
             try std.process.setCurrentPath(ctx.io, orbit.path);
 
             var child_sync = sync_command{
-                .json = self.json,
                 .locked = self.locked,
                 .update = self.update,
                 .offline = self.offline,
             };
-            child_sync.runImpl(ctx, backend) catch |err| {
+            child_sync.runImpl(ctx, .silent) catch |err| {
                 std.process.setCurrentPath(ctx.io, root_cwd) catch {};
-
-                // Keep the error detail
+                task_reporter.report(ctx.io, task_id, 2, "failed", @errorName(err), .{
+                    .orbit = orbit.name,
+                    .error_name = @errorName(err),
+                });
                 return err;
             };
             try std.process.setCurrentPath(ctx.io, root_cwd);
+            task_reporter.report(ctx.io, task_id, 2, "completed", orbit.name, .{
+                .orbit = orbit.name,
+                .path = orbit.path,
+            });
         }
 
-        backend.phaseDone("All orbits synchronized.", .{});
+        if (!self.json and !self.quiet) backend.phaseDone("All orbits synchronized.", .{});
         if (emitter) |e| try e.terminate(ctx.io, "orbit-sync", "ok", .{});
     }
 };

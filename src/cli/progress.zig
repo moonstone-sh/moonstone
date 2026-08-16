@@ -69,6 +69,13 @@ const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi 
 /// In practice they are either compile-time string literals or allocated from
 /// the process-level arena (which lives for the entire process), so they are
 /// always valid when the UI thread reads them.
+pub const TaskStateUpdate = struct {
+    task_id: []const u8,
+    revision: u64,
+    state: []const u8,
+    message: []const u8,
+};
+
 pub const ProgressEvent = union(enum) {
     phase_started: []const u8,
     phase_done: []const u8,
@@ -77,6 +84,8 @@ pub const ProgressEvent = union(enum) {
         id: []const u8,
         msg: []const u8,
     },
+
+    task_state: TaskStateUpdate,
 
     package_started: []const u8,
     package_done: []const u8,
@@ -216,6 +225,21 @@ pub const WorkerContext = struct {
         });
     }
 
+    pub fn sendTaskState(
+        self: *WorkerContext,
+        task_id: []const u8,
+        revision: u64,
+        state: []const u8,
+        message: []const u8,
+    ) void {
+        self.queue.send(.{ .task_state = .{
+            .task_id = self.allocator.dupe(u8, task_id) catch return,
+            .revision = revision,
+            .state = self.allocator.dupe(u8, state) catch return,
+            .message = self.allocator.dupe(u8, message) catch return,
+        } });
+    }
+
     pub fn sendWarning(self: *WorkerContext, msg: []const u8) void {
         const msg_copy = self.allocator.dupe(u8, msg) catch return;
         self.send(.{ .warning = msg_copy });
@@ -230,6 +254,18 @@ const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿" };
 
 pub const ProgressUi = struct {
+    const TaskRow = struct {
+        task_id: []const u8,
+        revision: u64,
+        state: []const u8,
+        message: []const u8,
+        slot: ?usize,
+        active: bool,
+        terminal: bool,
+    };
+
+    const max_visible_tasks = 5;
+
     writer: *std.Io.Writer,
     is_tty: bool,
     io: std.Io,
@@ -250,6 +286,11 @@ pub const ProgressUi = struct {
 
     // track previous line length for space-padding
     last_line_len: usize = 0,
+    rendered_lines: usize = 0,
+
+    task_rows: std.ArrayList(TaskRow),
+    task_slots: [max_visible_tasks]?usize = .{ null, null, null, null, null },
+    completed_tasks: usize = 0,
 
     // accumulated warnings to print at the end
     warnings: std.ArrayList([]const u8),
@@ -266,11 +307,13 @@ pub const ProgressUi = struct {
             .is_tty = is_tty,
             .io = io,
             .warnings = .empty,
+            .task_rows = .empty,
         };
     }
 
     pub fn deinit(self: *ProgressUi) void {
         self.warnings.deinit(std.heap.page_allocator);
+        self.task_rows.deinit(std.heap.page_allocator);
     }
 
     /// Write directly to stderr, bypassing the buffered Threaded I/O writer.
@@ -327,6 +370,7 @@ pub const ProgressUi = struct {
                 // During stopping phase, count completed workers.
                 if (self.stopping) self.stopped_count += 1;
             },
+            .task_state => |update| self.applyTaskState(update),
             .bytes => |b| {
                 self.dl_label = b.label;
                 self.dl_done = b.done;
@@ -351,6 +395,94 @@ pub const ProgressUi = struct {
         }
     }
 
+    fn applyTaskState(self: *ProgressUi, update: TaskStateUpdate) void {
+        for (self.task_rows.items) |*row| {
+            if (!std.mem.eql(u8, row.task_id, update.task_id)) continue;
+            if (!row.active or update.revision <= row.revision) return;
+            row.revision = update.revision;
+            row.state = update.state;
+            row.message = update.message;
+            if (isTerminalTaskState(update.state)) {
+                row.active = false;
+                row.terminal = true;
+                self.completed_tasks += 1;
+            }
+            return;
+        }
+
+        const row_index = self.task_rows.items.len;
+        const slot = self.firstAvailableTaskSlot();
+        const terminal = isTerminalTaskState(update.state);
+        self.task_rows.append(std.heap.page_allocator, .{
+            .task_id = update.task_id,
+            .revision = update.revision,
+            .state = update.state,
+            .message = update.message,
+            .slot = slot,
+            .active = !terminal,
+            .terminal = terminal,
+        }) catch return;
+        if (slot) |value| self.task_slots[value] = row_index;
+        if (terminal) self.completed_tasks += 1;
+    }
+
+    fn firstAvailableTaskSlot(self: *const ProgressUi) ?usize {
+        for (self.task_slots, 0..) |entry, index| {
+            if (entry == null) return index;
+        }
+        return null;
+    }
+
+    fn promoteOverflowTasks(self: *ProgressUi) void {
+        for (&self.task_slots, 0..) |*slot, slot_index| {
+            if (slot.* != null) continue;
+            for (self.task_rows.items, 0..) |*row, row_index| {
+                if (!row.active or row.slot != null) continue;
+                row.slot = slot_index;
+                slot.* = row_index;
+                break;
+            }
+        }
+    }
+
+    fn activeOverflowTaskCount(self: *const ProgressUi) usize {
+        var count: usize = 0;
+        for (self.task_rows.items) |row| {
+            if (row.active and row.slot == null) count += 1;
+        }
+        return count;
+    }
+
+    fn visibleTaskCount(self: *const ProgressUi) usize {
+        var count: usize = 0;
+        for (self.task_slots) |slot| {
+            if (slot != null) count += 1;
+        }
+        return count;
+    }
+
+    /// Keep terminal transitions on screen for one paint. This makes short,
+    /// concurrent operations observable instead of letting a queue drain erase
+    /// every row before the next frame is rendered.
+    fn releaseRenderedTerminalTaskRows(self: *ProgressUi) void {
+        for (&self.task_slots) |*slot| {
+            const row_index = slot.* orelse continue;
+            const row = &self.task_rows.items[row_index];
+            if (!row.terminal) continue;
+            row.terminal = false;
+            row.slot = null;
+            slot.* = null;
+        }
+        self.promoteOverflowTasks();
+    }
+
+    fn isTerminalTaskState(state: []const u8) bool {
+        return std.mem.eql(u8, state, "completed") or
+            std.mem.eql(u8, state, "failed") or
+            std.mem.eql(u8, state, "cancelled") or
+            std.mem.eql(u8, state, "reused");
+    }
+
     fn nowNs(self: *ProgressUi) i128 {
         const ts = std.Io.Timestamp.now(self.io, .awake);
         return ts.nanoseconds;
@@ -365,6 +497,10 @@ pub const ProgressUi = struct {
     }
 
     pub fn render(self: *ProgressUi) void {
+        if (self.visibleTaskCount() > 0) {
+            self.renderTaskRows();
+            return;
+        }
         const frame = spinner_frames[self.spinner_frame % spinner_frames.len];
         self.spinner_frame +%= 1;
 
@@ -410,6 +546,57 @@ pub const ProgressUi = struct {
             }
         }
         self.rawWrite(w.buffer[0..w.end]);
+    }
+
+    fn clearRenderedRows(self: *ProgressUi) void {
+        if (!self.is_tty or self.rendered_lines == 0) return;
+        var buffer: [64]u8 = undefined;
+        if (self.rendered_lines > 1) {
+            const up = std.fmt.bufPrint(&buffer, "\x1b[{d}A", .{self.rendered_lines - 1}) catch return;
+            self.rawWrite(up);
+        }
+        self.rawWrite("\r");
+        for (0..self.rendered_lines) |_| self.rawWrite("\x1b[2K\r\n");
+        const back = std.fmt.bufPrint(&buffer, "\x1b[{d}A", .{self.rendered_lines}) catch return;
+        self.rawWrite(back);
+        self.rawWrite("\r");
+        self.rendered_lines = 0;
+    }
+
+    fn renderTaskRows(self: *ProgressUi) void {
+        self.clearRenderedRows();
+
+        var lines: usize = 0;
+        if (self.current_phase.len > 0) {
+            self.writer.print("\x1b[2K\r{s}\n", .{self.current_phase}) catch {};
+            lines += 1;
+        }
+
+        for (self.task_slots) |maybe_row_index| {
+            const row_index = maybe_row_index orelse continue;
+            const row = self.task_rows.items[row_index];
+            if (row.terminal) {
+                const mark: []const u8 = if (std.mem.eql(u8, row.state, "completed")) "✓" else "✗";
+                self.writer.print("\x1b[2K\r{s} {s}: {s}\n", .{ mark, row.state, row.message }) catch {};
+            } else {
+                const frame = spinner_frames[self.spinner_frame % spinner_frames.len];
+                self.writer.print("\x1b[2K\r{s} {s}: {s}\n", .{ frame, row.state, row.message }) catch {};
+            }
+            lines += 1;
+        }
+        const overflow = self.activeOverflowTaskCount();
+        if (overflow > 0) {
+            self.writer.print("\x1b[2K\r… {d} more tasks queued\n", .{overflow}) catch {};
+            lines += 1;
+        }
+        if (self.completed_tasks > 0) {
+            self.writer.print("\x1b[2K\r✓ {d} task{s} completed\n", .{ self.completed_tasks, if (self.completed_tasks == 1) "" else "s" }) catch {};
+            lines += 1;
+        }
+        self.writer.flush() catch {};
+        self.rendered_lines = lines;
+        self.spinner_frame +%= 1;
+        self.releaseRenderedTerminalTaskRows();
     }
 
     fn renderBar(self: *ProgressUi, frame: []const u8, fraction: f32, width: usize) void {
@@ -600,6 +787,7 @@ fn workerMain(work_fn: *const fn (*WorkerContext) anyerror!void, ctx: *WorkerCon
 pub const ProgressBackend = union(enum) {
     direct: *std.Io.Writer,
     queue: *WorkerContext,
+    silent,
 
     pub fn phase(self: ProgressBackend, comptime fmt: []const u8, args: anytype) void {
         switch (self) {
@@ -617,13 +805,14 @@ pub const ProgressBackend = union(enum) {
                 const msg = wctx.allocator.dupe(u8, trimmed) catch return;
                 wctx.sendPhase(msg);
             },
+            .silent => {},
         }
     }
 
     pub fn phaseDone(self: ProgressBackend, comptime fmt: []const u8, args: anytype) void {
         switch (self) {
             .direct => |w| {
-                w.print("\x1b[2K\r⠿ " ++ fmt ++ "\n", args) catch {};
+                w.print("⠿ " ++ fmt ++ "\n", args) catch {};
                 w.flush() catch {};
             },
             .queue => |wctx| {
@@ -632,6 +821,7 @@ pub const ProgressBackend = union(enum) {
                 const msg = wctx.allocator.dupe(u8, tmp) catch return;
                 wctx.sendPhaseDone(msg);
             },
+            .silent => {},
         }
     }
 
@@ -642,6 +832,7 @@ pub const ProgressBackend = union(enum) {
                 w.flush() catch {};
             },
             .queue => |wctx| wctx.sendPackageStarted(name),
+            .silent => {},
         }
     }
 
@@ -649,6 +840,7 @@ pub const ProgressBackend = union(enum) {
         switch (self) {
             .direct => {},
             .queue => |wctx| wctx.sendPackageDone(name),
+            .silent => {},
         }
     }
 
@@ -656,6 +848,7 @@ pub const ProgressBackend = union(enum) {
         switch (self) {
             .direct => {},
             .queue => |wctx| wctx.sendBytesOwned(label, done, total),
+            .silent => {},
         }
     }
 
@@ -677,6 +870,7 @@ pub const ProgressBackend = union(enum) {
                 const trimmed = std.mem.trimEnd(u8, tmp, "\n");
                 wctx.sendStatus(id, trimmed);
             },
+            .silent => {},
         }
     }
 
@@ -692,6 +886,7 @@ pub const ProgressBackend = union(enum) {
                 const msg = wctx.allocator.dupe(u8, tmp) catch return;
                 wctx.sendWarning(msg);
             },
+            .silent => {},
         }
     }
 };
@@ -781,4 +976,70 @@ pub fn onSolverEventProgress(ctx: ?*anyopaque, event: @import("moonstone").resol
         .backtracking => "Solving: backtracking…",
     };
     wctx.sendStatus("solver", msg);
+}
+
+test "task rows keep terminal slots until the next render" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    defer ui.deinit();
+
+    ui.applyTaskState(.{ .task_id = "a", .revision = 1, .state = "running", .message = "a" });
+    ui.applyTaskState(.{ .task_id = "b", .revision = 1, .state = "running", .message = "b" });
+    ui.applyTaskState(.{ .task_id = "c", .revision = 1, .state = "running", .message = "c" });
+    try std.testing.expectEqual(@as(?usize, 0), ui.task_rows.items[0].slot);
+    try std.testing.expectEqual(@as(?usize, 1), ui.task_rows.items[1].slot);
+    try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[2].slot);
+
+    ui.applyTaskState(.{ .task_id = "b", .revision = 2, .state = "completed", .message = "done" });
+    try std.testing.expect(!ui.task_rows.items[1].active);
+    try std.testing.expect(ui.task_rows.items[1].terminal);
+    try std.testing.expectEqual(@as(?usize, 1), ui.task_rows.items[1].slot);
+    try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[2].slot);
+
+    ui.applyTaskState(.{ .task_id = "d", .revision = 1, .state = "running", .message = "d" });
+    try std.testing.expectEqual(@as(?usize, 3), ui.task_rows.items[3].slot);
+
+    ui.releaseRenderedTerminalTaskRows();
+    try std.testing.expect(ui.task_rows.items[1].slot == null);
+    try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[2].slot);
+}
+
+test "task rows ignore stale revisions" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    defer ui.deinit();
+
+    ui.applyTaskState(.{ .task_id = "a", .revision = 2, .state = "prepared", .message = "new" });
+    ui.applyTaskState(.{ .task_id = "a", .revision = 1, .state = "running", .message = "stale" });
+
+    try std.testing.expectEqual(@as(u64, 2), ui.task_rows.items[0].revision);
+    try std.testing.expectEqualStrings("prepared", ui.task_rows.items[0].state);
+    try std.testing.expectEqualStrings("new", ui.task_rows.items[0].message);
+}
+
+test "terminal task rows promote queued work after one paint" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    defer ui.deinit();
+
+    const ids = [_][]const u8{ "a", "b", "c", "d", "e", "f" };
+    for (ids) |task_id| {
+        ui.applyTaskState(.{ .task_id = task_id, .revision = 1, .state = "running", .message = task_id });
+    }
+    try std.testing.expectEqual(@as(usize, 1), ui.activeOverflowTaskCount());
+    try std.testing.expect(ui.task_rows.items[5].slot == null);
+
+    ui.applyTaskState(.{ .task_id = "c", .revision = 2, .state = "completed", .message = "done" });
+    try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[2].slot);
+    try std.testing.expect(ui.task_rows.items[5].slot == null);
+
+    ui.releaseRenderedTerminalTaskRows();
+    try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[5].slot);
+    try std.testing.expectEqual(@as(?usize, 0), ui.task_rows.items[0].slot);
+    try std.testing.expectEqual(@as(?usize, 1), ui.task_rows.items[1].slot);
+    try std.testing.expectEqual(@as(?usize, 3), ui.task_rows.items[3].slot);
+    try std.testing.expectEqual(@as(?usize, 4), ui.task_rows.items[4].slot);
 }

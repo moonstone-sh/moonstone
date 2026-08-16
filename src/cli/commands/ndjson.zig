@@ -19,6 +19,8 @@ pub const MessageKind = enum {
 };
 
 pub const Envelope = struct {
+    contract: []const u8,
+    run_id: []const u8,
     kind: MessageKind,
     timestamp: []const u8,
     seq: usize,
@@ -41,10 +43,12 @@ pub const Emitter = struct {
     command: []const u8,
     seq: usize = 1,
     pid: i32,
+    run_id: [64]u8 = undefined,
+    run_id_len: usize = 0,
     mutex: std.Io.Mutex = .{ .state = .{ .raw = .unlocked } },
 
     pub fn init(allocator: std.mem.Allocator, stdout: *std.Io.Writer, command: []const u8) Emitter {
-        return .{
+        var emitter = Emitter{
             .allocator = allocator,
             .stdout = stdout,
             .command = command,
@@ -53,6 +57,18 @@ pub const Emitter = struct {
             else
                 std.c.getpid(),
         };
+        if (std.fmt.bufPrint(emitter.run_id[0..], "pid-{d}", .{emitter.pid})) |run_id| {
+            emitter.run_id_len = run_id.len;
+        } else |_| {
+            const fallback = "pid-unknown";
+            @memcpy(emitter.run_id[0..fallback.len], fallback);
+            emitter.run_id_len = fallback.len;
+        }
+        return emitter;
+    }
+
+    fn runId(self: *const Emitter) []const u8 {
+        return self.run_id[0..self.run_id_len];
     }
 
     pub fn emit(self: *Emitter, io: std.Io, kind: MessageKind, about: []const u8, value: []const u8, data: anytype) !void {
@@ -71,6 +87,8 @@ pub const Emitter = struct {
 
         // 2. Serialize to NDJSON
         try std.json.Stringify.value(.{
+            .contract = "moonstone:cli-events:v1",
+            .run_id = self.runId(),
             .kind = kind.asString(),
             .timestamp = ts,
             .seq = self.seq,
@@ -89,6 +107,25 @@ pub const Emitter = struct {
         try self.stdout.writeAll("\n");
         try self.stdout.flush();
         self.seq += 1;
+    }
+
+    /// Emits one idempotent task-state replacement. `revision` is monotonic
+    /// within the caller's stable task id; `seq` remains globally serialized
+    /// by this emitter.
+    pub fn emitTask(
+        self: *Emitter,
+        io: std.Io,
+        task_id: []const u8,
+        revision: u64,
+        state: []const u8,
+        data: anytype,
+    ) !void {
+        try self.emit(io, .STATUS, task_id, state, .{
+            .task_id = task_id,
+            .revision = revision,
+            .state = state,
+            .data = data,
+        });
     }
 
     pub fn terminate(self: *Emitter, io: std.Io, about: []const u8, value: []const u8, data: anytype) !void {
@@ -113,6 +150,8 @@ pub const Emitter = struct {
         const ts = try std.fmt.bufPrint(&ts_buf, "{d}.{d:0>3}Z", .{ seconds, ms });
 
         try std.json.Stringify.value(.{
+            .contract = "moonstone:cli-events:v1",
+            .run_id = self.runId(),
             .kind = kind.asString(),
             .timestamp = ts,
             .seq = self.seq,
