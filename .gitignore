@@ -22,6 +22,7 @@ fixtures/sandbox/
 *.dylib
 *.dll
 build/
+!tests/e2e/build/
 dist/
 bin/
 CMakeCache.txt

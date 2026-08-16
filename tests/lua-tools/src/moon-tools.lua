@@ -593,6 +593,9 @@ set(CMAKE_C_VISIBILITY_PRESET default)
 add_library(synthetic_cmake_module MODULE synthetic_cmake_module.c)
 set_target_properties(synthetic_cmake_module PROPERTIES PREFIX "" OUTPUT_NAME "synthetic_cmake_module" SUFFIX ".so")
 target_include_directories(synthetic_cmake_module PRIVATE ${LUA_INCLUDE_DIR})
+if(APPLE)
+  target_link_options(synthetic_cmake_module PRIVATE "-undefined" "dynamic_lookup")
+endif()
 ]]
   local artifact_name = "synthetic-cmake-module-0.1.0-source.tar.gz"
   local path = join(output_dir, artifact_name)
