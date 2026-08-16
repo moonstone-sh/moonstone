@@ -55,6 +55,12 @@ jobs:
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_schema_mutation_matrix.sh
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_projection_parity.sh
 
+      - name: Verify generic Make materialization
+        run: tests/e2e/build/make_module.sh
+
+      - name: Verify generic CMake materialization
+        run: tests/e2e/build/cmake_module.sh
+
       - name: Verify LuaRocks Make materialization and locked replay
         run: tests/e2e/build/luarocks_make_cmodule_contract.sh
 
