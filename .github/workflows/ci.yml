@@ -38,6 +38,74 @@ jobs:
         # We run the internal test suite
         run: zig build test
 
+      - name: Checkout pinned LuaRocks reference
+        uses: actions/checkout@v4
+        with:
+          repository: luarocks/luarocks
+          ref: 665f160b4d0b79e85e66c6cc83e442d72eb40868
+          path: .ci/luarocks-upstream
+          fetch-depth: 1
+
+      - name: Verify LuaRocks rockspec compatibility corpus
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
+          export LUAROCKS_UPSTREAM_DIR="$GITHUB_WORKSPACE/.ci/luarocks-upstream"
+          LUA_BIN=lua5.4 tests/upstream/luarocks/run_conformance.sh
+          LUA_BIN=lua5.4 tests/upstream/luarocks/run_schema_mutation_matrix.sh
+          LUA_BIN=lua5.4 tests/upstream/luarocks/run_projection_parity.sh
+
+      - name: Verify LuaRocks Make materialization and locked replay
+        run: tests/e2e/build/luarocks_make_cmodule_contract.sh
+
+      - name: Verify pinned cqueues Make materialization and locked replay
+        run: MOONSTONE_REAL_LUAROCKS=1 tests/e2e/resolution/cqueues_real_contract.sh
+
+      - name: Verify pinned LuaFileSystem native materialization and locked replay
+        run: MOONSTONE_REAL_LUAROCKS=1 tests/e2e/resolution/luafilesystem_real_contract.sh
+
+      - name: Verify pinned LuaSQL SQLite3 SDK projection and locked replay
+        run: MOONSTONE_REAL_LUAROCKS=1 tests/e2e/resolution/luasql_sqlite3_real_contract.sh
+
+      - name: Verify LuaRocks command materialization and locked replay
+        run: tests/e2e/build/luarocks_command_contract.sh
+
+      - name: Verify LuaRocks build dependency scope and isolation
+        run: tests/e2e/build/luarocks_build_dependencies_contract.sh
+
+      - name: Verify LuaRocks CMake materialization and locked replay
+        run: tests/e2e/build/luarocks_cmake_contract.sh
+
+      - name: Verify LuaRocks source.dir materialization and locked replay
+        run: tests/e2e/materialization/luarocks_source_dir_contract.sh
+
+      - name: Verify LuaRocks mapped install.lua materialization and locked replay
+        run: tests/e2e/materialization/luarocks_install_lua_contract.sh
+
+      - name: Verify LuaRocks install.conf asset materialization and locked replay
+        run: tests/e2e/materialization/luarocks_install_conf_contract.sh
+
+      - name: Verify LuaRocks install.lib materialization and locked replay
+        run: tests/e2e/materialization/luarocks_install_lib_contract.sh
+
+      - name: Verify LuaRocks copied asset closure and locked replay
+        run: tests/e2e/materialization/luarocks_copy_directories_contract.sh
+
+      - name: Verify LuaRocks ordinary patch materialization and locked replay
+        run: tests/e2e/materialization/luarocks_patch_contract.sh
+
+      - name: Verify LuaRocks rejected capability diagnostics
+        run: tests/e2e/materialization/luarocks_capability_refusals.sh
+
+      - name: Verify LuaRocks source-rock checksum boundaries
+        run: tests/e2e/materialization/luarocks_source_rock_md5_contract.sh
+
+      - name: Verify parallel LuaRocks source task lifecycle
+        run: tests/e2e/materialization/luarocks_source_parallel_tasks.sh
+
+      - name: Verify native-library environment projection and loader behavior
+        run: tests/e2e/commands/native_library_projection.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
@@ -67,6 +135,15 @@ jobs:
       - name: Exercise project directory, projection, and launcher contracts
         shell: pwsh
         run: ./tests/windows/core.ps1
+
+      - name: Upload Windows core harness state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-core-harness-state
+          path: ${{ runner.temp }}/moonstone-windows-core
+          if-no-files-found: warn
+          retention-days: 7
 
   release-candidate:
     name: Build Release Candidate
