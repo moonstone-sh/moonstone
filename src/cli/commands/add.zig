@@ -1011,6 +1011,14 @@ pub const add_command = struct {
             defer allocator.free(serialized_manifest);
         }
 
+        // Adding a dependency changes every declared target closure. Keep the
+        // realizations as reusable resolution input, but discard profile
+        // references before the following sync rebuilds the active target.
+        // Retaining them here would leave v3 profiles pointing to stale
+        // realization hashes and make the lock unparsable.
+        for (lf.profiles.items) |profile| profile.deinit(allocator);
+        lf.profiles.clearRetainingCapacity();
+
         // Write moonstone.lock
         if (!self.dry_run) {
             var aw = std.Io.Writer.Allocating.init(allocator);
