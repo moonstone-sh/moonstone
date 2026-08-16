@@ -28,19 +28,32 @@ pub const LockVerifyCommand = struct {
     pub const name = "verify";
     pub const description = "Verify that moonstone.lock is readable and structurally valid";
     json: bool = false,
+    target_arg: ?[]const u8 = null,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock verify --json\n", .{});
+        try stdout.print("Usage: moon lock verify [--target <triple>] --json\n", .{});
     }
     pub fn run(self: LockVerifyCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
         var loaded = try readLock(ctx);
         defer ctx.allocator.free(loaded.raw);
         defer loaded.value.deinit();
+        const selected_profile = if (self.target_arg) |target| blk: {
+            try moonstone.platform.target.validate(target);
+            for (loaded.value.profiles.items) |*profile| {
+                if (std.mem.eql(u8, profile.target, target)) break :blk profile;
+            }
+            return error.TargetProfileNotFound;
+        } else null;
         const revision = try moonstone.domain.lock_protocol.storageRevision(ctx.allocator, loaded.raw);
         defer ctx.allocator.free(revision);
         try ctx.stdout.writeAll("{\"contract\":\"moonstone:lock-verify:v1\",\"valid\":true,\"storage_revision\":");
         try std.json.Stringify.value(revision, .{}, ctx.stdout);
-        try ctx.stdout.print(",\"package_count\":{d},\"profile_count\":{d}}}\n", .{ loaded.value.packages.items.len, loaded.value.profiles.items.len });
+        try ctx.stdout.print(",\"realization_count\":{d},\"profile_count\":{d}", .{ loaded.value.packages.items.len, loaded.value.profiles.items.len });
+        if (selected_profile) |profile| {
+            try ctx.stdout.writeAll(",\"profile\":");
+            try std.json.Stringify.value(profile.id, .{}, ctx.stdout);
+        }
+        try ctx.stdout.writeAll("}\n");
     }
 };
 
@@ -233,7 +246,7 @@ pub const LockRealizationGetCommand = struct {
         defer loaded.value.deinit();
         for (loaded.value.profiles.items) |profile| for (profile.packages) |reference| {
             if (!std.mem.eql(u8, reference.realization_hash, self.positionals[0])) continue;
-            const package = loaded.value.find(reference.package_name);
+            const package = loaded.value.findRealization(reference.realization_hash);
             try ctx.stdout.writeAll("{\"contract\":\"moonstone:lock-realization:v1\",\"realization\":{\"hash\":");
             try std.json.Stringify.value(reference.realization_hash, .{}, ctx.stdout);
             try ctx.stdout.writeAll(",\"profile\":");
@@ -247,6 +260,18 @@ pub const LockRealizationGetCommand = struct {
             try ctx.stdout.writeAll("}}\n");
             return;
         };
+        if (loaded.value.findRealization(self.positionals[0])) |entry| {
+            try ctx.stdout.writeAll("{\"contract\":\"moonstone:lock-realization:v1\",\"realization\":{\"hash\":");
+            try std.json.Stringify.value(entry.realization_hash, .{}, ctx.stdout);
+            try ctx.stdout.writeAll(",\"package\":");
+            try std.json.Stringify.value(entry.name, .{}, ctx.stdout);
+            try ctx.stdout.writeAll(",\"version\":");
+            try std.json.Stringify.value(entry.version, .{}, ctx.stdout);
+            try ctx.stdout.writeAll(",\"artifact_hash\":");
+            try std.json.Stringify.value(entry.artifact_hash, .{}, ctx.stdout);
+            try ctx.stdout.writeAll("}}\n");
+            return;
+        }
         return error.RealizationNotFound;
     }
 };
