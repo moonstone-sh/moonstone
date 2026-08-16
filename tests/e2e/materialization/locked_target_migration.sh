@@ -39,8 +39,7 @@ mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name locked-target-migration --no-git --no-sync
 moon interpreter set lua@5.4 --no-sync
-moon add rocks:fakebin --no-sync
-moon sync
+moon add rocks:fakebin
 
 if grep -q '^target = "native"$' moonstone.lock; then
     echo "ERROR: new lockfile retained the legacy native target"
