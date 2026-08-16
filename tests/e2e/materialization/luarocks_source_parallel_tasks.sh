@@ -121,6 +121,14 @@ awk '
     exit 1
 }
 
+moon sync --locked --jobs 2 --quiet >"${WORKDIR}/quiet.stdout" 2>"${WORKDIR}/quiet.stderr"
+if [[ -s "${WORKDIR}/quiet.stdout" || -s "${WORKDIR}/quiet.stderr" ]]; then
+    echo "ERROR: --quiet emitted lifecycle output" >&2
+    cat "${WORKDIR}/quiet.stderr" >&2
+    cat "${WORKDIR}/quiet.stdout" >&2
+    exit 1
+fi
+
 moon sync --locked --jobs 2 --json >"${WORKDIR}/locked.ndjson"
 for package_name in fakebin fakealt; do
     grep -Eq "\"task_id\":\"replay:[^\"]+:rocks:${package_name}@1\.0-1\"" "${WORKDIR}/locked.ndjson"
