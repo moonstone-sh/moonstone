@@ -22,11 +22,16 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 echo "━━━ Setup Project ━━━"
-moon init . --name "semantics-test" --no-git
-moon interpreter set lua@5.4
+moon init . --name "semantics-test" --no-git --no-sync
 
 # Create a fake project-local Lua that tracks arguments
 mkdir -p .moonstone/env/bin
+cat > .moonstone/env/env.toml <<'TOML'
+[runtime]
+name = "lua"
+version = "5.4.7"
+abi = "lua54"
+TOML
 rm -f .moonstone/env/bin/lua
 cat > .moonstone/env/bin/lua <<'SH'
 #!/usr/bin/env sh
@@ -44,6 +49,7 @@ cat >> moonstone.toml << 'EOF'
 [scripts]
 quoted = 'lua -e "print(\"hello world\")"'
 compound = 'echo before && lua ./src/main.lua && echo after'
+args = 'printf "ARGS"; for arg in "$@"; do printf "[%s]" "$arg"; done; printf "\\n"'
 bad = "exit 42"
 EOF
 
@@ -59,7 +65,10 @@ grep "before" compound_out
 grep "MOONSTONE_LUA\[./src/main.lua\]" compound_out
 grep "after" compound_out
 
-echo "━━━ Test 4: Failed script propagates exit code ━━━"
+echo "━━━ Test 4: Delimited arguments reach the shell without the delimiter ━━━"
+moon run args -- first "two words" | grep "ARGS\[first\]\[two words\]"
+
+echo "━━━ Test 5: Failed script propagates exit code ━━━"
 set +e
 moon run bad
 EXIT_CODE=$?
@@ -70,7 +79,7 @@ if [[ $EXIT_CODE -ne 42 ]]; then
 fi
 echo "  ✓ Propagated exit code 42"
 
-echo "━━━ Test 5: Missing script errors ━━━"
+echo "━━━ Test 6: Missing script errors ━━━"
 set +o pipefail
 moon run missing 2>&1 | grep "Error: script 'missing' not found"
 set -o pipefail

@@ -12,7 +12,6 @@ pub const RunCommand = struct {
     prod: bool = false,
     dev: bool = true,
     interpreter: ?[]const u8 = null,
-    target: ?[]const u8 = null,
     json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -26,7 +25,6 @@ pub const RunCommand = struct {
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
             \\  --interpreter <i> Override interpreter
-            \\  --target <t>     Override target
             \\  --json           Output results as JSON (bloated protocol)
             \\
         , .{});

@@ -65,6 +65,7 @@ pub const CommandNode = struct {
                 }
 
                 fn reportAndStop(args: []const []const u8, ctx: *Context, cmd: CmdType, err: anyerror) anyerror!void {
+                    if (@hasField(CmdType, "quiet") and cmd.quiet) return error.AlreadyReported;
                     const is_json = if (@hasField(CmdType, "json")) cmd.json or argsWantJson(args) else argsWantJson(args);
                     const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                     try command_mod.reportError(ctx.allocator, ctx.io, ctx.stdout, is_json, err, cmd_name, ctx.error_detail);
@@ -78,8 +79,15 @@ pub const CommandNode = struct {
 
                     var i: usize = 0;
                     var stop_parsing_flags = false;
+                    const opaque_arguments_after: ?usize = comptime if (@hasDecl(CmdType, "opaque_arguments_after")) @as(usize, CmdType.opaque_arguments_after) else null;
+                    var opaque_arguments_started = false;
+                    var opaque_delimiter_consumed = false;
                     while (i < args.len) : (i += 1) {
                         const arg = args[i];
+                        if (opaque_arguments_started and !opaque_delimiter_consumed and std.mem.eql(u8, arg, "--")) {
+                            opaque_delimiter_consumed = true;
+                            continue;
+                        }
                         if (!stop_parsing_flags and std.mem.eql(u8, arg, "--")) {
                             stop_parsing_flags = true;
                             continue;
@@ -164,7 +172,10 @@ pub const CommandNode = struct {
                             }
                         } else {
                             try positionals.append(ctx.allocator, arg);
-                            if (comptime @hasDecl(CmdType, "name") and (std.mem.eql(u8, CmdType.name, "exec") or std.mem.eql(u8, CmdType.name, "run"))) {
+                            if (opaque_arguments_after) |count| {
+                                if (positionals.items.len >= count) opaque_arguments_started = true;
+                            }
+                            if (opaque_arguments_started) {
                                 stop_parsing_flags = true;
                             }
                         }

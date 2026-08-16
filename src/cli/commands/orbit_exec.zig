@@ -8,18 +8,19 @@ const exec_command = @import("exec.zig").ExecCommand;
 pub const OrbitExecCommand = struct {
     pub const name = "exec";
     pub const description = "Run arbitrary command inside a child orbit environment";
+    pub const opaque_arguments_after = 2;
 
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon orbit exec <orbit> -- <cmd...>
+            \\Usage: moon orbit exec <orbit> [--] <command> [-- [args...]]
             \\
             \\Executes a command inside the isolated environment of a child orbit.
             \\The current working directory will be temporarily changed to the orbit's path.
             \\
             \\Example:
-            \\  moon orbit exec openresty -- resty app.lua
+            \\  moon orbit exec openresty resty -- app.lua
             \\
         , .{});
     }

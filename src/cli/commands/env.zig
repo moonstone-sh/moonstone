@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
@@ -32,10 +33,19 @@ pub const EnvCommand = struct {
         var result = try allocator.dupe(u8, template);
         errdefer allocator.free(result);
 
+        const native_library_export = if (run_env.native_lib_path) |native_lib_path| switch (builtin.os.tag) {
+            .linux, .freebsd => try std.fmt.allocPrint(allocator, "export LD_LIBRARY_PATH=\"{s}:${{LD_LIBRARY_PATH:-}}\"\n", .{native_lib_path}),
+            .macos => try std.fmt.allocPrint(allocator, "export DYLD_FALLBACK_LIBRARY_PATH=\"{s}:${{DYLD_FALLBACK_LIBRARY_PATH:-}}\"\n", .{native_lib_path}),
+            .windows => "",
+            else => "",
+        } else "";
+        defer if (run_env.native_lib_path != null and native_library_export.len > 0) allocator.free(native_library_export);
+
         const replacements = [_]struct { key: []const u8, value: []const u8 }{
             .{ .key = "{{bin_path}}", .value = run_env.bin_path },
             .{ .key = "{{lua_path}}", .value = run_env.lua_path },
             .{ .key = "{{lua_cpath}}", .value = run_env.lua_cpath },
+            .{ .key = "{{native_library_export}}", .value = native_library_export },
             .{ .key = "{{project_root}}", .value = project_root },
         };
 
@@ -60,10 +70,17 @@ pub const EnvCommand = struct {
         defer run_env.deinit();
 
         if (self.json) {
-            try stdout.print(
-                \\{{"path":"{s}","lua_path":"{s}","lua_cpath":"{s}","lua_version":"{s}"}}
-                \\
-            , .{ run_env.bin_path, run_env.lua_path, run_env.lua_cpath, run_env.lua_ver_dot });
+            if (run_env.native_lib_path) |native_lib_path| {
+                try stdout.print(
+                    \\{{"path":"{s}","lua_path":"{s}","lua_cpath":"{s}","native_lib_path":"{s}","lua_version":"{s}"}}
+                    \\
+                , .{ run_env.bin_path, run_env.lua_path, run_env.lua_cpath, native_lib_path, run_env.lua_ver_dot });
+            } else {
+                try stdout.print(
+                    \\{{"path":"{s}","lua_path":"{s}","lua_cpath":"{s}","native_lib_path":null,"lua_version":"{s}"}}
+                    \\
+                , .{ run_env.bin_path, run_env.lua_path, run_env.lua_cpath, run_env.lua_ver_dot });
+            }
         } else if (self.paths) {
             try stdout.print("{s}\n", .{run_env.bin_path});
         } else if (self.shell) |s| {
@@ -86,6 +103,7 @@ pub const EnvCommand = struct {
             try stdout.print("  PATH:      {s}\n", .{run_env.bin_path});
             try stdout.print("  LUA_PATH:  {s}\n", .{run_env.lua_path});
             try stdout.print("  LUA_CPATH: {s}\n", .{run_env.lua_cpath});
+            if (run_env.native_lib_path) |native_lib_path| try stdout.print("  NATIVE_LIB_PATH: {s}\n", .{native_lib_path});
         }
     }
 };

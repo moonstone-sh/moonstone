@@ -328,7 +328,7 @@ moon exec [options] <command> [args...]
 - **First Positional Boundary**: All Moonstone options (`--global`, `--json`, `--dev`, `--prod`, etc.) must precede `<command>`. Once `<command>` is encountered, Moonstone transfers ownership of all remaining arguments to `<command>` without interpreting them.
 - **Double-Dash (`--`) Position**:
   - An optional `--` **before** `<command>` explicitly terminates Moonstone option parsing (useful if `<command>` starts with a hyphen, e.g. `moon exec -- -strange-program arg`).
-  - Any `--` **after** `<command>` is passed **verbatim** to `<command>` (e.g. `moon exec pepe --flag_1 -- juan --flag_2` passes `--` and all subsequent flags directly to `pepe`).
+  - One `--` **after** `<command>` is an optional argument delimiter and is not forwarded (e.g. `moon exec tool -- --child-flag`). Use `moon exec tool -- --` to pass one literal `--` to `tool`.
 - **Direct Execution**: Arguments are passed directly via `spawn` array boundaries (`child.argv`) without shell string re-assembly, preserving exact argument boundaries.
 
 See [LÖVE + Moonstone](LOVE.md) for a complete `love-importer` workflow.

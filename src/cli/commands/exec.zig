@@ -12,12 +12,12 @@ fn pathSeparator() u8 {
 pub const ExecCommand = struct {
     pub const name = "exec";
     pub const description = "Run arbitrary command inside environment";
+    pub const opaque_arguments_after = 1;
 
     positionals: []const []const u8 = &.{},
     prod: bool = false,
     dev: bool = false,
     interpreter: ?[]const u8 = null,
-    target: ?[]const u8 = null,
     json: bool = false,
     global: bool = false,
 
@@ -28,17 +28,17 @@ pub const ExecCommand = struct {
             \\Executes an arbitrary command inside the project environment.
             \\
             \\All Moonstone options must appear BEFORE <command>. Once <command> is
-            \\encountered, ownership of all remaining arguments—including any later '--'—
-            \\transfers to the child process unchanged.
+            \\encountered, ownership of all remaining arguments transfers to the child
+            \\process unchanged.
             \\
             \\An optional '--' may appear before <command> to explicitly terminate Moonstone
-            \\option parsing (e.g. when <command> itself starts with a hyphen).
+            \\option parsing. One '--' after <command> is treated as an argument delimiter
+            \\and is not forwarded; use a second '--' to pass a literal delimiter.
             \\
             \\Options:
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
             \\  --interpreter <i> Override interpreter
-            \\  --target <t>     Override target
             \\  --json           Output results as JSON
             \\  --global         Run command from the global tools environment
             \\

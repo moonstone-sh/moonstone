@@ -8,18 +8,19 @@ const run_command = @import("run.zig").RunCommand;
 pub const OrbitRunCommand = struct {
     pub const name = "run";
     pub const description = "Run a named script inside a child orbit environment";
+    pub const opaque_arguments_after = 2;
 
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon orbit run <orbit> <script> [args...]
+            \\Usage: moon orbit run <orbit> <script> [-- [args...]]
             \\
             \\Executes a script inside the isolated environment of a child orbit.
             \\The current working directory will be temporarily changed to the orbit's path.
             \\
             \\Example:
-            \\  moon orbit run openresty serve --port 8080
+            \\  moon orbit run openresty serve -- --port 8080
             \\
         , .{});
     }
@@ -78,7 +79,7 @@ pub const OrbitRunCommand = struct {
     pub fn run(self: OrbitRunCommand, ctx: *router.Context) !void {
         if (self.positionals.len < 2) {
             try ctx.stdout.print(
-                \\Usage: moon orbit run <orbit> <script> [args...]
+                \\Usage: moon orbit run <orbit> <script> [-- [args...]]
                 \\
             , .{});
             return error.MissingArgument;

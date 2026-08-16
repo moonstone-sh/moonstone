@@ -66,11 +66,18 @@ pub const RuntimeProvision = struct {
     }
 };
 
+pub const NativeLibraryLinkage = enum {
+    unknown,
+    shared,
+    static,
+};
+
 pub const FeatureProvision = struct {
     name: []const u8,
     path: []const u8,
     entry_point: ?[]const u8 = null,
     module: ?[]const u8 = null,
+    linkage: NativeLibraryLinkage = .unknown,
 
     pub fn deinit(self: FeatureProvision, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -85,6 +92,7 @@ pub const FeatureProvision = struct {
             .path = try allocator.dupe(u8, self.path),
             .entry_point = if (self.entry_point) |ep| try allocator.dupe(u8, ep) else null,
             .module = if (self.module) |m| try allocator.dupe(u8, m) else null,
+            .linkage = self.linkage,
         };
     }
 };
@@ -211,6 +219,7 @@ pub const CollectConfig = struct {
     bins: []const FeatureProvision = &.{},
     headers: []const FeatureProvision = &.{},
     native_lib: []const FeatureProvision = &.{},
+    assets: []const FeatureProvision = &.{},
 
     pub fn clone(self: CollectConfig, allocator: std.mem.Allocator) !CollectConfig {
         var res = CollectConfig{};
@@ -219,6 +228,7 @@ pub const CollectConfig = struct {
         res.bins = try self.cloneList(FeatureProvision, self.bins, allocator);
         res.headers = try self.cloneList(FeatureProvision, self.headers, allocator);
         res.native_lib = try self.cloneList(FeatureProvision, self.native_lib, allocator);
+        res.assets = try self.cloneList(FeatureProvision, self.assets, allocator);
         return res;
     }
 
@@ -822,6 +832,9 @@ pub const RemotePackageDescriptor = struct {
                                         } else if (std.mem.eql(u8, provision_kind, "include") or std.mem.eql(u8, provision_kind, "headers")) {
                                             try headers.append(allocator, feature);
                                         } else if (std.mem.eql(u8, provision_kind, "lib")) {
+                                            if (provision.get("linkage")) |linkage| {
+                                                feature.linkage = std.meta.stringToEnum(NativeLibraryLinkage, linkage.string) orelse return error.InvalidNativeLibraryLinkage;
+                                            }
                                             try native_libs.append(allocator, feature);
                                         } else if (std.mem.eql(u8, provision_kind, "lua_module")) {
                                             try lua_modules.append(allocator, feature);
@@ -1067,6 +1080,9 @@ pub const StoreManifest = struct {
                     }
                     if (p.module) |m| {
                         try writer.print(", module = \"{s}\"", .{m});
+                    }
+                    if (comptime std.mem.eql(u8, field, "native_lib")) {
+                        if (p.linkage != .unknown) try writer.print(", linkage = \"{s}\"", .{@tagName(p.linkage)});
                     }
                     try writer.print(" }}", .{});
                 }
@@ -1760,10 +1776,11 @@ pub const MoonstoneToml = struct {
         return switch (role) {
             .tool => 0,
             .dev => 1,
-            .runtime => 2,
-            .helper => 3,
-            .external => 4,
-            .optional => 5,
+            .build => 2,
+            .runtime => 3,
+            .helper => 4,
+            .external => 5,
+            .optional => 6,
         };
     }
 
@@ -2676,6 +2693,40 @@ test "StoreManifest source_url round-trips through serialize and parse" {
     try std.testing.expectEqualStrings("puc_lua_source", sm2.origin.source_kind);
     try std.testing.expectEqualStrings("sources/source.tar.gz", sm2.origin.source_payload);
     try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/blobs/b3/so/ur/cehash.tar.gz", sm2.origin.source_url);
+}
+
+test "StoreManifest native library linkage round-trips and defaults to unknown" {
+    const prefix =
+        "[artifact]\n" ++
+        "name = \"native-probe\"\n" ++
+        "version = \"1.0.0\"\n" ++
+        "kind = \"lib\"\n" ++
+        "artifact_hash = \"b3:artifact\"\n" ++
+        "target = \"x86_64-linux-gnu\"\n" ++
+        "lua_abi = \"lua54\"\n" ++
+        "lua_api = \"5.4\"\n" ++
+        "runtime = \"lua@5.4.7\"\n" ++
+        "runtime_artifact_hash = \"b3:runtime\"\n" ++
+        "resolver = \"rocks\"\n" ++
+        "source = \"https://example.invalid/native-probe\"\n" ++
+        "recipe_hash = \"b3:recipe\"\n\n" ++
+        "[provides]\n";
+    const explicit_linkage = prefix ++ "native_lib = [{ name = \"nativeprobe\", path = \"lib/native/libnativeprobe.so\", linkage = \"shared\" }]\n";
+
+    var parsed = try StoreManifest.parse(std.testing.allocator, explicit_linkage);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NativeLibraryLinkage.shared, parsed.provides.native_lib[0].linkage);
+
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    try parsed.serialize(std.testing.allocator, &output.writer);
+    try output.writer.flush();
+    try std.testing.expect(std.mem.indexOf(u8, output.writer.buffer[0..output.writer.end], "linkage = \"shared\"") != null);
+
+    const legacy_linkage = prefix ++ "native_lib = [{ name = \"legacy\", path = \"lib/liblegacy.a\" }]\n";
+    var legacy = try StoreManifest.parse(std.testing.allocator, legacy_linkage);
+    defer legacy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(NativeLibraryLinkage.unknown, legacy.provides.native_lib[0].linkage);
 }
 
 test "MoonstoneToml rejects registry authentication fields" {
