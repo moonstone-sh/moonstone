@@ -1131,6 +1131,15 @@ pub fn prepare_source_rock(
         .unsupported => return error.UnsupportedLuaRocksBuildType,
         .binary_rock => unreachable,
     }
+    const selected_target = options.target orelse platform_target.hostTargetLiteral();
+    if (!platform_target.isHost(selected_target) and class != .pure_lua) {
+        @import("../../diagnostics/error_context.zig").setFmt(
+            allocator,
+            "LuaRocks package {s}@{s} declares a {s} build and cannot be materialized for foreign target `{s}`. Foreign profiles currently support pure-Lua rocks only; publish a target artifact or materialize this package on that target.",
+            .{ pkg_name, version, rock_build_type(&intent), selected_target },
+        );
+        return error.ForeignTargetSourceUnsupported;
+    }
     const workspace_name = try std.fmt.allocPrint(allocator, "rocks-{s}-{s}-{d}-{d}", .{ pkg_name, version, std.Thread.getCurrentId(), materialization_workspace_counter.fetchAdd(1, .monotonic) });
     defer allocator.free(workspace_name);
     const workspace_path = try std.fs.path.join(allocator, &.{ paths.tmp, workspace_name });

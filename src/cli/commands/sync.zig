@@ -1067,6 +1067,7 @@ const LockedReplayPool = struct {
     index_db_path_z: [:0]const u8,
     registries: []const moonstone.registry.core.ResolvedRegistry,
     provider_options: moonstone.resolution.options.ResolveOptions,
+    lua_exe: ?[]const u8,
     targets: []const moonstone.resolution.solver.term.Term,
     target: []const u8,
     jobs: []LockedReplayJob,
@@ -1100,7 +1101,7 @@ const LockedReplayPool = struct {
             self.registries,
             self.provider_options,
             self.env,
-            null,
+            self.lua_exe,
             self.targets,
         );
         defer worker_provider.deinit();
@@ -1472,26 +1473,19 @@ pub const SyncCommand = struct {
         moonstone.platform.target.validate(lock_target) catch return error.UnsupportedTarget;
         const target_is_host = std.mem.eql(u8, lock_target, host_target);
 
-        // Rockspec resolution itself may execute Lua tooling. Until the
-        // LuaRocks pipeline owns a target-native interpreter/toolchain, reject
-        // it before runtime resolution rather than accidentally running a
-        // foreign executable on the host.
-        if (!target_is_host) {
+        const needs_host_rockspec_parser = blk: {
+            if (target_is_host) break :blk false;
             for (mt.dependencies.items) |dep| {
                 const raw_spec = try dep.toSpecString(allocator);
                 defer allocator.free(raw_spec);
                 const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                 defer spec.deinit(allocator);
                 if (try resolverForPackageSpec(&mt, spec) == .rocks) {
-                    moonstone.diagnostics.error_context.setFmt(
-                        allocator,
-                        "LuaRocks resolution is host-executed and cannot create foreign target `{s}` profiles yet. Use a target-specific Moonstone registry artifact or remove the rocks dependency from this target closure.",
-                        .{lock_target},
-                    );
-                    return error.ForeignTargetSourceUnsupported;
+                    break :blk true;
                 }
             }
-        }
+            break :blk false;
+        };
 
         if (!self.json) backend.phase("Resolving runtime {s}@{s}...", .{ pkg_name, pkg_ver });
 
@@ -1567,6 +1561,71 @@ pub const SyncCommand = struct {
                 },
                 else => {},
             },
+        }
+
+        // A foreign runtime must never execute on the host merely to evaluate
+        // a LuaRocks declaration. When the manifest names a rocks dependency,
+        // materialize the matching host runtime as an execution-only parser
+        // tool. It is deliberately absent from the foreign profile and lock.
+        var host_rockspec_parser: ?[]const u8 = null;
+        defer if (host_rockspec_parser) |path| allocator.free(path);
+        if (needs_host_rockspec_parser) {
+            if (!self.json) backend.phase("Preparing host Lua parser for LuaRocks metadata...", .{});
+
+            var parser_runtime = coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
+                .on_event = on_resolve_cb,
+                .on_event_context = on_resolve_ctx,
+                .offline = self.offline,
+                .build_env = build_env,
+                .target = host_target,
+            }, env) catch |err| {
+                moonstone.diagnostics.error_context.setFmt(
+                    allocator,
+                    "Foreign target `{s}` requires a host Lua runtime to evaluate LuaRocks metadata for {s}@{s}; configure or publish the host runtime first ({s}).",
+                    .{ lock_target, pkg_name, pkg_ver, @errorName(err) },
+                );
+                return error.ForeignTargetRocksParserUnavailable;
+            };
+            defer parser_runtime.deinit(allocator);
+
+            const parser_materialized = switch (parser_runtime.location) {
+                .local_store, .local_path => moonstone.materialization.materializer.MaterializeResult{
+                    .path = try allocator.dupe(u8, parser_runtime.local_path.?),
+                    .artifact_hash = try allocator.dupe(u8, parser_runtime.artifact_hash),
+                },
+                .remote => switch (parser_runtime.origin) {
+                    .moonstone_registry => |r| mat.materialize_remote(
+                        r.url,
+                        r.token,
+                        r.descriptor_path,
+                        parser_runtime.remote_desc.?,
+                        r.artifact_idx,
+                    ) catch |err| {
+                        moonstone.diagnostics.error_context.setFmt(
+                            allocator,
+                            "Foreign target `{s}` requires a materialized host Lua runtime to evaluate LuaRocks metadata ({s}).",
+                            .{ lock_target, @errorName(err) },
+                        );
+                        return error.ForeignTargetRocksParserUnavailable;
+                    },
+                    else => return error.UnsupportedOriginForRuntime,
+                },
+            };
+            defer parser_materialized.deinit(allocator);
+
+            host_rockspec_parser = moonstone.resolution.sources.luarocks.find_runtime_lua_executable(
+                allocator,
+                io,
+                parser_materialized.path,
+                env,
+            ) catch |err| {
+                moonstone.diagnostics.error_context.setFmt(
+                    allocator,
+                    "Foreign target `{s}` cannot use the host runtime as a LuaRocks parser ({s}).",
+                    .{ lock_target, @errorName(err) },
+                );
+                return error.ForeignTargetRocksParserUnavailable;
+            };
         }
 
         // Enrich store-hit artifacts with source provenance from the registry.
@@ -1679,7 +1738,7 @@ pub const SyncCommand = struct {
             .runtime_path = rt_mat_res.path,
             .build_env = build_env,
             .target = lock_target,
-        }, env, null, targets.items);
+        }, env, host_rockspec_parser, targets.items);
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
             provider_impl.deinit();
@@ -1835,6 +1894,7 @@ pub const SyncCommand = struct {
                     .index_db_path_z = index_db_path_z,
                     .registries = registries,
                     .provider_options = provider_impl.options,
+                    .lua_exe = host_rockspec_parser,
                     .targets = targets.items,
                     .target = lock_target,
                     .jobs = locked_replay_jobs.items,
@@ -2529,6 +2589,7 @@ pub const SyncCommand = struct {
                         .runtime_c_api = runtime_c_api,
                         .runtime_artifact_hash = rt_res.artifact_hash,
                         .runtime_path = rt_mat_res.path,
+                        .lua_exe = host_rockspec_parser,
                         .build_env = build_env,
                         .target = lock_target,
                     },
@@ -2669,15 +2730,6 @@ pub const SyncCommand = struct {
                 );
                 return error.ForeignTargetLiveSourceUnsupported;
             }
-            if (!target_is_host and pkg.origin == .luarocks) {
-                moonstone.diagnostics.error_context.setFmt(
-                    allocator,
-                    "LuaRocks source materialization for {s}@{s} is host-executed and cannot create a foreign target `{s}` yet. Use a target-specific artifact or a Moonstone registry package for this profile.",
-                    .{ pkg.name, pkg.version, lock_target },
-                );
-                return error.ForeignTargetSourceUnsupported;
-            }
-
             if (pkg.local_path) |lp| {
                 // If it's a link or path, handle it separately
                 const is_link = std.mem.eql(u8, pkg.artifact_hash, "link");
