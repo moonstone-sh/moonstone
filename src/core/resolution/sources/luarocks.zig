@@ -399,6 +399,37 @@ fn rock_build_type(rock: *const luarocks.RockspecIntent) []const u8 {
     return rock.build.type orelse "builtin";
 }
 
+/// LuaRocks installs modules below a `major.minor` directory, while Moonstone's
+/// runtime identity also accepts ABI-oriented spellings such as `lua54` and
+/// `lua-5.4`. Keep command-backend installation and output discovery on the
+/// same filesystem spelling.
+fn lua_module_directory_version(allocator: std.mem.Allocator, runtime: []const u8) ![]const u8 {
+    if (runtime.len == 3 and runtime[1] == '.') return try allocator.dupe(u8, runtime);
+    if (runtime.len == 5 and std.mem.startsWith(u8, runtime, "lua") and std.ascii.isDigit(runtime[3]) and std.ascii.isDigit(runtime[4])) {
+        return try std.fmt.allocPrint(allocator, "{c}.{c}", .{ runtime[3], runtime[4] });
+    }
+    if (runtime.len == 7 and std.mem.startsWith(u8, runtime, "lua-") and runtime[4] == '.' and std.ascii.isDigit(runtime[3]) and std.ascii.isDigit(runtime[5])) {
+        return try allocator.dupe(u8, runtime[3..]);
+    }
+    return try allocator.dupe(u8, runtime);
+}
+
+test "LuaRocks module directories use major.minor Lua version spelling" {
+    const allocator = std.testing.allocator;
+
+    const lua54 = try lua_module_directory_version(allocator, "lua54");
+    defer allocator.free(lua54);
+    try std.testing.expectEqualStrings("5.4", lua54);
+
+    const dashed = try lua_module_directory_version(allocator, "lua-5.3");
+    defer allocator.free(dashed);
+    try std.testing.expectEqualStrings("5.3", dashed);
+
+    const dotted = try lua_module_directory_version(allocator, "5.2");
+    defer allocator.free(dotted);
+    try std.testing.expectEqualStrings("5.2", dotted);
+}
+
 fn rock_source_url(rock: *const luarocks.RockspecIntent) []const u8 {
     return rock.source.url orelse "";
 }
@@ -552,7 +583,6 @@ fn translateCommandBuild(
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_BINDIR"), .value = try allocator.dupe(u8, "${runtime.bin_dir}") });
 
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
-        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "DESTDIR"), .value = try allocator.dupe(u8, "${out}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "prefix"), .value = try allocator.dupe(u8, "") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "INST_LIBDIR"), .value = try allocator.dupe(u8, "${out}/lib/lua/${lua_abi}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "INST_LUADIR"), .value = try allocator.dupe(u8, "${out}/share/lua/${lua_abi}") });
@@ -3419,6 +3449,8 @@ pub fn materialize_prepared_rock(
     const work_dir = fetched_source.path;
     const compatibility_recipe = prepared.compatibility_recipe;
     const build_out_dir = prepared.build_out_path;
+    const lua_module_dir_version = try lua_module_directory_version(allocator, runtime_spec);
+    defer allocator.free(lua_module_dir_version);
     const is_cmake_build = std.mem.eql(u8, rock_build_type(&intent), "cmake");
     const cmake_install_root = if (is_cmake_build)
         try std.fs.path.join(allocator, &.{ build_out_dir, cmake_mat.install_staging_dir_name })
@@ -3587,14 +3619,14 @@ pub fn materialize_prepared_rock(
                 const command_mat = @import("../../materialization/materializers/command.zig");
                 const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
                 defer allocator.free(log_file_name);
-                command_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, runtime_spec, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
+                command_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, lua_module_dir_version, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
                     @import("../../diagnostics/error_context.zig").setFmt(allocator, "command compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
                     return err;
                 };
             } else if (std.mem.eql(u8, config.kind, "cmake")) {
                 const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
                 defer allocator.free(log_file_name);
-                cmake_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, runtime_spec, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
+                cmake_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, lua_module_dir_version, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
                     @import("../../diagnostics/error_context.zig").setFmt(allocator, "cmake compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
                     return err;
                 };
@@ -3651,24 +3683,18 @@ pub fn materialize_prepared_rock(
     try copy_luarocks_install_libraries(allocator, io, declared_output_root, build_out_dir, install_lib, native_libs);
 
     if (rock_class == .command_build) {
-        const lua_ver_dot = if (std.mem.startsWith(u8, runtime_spec, "lua") and runtime_spec.len == 5)
-            try std.fmt.allocPrint(allocator, "{c}.{c}", .{ runtime_spec[3], runtime_spec[4] })
-        else
-            try allocator.dupe(u8, runtime_spec);
-        defer allocator.free(lua_ver_dot);
-
         const module_root = cmake_install_root orelse build_out_dir;
-        const share_dir = try std.fs.path.join(allocator, &.{ module_root, "share", "lua", lua_ver_dot });
+        const share_dir = try std.fs.path.join(allocator, &.{ module_root, "share", "lua", lua_module_dir_version });
         defer allocator.free(share_dir);
-        const lib_dir = try std.fs.path.join(allocator, &.{ module_root, "lib", "lua", lua_ver_dot });
+        const lib_dir = try std.fs.path.join(allocator, &.{ module_root, "lib", "lua", lua_module_dir_version });
         defer allocator.free(lib_dir);
 
-        const share_prefix = try std.fmt.allocPrint(allocator, "share/lua/{s}", .{lua_ver_dot});
+        const share_prefix = try std.fmt.allocPrint(allocator, "share/lua/{s}", .{lua_module_dir_version});
         defer allocator.free(share_prefix);
         lua_modules = try discover_modules_from_dir(allocator, io, share_dir, share_prefix, ".lua");
         if (cmake_install_root) |root| try copy_provisions_from_root(allocator, io, root, build_out_dir, lua_modules);
 
-        const lib_prefix = try std.fmt.allocPrint(allocator, "lib/lua/{s}", .{lua_ver_dot});
+        const lib_prefix = try std.fmt.allocPrint(allocator, "lib/lua/{s}", .{lua_module_dir_version});
         defer allocator.free(lib_prefix);
         lua_cmodules = try discover_modules_from_dir(allocator, io, lib_dir, lib_prefix, ".so");
         if (cmake_install_root) |root| try copy_provisions_from_root(allocator, io, root, build_out_dir, lua_cmodules);
