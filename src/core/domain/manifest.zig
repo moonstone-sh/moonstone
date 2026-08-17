@@ -766,13 +766,18 @@ pub const RemotePackageDescriptor = struct {
                             .format = "",
                         };
                         art.id = if (a_table.get("id")) |id| try allocator.dupe(u8, id.string) else try allocator.dupe(u8, "");
-                        art.kind = try allocator.dupe(u8, a_table.get("kind").?.string);
+                        const kind = a_table.get("kind") orelse return error.MissingArtifactKind;
+                        if (kind != .string) return error.InvalidArtifactKind;
+                        art.kind = try allocator.dupe(u8, kind.string);
                         art.target = if (a_table.get("target")) |target| try allocator.dupe(u8, target.string) else try allocator.dupe(u8, "");
                         art.lua_abi = if (a_table.get("lua_abi")) |abi| try allocator.dupe(u8, abi.string) else try allocator.dupe(u8, "");
                         art.lua_api = if (a_table.get("lua_api")) |la| try allocator.dupe(u8, la.string) else try allocator.dupe(u8, "");
                         art.runtime = if (a_table.get("runtime")) |rt| try parseArtifactRuntimeValue(allocator, rt) else try allocator.dupe(u8, "");
                         art.runtime_artifact_hash = if (a_table.get("interpreter_artifact_hash")) |rh| try allocator.dupe(u8, rh.string) else try allocator.dupe(u8, "");
-                        art.native_compat_required = if (a_table.get("native_compat_required")) |required| required.boolean else false;
+                        art.native_compat_required = if (a_table.get("native_compat_required")) |required| blk: {
+                            if (required != .boolean) return error.InvalidArtifactNativeCompatRequired;
+                            break :blk required.boolean;
+                        } else false;
 
                         art.url = try allocator.dupe(u8, a_table.get("url").?.string);
                         art.hash = try allocator.dupe(u8, a_table.get("hash").?.string);
