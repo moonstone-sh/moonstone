@@ -49,11 +49,16 @@ jobs:
       - name: Verify LuaRocks rockspec compatibility corpus
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
+          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
           export LUAROCKS_UPSTREAM_DIR="$GITHUB_WORKSPACE/.ci/luarocks-upstream"
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_conformance.sh
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_schema_mutation_matrix.sh
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_projection_parity.sh
+
+      - name: Generate synthetic test sandbox
+        run: |
+          lua5.4 tests/lua-tools/src/moon-tools.lua generate-sandbox --clean
+          lua5.4 tests/lua-tools/src/moon-tools.lua registry-builder --output-dir fixtures/sandbox
 
       - name: Verify generic Make materialization
         run: tests/e2e/build/make_module.sh
