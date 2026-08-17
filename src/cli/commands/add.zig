@@ -592,6 +592,8 @@ pub const add_command = struct {
             },
             env,
             lua_exe,
+            null,
+            null,
             provider_targets_slice,
         );
         profiler.spanCount("add.provider.plan", profile_span, "targets", targets.items.len);

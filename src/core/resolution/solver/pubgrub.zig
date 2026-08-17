@@ -13,6 +13,11 @@ const Term = term_mod.Term;
 const Incompatibility = incompatibility_mod.Incompatibility;
 const Assignment = assignment_mod.Assignment;
 
+const ExpandedPackage = struct {
+    name: []const u8,
+    version: semver.Version,
+};
+
 /// The internal state of the PubGrub solver.
 pub const Solver = struct {
     allocator: std.mem.Allocator,
@@ -22,6 +27,7 @@ pub const Solver = struct {
     arena: std.heap.ArenaAllocator,
     incompatibilities: std.ArrayListUnmanaged(*Incompatibility),
     solution: partial_solution_mod.PartialSolution,
+    expanded_packages: std.ArrayListUnmanaged(ExpandedPackage),
 
     last_conflict: ?*Incompatibility,
 
@@ -33,6 +39,7 @@ pub const Solver = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .incompatibilities = .empty,
             .solution = partial_solution_mod.PartialSolution.init(),
+            .expanded_packages = .empty,
             .last_conflict = null,
         };
     }
@@ -59,6 +66,7 @@ pub const Solver = struct {
 
     pub fn deinit(self: *Solver) void {
         self.solution.deinit(self.allocator);
+        self.expanded_packages.deinit(self.allocator);
         self.arena.deinit();
     }
 
@@ -191,6 +199,57 @@ pub const Solver = struct {
         return null;
     }
 
+    fn hasExpandedPackage(self: *const Solver, name: []const u8, version: semver.Version) bool {
+        for (self.expanded_packages.items) |expanded| {
+            if (std.mem.eql(u8, expanded.name, name) and expanded.version.compare(version) == 0) return true;
+        }
+        return false;
+    }
+
+    fn expandDependencies(self: *Solver, assignment: Assignment, version: semver.Version) !void {
+        if (self.hasExpandedPackage(assignment.term.name, version)) return;
+
+        const arena = self.arena.allocator();
+        try self.expanded_packages.append(self.allocator, .{
+            .name = try arena.dupe(u8, assignment.term.name),
+            .version = try version.clone(arena),
+        });
+
+        const deps = try self.provider.getDependencies(assignment.term.name, version);
+        defer arena.free(deps);
+
+        for (deps) |d| {
+            var terms = try arena.alloc(Term, 2);
+            terms[0] = Term{
+                .name = try arena.dupe(u8, assignment.term.name),
+                .range = try assignment.term.range.clone(arena),
+                .registry = if (assignment.term.registry) |r| try arena.dupe(u8, r) else null,
+                .resolver = assignment.term.resolver,
+            };
+            terms[1] = Term{
+                .name = try arena.dupe(u8, d.name),
+                .range = try d.range.complement(arena),
+                .registry = if (d.registry) |r| try arena.dupe(u8, r) else null,
+                .resolver = d.resolver,
+            };
+            const inc = try arena.create(Incompatibility);
+            inc.* = .{
+                .terms = terms,
+                .cause = .dependency,
+            };
+            try self.incompatibilities.append(arena, inc);
+        }
+    }
+
+    fn exactVersion(term: Term) ?semver.Version {
+        if (term.range.intervals.len != 1) return null;
+        const interval = term.range.intervals[0];
+        const min = interval.min orelse return null;
+        const max = interval.max orelse return null;
+        if (min.compare(max) != 0) return null;
+        return min;
+    }
+
     fn decide(self: *Solver) !?[]const u8 {
         const arena = self.arena.allocator();
         var seen = std.StringArrayHashMapUnmanaged(void).empty;
@@ -203,9 +262,12 @@ pub const Solver = struct {
             if (seen.contains(as.term.name)) continue;
             try seen.put(arena, as.term.name, {});
 
-            if (as.term.range.intervals.len != 1 or as.term.range.intervals[0].min == null or as.term.range.intervals[0].max == null or
-                as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) != 0)
-            {
+            if (exactVersion(as.term)) |version| {
+                if (!self.hasExpandedPackage(as.term.name, version)) {
+                    try self.expandDependencies(as, version);
+                    return as.term.name;
+                }
+            } else {
                 const versions = try self.provider.getVersions(as.term.name);
                 defer arena.free(versions);
                 self.emit(.resolving, .{ .package = as.term.name });
@@ -238,32 +300,7 @@ pub const Solver = struct {
                         .level = self.solution.decision_level,
                     });
 
-                    const deps = try self.provider.getDependencies(as.term.name, v);
-                    defer {
-                        arena.free(deps);
-                    }
-
-                    for (deps) |d| {
-                        var terms = try arena.alloc(Term, 2);
-                        terms[0] = Term{
-                            .name = try arena.dupe(u8, as.term.name),
-                            .range = try exact_range.clone(arena),
-                            .registry = if (as.term.registry) |r| try arena.dupe(u8, r) else null,
-                            .resolver = as.term.resolver,
-                        };
-                        terms[1] = Term{
-                            .name = try arena.dupe(u8, d.name),
-                            .range = try d.range.complement(arena),
-                            .registry = if (d.registry) |r| try arena.dupe(u8, r) else null,
-                            .resolver = d.resolver,
-                        };
-                        const inc = try arena.create(Incompatibility);
-                        inc.* = .{
-                            .terms = terms,
-                            .cause = .dependency,
-                        };
-                        try self.incompatibilities.append(arena, inc);
-                    }
+                    try self.expandDependencies(self.solution.assignments.getLast(), v);
 
                     return as.term.name;
                 } else {
@@ -487,4 +524,59 @@ test "simple conflict" {
 
     const res = solver.solve(&.{Term{ .name = "A", .range = range }});
     try std.testing.expectError(error.NoSolution, res);
+}
+
+test "exact root requirements expand transitive dependencies" {
+    const allocator = std.testing.allocator;
+    var mp = MockProvider.init(allocator);
+    defer mp.deinit();
+
+    const a_v1 = try semver.Version.parse("1.0.0");
+    try mp.versions.put(allocator, "A", blk: {
+        var versions = try allocator.alloc(semver.Version, 1);
+        versions[0] = a_v1;
+        break :blk versions;
+    });
+
+    const b_v1 = try semver.Version.parse("1.0.0");
+    try mp.versions.put(allocator, "B", blk: {
+        var versions = try allocator.alloc(semver.Version, 1);
+        versions[0] = b_v1;
+        break :blk versions;
+    });
+
+    var a_deps = std.AutoArrayHashMapUnmanaged(semver.Version, []const Term).empty;
+    try a_deps.put(allocator, a_v1, blk: {
+        var terms = try allocator.alloc(Term, 1);
+        terms[0] = .{
+            .name = try allocator.dupe(u8, "B"),
+            .range = try semver.VersionRange.parse(allocator, "1.0.0"),
+        };
+        break :blk terms;
+    });
+    try mp.deps.put(allocator, "A", a_deps);
+
+    var solver = Solver.init(allocator, mp.get_provider(), .{});
+    defer solver.deinit();
+
+    const exact_a = try semver.VersionRange.parse(allocator, "1.0.0");
+    defer exact_a.deinit(allocator);
+
+    var result = try solver.solve(&.{.{ .name = "A", .range = exact_a }});
+    defer {
+        var iterator = result.iterator();
+        while (iterator.next()) |entry| {
+            selfFreeResolveResult(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        result.deinit(allocator);
+    }
+
+    try std.testing.expect(result.contains("A"));
+    try std.testing.expect(result.contains("B"));
+}
+
+fn selfFreeResolveResult(allocator: std.mem.Allocator, key: []const u8, value: root.ResolveResult) void {
+    allocator.free(key);
+    var mutable_value = value;
+    mutable_value.deinit(allocator);
 }

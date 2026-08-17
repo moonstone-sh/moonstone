@@ -131,6 +131,96 @@ const SyncReport = struct {
     total_ms: i128 = 0,
 };
 
+/// Lazily materializes a host Lua interpreter for foreign-target LuaRocks
+/// metadata. The resulting executable is execution-only: it never joins the
+/// foreign target profile or lock closure.
+const ForeignRocksMetadataInterpreter = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    index: moonstone.store.driver.StoreDriver,
+    registries: []const moonstone.registry.core.ResolvedRegistry,
+    runtime_name: []const u8,
+    runtime_constraint: []const u8,
+    foreign_target: []const u8,
+    offline: bool,
+    build_env: []const moonstone.domain.manifest.EnvPair,
+    on_event: ?moonstone.resolution.options.ResolveCallback,
+    on_event_context: ?*anyopaque,
+    materializer: *moonstone.materialization.materializer.Materializer,
+    lua_exe: ?[]const u8 = null,
+
+    fn provide(context: ?*anyopaque) anyerror![]const u8 {
+        const self: *ForeignRocksMetadataInterpreter = @ptrCast(@alignCast(context orelse return error.MissingLuaMetadataInterpreterContext));
+        if (self.lua_exe) |lua_exe| return lua_exe;
+
+        const host_target = try moonstone.platform.target.hostTarget(self.allocator);
+        defer self.allocator.free(host_target);
+
+        var coordinator = moonstone.resolution.coordinator.Coordinator{ .allocator = self.allocator, .io = self.io };
+        var parser_runtime = coordinator.resolve(self.runtime_name, self.runtime_constraint, self.index, self.registries, .{
+            .on_event = self.on_event,
+            .on_event_context = self.on_event_context,
+            .offline = self.offline,
+            .build_env = self.build_env,
+            .target = host_target,
+        }, self.env) catch |err| {
+            moonstone.diagnostics.error_context.setFmt(
+                self.allocator,
+                "Foreign target `{s}` requires a host Lua runtime to evaluate transitive LuaRocks metadata for {s}@{s}; configure or publish the host runtime first ({s}).",
+                .{ self.foreign_target, self.runtime_name, self.runtime_constraint, @errorName(err) },
+            );
+            return error.ForeignTargetRocksParserUnavailable;
+        };
+        defer parser_runtime.deinit(self.allocator);
+
+        const parser_materialized = switch (parser_runtime.location) {
+            .local_store, .local_path => moonstone.materialization.materializer.MaterializeResult{
+                .path = try self.allocator.dupe(u8, parser_runtime.local_path.?),
+                .artifact_hash = try self.allocator.dupe(u8, parser_runtime.artifact_hash),
+            },
+            .remote => switch (parser_runtime.origin) {
+                .moonstone_registry => |r| self.materializer.materialize_remote(
+                    r.url,
+                    r.token,
+                    r.descriptor_path,
+                    parser_runtime.remote_desc.?,
+                    r.artifact_idx,
+                ) catch |err| {
+                    moonstone.diagnostics.error_context.setFmt(
+                        self.allocator,
+                        "Foreign target `{s}` requires a materialized host Lua runtime to evaluate transitive LuaRocks metadata ({s}).",
+                        .{ self.foreign_target, @errorName(err) },
+                    );
+                    return error.ForeignTargetRocksParserUnavailable;
+                },
+                else => return error.UnsupportedOriginForRuntime,
+            },
+        };
+        defer parser_materialized.deinit(self.allocator);
+
+        self.lua_exe = moonstone.resolution.sources.luarocks.find_runtime_lua_executable(
+            self.allocator,
+            self.io,
+            parser_materialized.path,
+            self.env,
+        ) catch |err| {
+            moonstone.diagnostics.error_context.setFmt(
+                self.allocator,
+                "Foreign target `{s}` cannot use the host runtime as a LuaRocks parser ({s}).",
+                .{ self.foreign_target, @errorName(err) },
+            );
+            return error.ForeignTargetRocksParserUnavailable;
+        };
+        return self.lua_exe.?;
+    }
+
+    fn deinit(self: *ForeignRocksMetadataInterpreter) void {
+        if (self.lua_exe) |lua_exe| self.allocator.free(lua_exe);
+        self.lua_exe = null;
+    }
+};
+
 const JsonStderrSilencer = struct {
     io: std.Io,
     saved_fd: ?std.posix.fd_t = null,
@@ -1102,6 +1192,8 @@ const LockedReplayPool = struct {
             self.provider_options,
             self.env,
             self.lua_exe,
+            null,
+            null,
             self.targets,
         );
         defer worker_provider.deinit();
@@ -1628,6 +1720,23 @@ pub const SyncCommand = struct {
             };
         }
 
+        var lazy_rockspec_parser = ForeignRocksMetadataInterpreter{
+            .allocator = allocator,
+            .io = io,
+            .env = env,
+            .index = idx,
+            .registries = registries,
+            .runtime_name = pkg_name,
+            .runtime_constraint = pkg_ver,
+            .foreign_target = lock_target,
+            .offline = self.offline,
+            .build_env = build_env,
+            .on_event = on_resolve_cb,
+            .on_event_context = on_resolve_ctx,
+            .materializer = &mat,
+        };
+        defer lazy_rockspec_parser.deinit();
+
         // Enrich store-hit artifacts with source provenance from the registry.
         // When an artifact was already in the local store, the initial materialization
         // may have predated registry descriptors gaining source_url/source_kind.
@@ -1738,7 +1847,11 @@ pub const SyncCommand = struct {
             .runtime_path = rt_mat_res.path,
             .build_env = build_env,
             .target = lock_target,
-        }, env, host_rockspec_parser, targets.items);
+        }, env, host_rockspec_parser,
+            if (!target_is_host) ForeignRocksMetadataInterpreter.provide else null,
+            if (!target_is_host) @ptrCast(&lazy_rockspec_parser) else null,
+            targets.items,
+        );
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
             provider_impl.deinit();
@@ -1883,6 +1996,18 @@ pub const SyncCommand = struct {
             }
 
             if (locked_replay_jobs.items.len > 0) {
+                const locked_profile_uses_rocks = blk: {
+                    if (target_is_host or host_rockspec_parser != null) break :blk false;
+                    for (locked_replay_jobs.items) |job| {
+                        if (std.mem.eql(u8, job.entry.resolver, "rocks")) break :blk true;
+                    }
+                    break :blk false;
+                };
+                const replay_lua_exe = host_rockspec_parser orelse if (locked_profile_uses_rocks)
+                    try ForeignRocksMetadataInterpreter.provide(@ptrCast(&lazy_rockspec_parser))
+                else
+                    null;
+
                 var mutex_alloc = MutexAllocator{
                     .parent = allocator,
                     .io = io,
@@ -1894,7 +2019,7 @@ pub const SyncCommand = struct {
                     .index_db_path_z = index_db_path_z,
                     .registries = registries,
                     .provider_options = provider_impl.options,
-                    .lua_exe = host_rockspec_parser,
+                    .lua_exe = replay_lua_exe,
                     .targets = targets.items,
                     .target = lock_target,
                     .jobs = locked_replay_jobs.items,
@@ -2573,6 +2698,10 @@ pub const SyncCommand = struct {
                 try pool.execute(jobs);
             }
             if (rocks_jobs.items.len > 0) {
+                const rocks_lua_exe = provider_impl.lua_exe orelse host_rockspec_parser orelse if (!target_is_host)
+                    try ForeignRocksMetadataInterpreter.provide(@ptrCast(&lazy_rockspec_parser))
+                else
+                    null;
                 var pool = RocksPool{
                     .allocator = safe_allocator,
                     .io = io,
@@ -2589,7 +2718,7 @@ pub const SyncCommand = struct {
                         .runtime_c_api = runtime_c_api,
                         .runtime_artifact_hash = rt_res.artifact_hash,
                         .runtime_path = rt_mat_res.path,
-                        .lua_exe = host_rockspec_parser,
+                        .lua_exe = rocks_lua_exe,
                         .build_env = build_env,
                         .target = lock_target,
                     },

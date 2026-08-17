@@ -99,6 +99,8 @@ pub const update_command = struct {
             },
             env,
             null,
+            null,
+            null,
             &.{}, // update --outdated doesn't use explicit targets for all yet
         );
         defer {

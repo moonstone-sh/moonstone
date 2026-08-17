@@ -2790,3 +2790,38 @@ test "MoonstoneToml rejects reserved registry aliases" {
         try std.testing.expectError(error.ReservedRegistryName, MoonstoneToml.parse(allocator, toml_text));
     }
 }
+
+test "RemotePackageDescriptor parses a transitive rocks dependency" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "foreign-parent"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\
+        \\[[dependencies]]
+        \\name = "foreign-root"
+        \\constraint = "== 1.0-1"
+        \\registry = "rocks"
+        \\role = "runtime"
+        \\
+        \\[[artifacts]]
+        \\kind = "compiled"
+        \\target = "any"
+        \\lua_abi = "lua-5.4"
+        \\runtime = "lua@5.4.7"
+        \\url = "blobs/b3/example.tar.gz"
+        \\hash = "b3:example"
+        \\format = "tar.gz"
+        \\
+        \\[artifacts.materialize]
+        \\type = "archive"
+    ;
+
+    var descriptor = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer descriptor.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), descriptor.dependencies.len);
+    try std.testing.expectEqualStrings("foreign-root", descriptor.dependencies[0].name);
+    try std.testing.expectEqualStrings("rocks", descriptor.dependencies[0].resolver.?);
+}

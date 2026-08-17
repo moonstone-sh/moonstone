@@ -50,6 +50,10 @@ pub const LinkedRuntimeDiagnostic = struct {
     suggested_role: ?[]const u8 = null,
 };
 
+/// Supplies a host-executable Lua interpreter when a foreign target needs to
+/// evaluate LuaRocks metadata. The provider owns the returned path's lifetime.
+pub const LuaMetadataInterpreterProvider = *const fn (context: ?*anyopaque) anyerror![]const u8;
+
 pub const RegistryProvider = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -58,6 +62,8 @@ pub const RegistryProvider = struct {
     options: root.ResolveOptions,
     env: ?*std.process.Environ.Map,
     lua_exe: ?[]const u8 = null,
+    lua_metadata_interpreter_provider: ?LuaMetadataInterpreterProvider = null,
+    lua_metadata_interpreter_context: ?*anyopaque = null,
     targets: []const term_mod.Term = &.{},
 
     // Arena for all package metadata (versions, strings, descriptors, artifacts)
@@ -80,6 +86,8 @@ pub const RegistryProvider = struct {
         options: root.ResolveOptions,
         env: ?*std.process.Environ.Map,
         lua_exe: ?[]const u8,
+        lua_metadata_interpreter_provider: ?LuaMetadataInterpreterProvider,
+        lua_metadata_interpreter_context: ?*anyopaque,
         targets: []const term_mod.Term,
     ) void {
         self.* = .{
@@ -90,6 +98,8 @@ pub const RegistryProvider = struct {
             .options = options,
             .env = env,
             .lua_exe = lua_exe,
+            .lua_metadata_interpreter_provider = lua_metadata_interpreter_provider,
+            .lua_metadata_interpreter_context = lua_metadata_interpreter_context,
             .targets = targets,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .artifacts = .empty,
@@ -126,6 +136,14 @@ pub const RegistryProvider = struct {
         }
         // All metadata is in the arena, just deinit it once.
         self.arena.deinit();
+    }
+
+    fn luaMetadataInterpreter(self: *RegistryProvider) !?[]const u8 {
+        if (self.lua_exe) |lua_exe| return lua_exe;
+        const provider = self.lua_metadata_interpreter_provider orelse return null;
+        const lua_exe = try provider(self.lua_metadata_interpreter_context);
+        self.lua_exe = lua_exe;
+        return lua_exe;
     }
 
     fn registryUrlFor(self: *const RegistryProvider, identity: ?[]const u8, resolver_name: []const u8) ?[]const u8 {
@@ -399,7 +417,7 @@ pub const RegistryProvider = struct {
                 }
 
                 var opts = self.options;
-                opts.lua_exe = self.lua_exe;
+                opts.lua_exe = try self.luaMetadataInterpreter();
                 const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?, null, null) catch |err| {
                     if (err == error.PackageNotFound or err == error.RockspecNotFound or
                         err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
@@ -649,7 +667,7 @@ pub const RegistryProvider = struct {
         if (!self.options.offline and res_constraint != null and res_constraint.? == .rocks and self.env != null) {
             if (versions.items.len == 0) {
                 var opts = self.options;
-                opts.lua_exe = self.lua_exe;
+                opts.lua_exe = try self.luaMetadataInterpreter();
                 const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, self.registryUrlFor(reg_constraint, "rocks")) catch |err| blk: {
                     if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
                         break :blk @as([]semver.Version, &.{});
@@ -773,8 +791,14 @@ pub const RegistryProvider = struct {
         };
         defer if (options.target == null) allocator.free(selected_target);
 
+        const allows_native = if (options.target == null) true else blk: {
+            const host = get_host_target_sync(allocator) catch break :blk false;
+            defer allocator.free(host);
+            break :blk std.mem.eql(u8, selected_target, host);
+        };
+
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, selected_target) or std.mem.eql(u8, art.target, "any") or (options.target == null and std.mem.eql(u8, art.target, "native")))) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, selected_target) or std.mem.eql(u8, art.target, "any") or (allows_native and std.mem.eql(u8, art.target, "native")))) {
                 return i;
             }
         }
@@ -883,7 +907,7 @@ pub const RegistryProvider = struct {
             defer self.allocator.free(v_str);
 
             var opts = self.options;
-            opts.lua_exe = self.lua_exe;
+            opts.lua_exe = try self.luaMetadataInterpreter();
 
             var dependencies = rocks_resolver.query_dependencies(
                 self.allocator,
@@ -914,7 +938,6 @@ pub const RegistryProvider = struct {
                 var parsed = try @import("../../luarocks/rockspec.zig").parse_dependency_string(self.allocator, dependency);
                 defer parsed.deinit(self.allocator);
                 if (std.ascii.eqlIgnoreCase(parsed.name, "lua")) continue;
-
                 try self.store_dependency_origins.append(self.allocator, .{
                     .child_name = try self.allocator.dupe(u8, parsed.name),
                     .child_constraint = try self.allocator.dupe(u8, parsed.constraint orelse "*"),

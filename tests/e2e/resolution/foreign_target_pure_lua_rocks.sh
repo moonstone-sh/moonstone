@@ -183,6 +183,53 @@ done
 "${MOON_BIN}" sync --target "${TARGET}" --locked --progress plain
 "${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
 
+mkdir -p "${WORKDIR}/foreign-parent"
+tar -czf "${WORKDIR}/foreign-parent.tar.gz" -C "${WORKDIR}/foreign-parent" .
+cat > "${WORKDIR}/foreign-parent.toml" <<'EOF'
+[package]
+name = "moonstone/foreign-parent"
+version = "1.0.0"
+kind = "lib"
+description = "Synthetic registry package with an exact transitive LuaRocks dependency"
+
+[[dependencies]]
+name = "foreign-root"
+constraint = "== 1.0-1"
+registry = "rocks"
+role = "runtime"
+
+[[artifacts]]
+id = "lua-module-any-lua-5.4"
+kind = "lua_module"
+target = "any"
+lua_api = "lua-5.4"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+format = "tar.gz"
+url = "placeholder"
+hash = "b3:placeholder"
+bytes = 1
+
+[artifacts.materialize]
+type = "archive"
+strip_components = 0
+EOF
+"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/foreign-parent.toml" --blob "${WORKDIR}/foreign-parent.tar.gz" --replace --yes
+
+TRANSITIVE_APP="${WORKDIR}/transitive-app"
+mkdir -p "${TRANSITIVE_APP}"
+cd "${TRANSITIVE_APP}"
+"${MOON_BIN}" init . --name foreign-transitive-rocks --no-git --no-sync
+"${MOON_BIN}" registry add local-synthetic "${REGISTRY}" --default
+"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" add local-synthetic:moonstone/foreign-parent@1.0.0 --no-sync
+"${MOON_BIN}" sync --target "${TARGET}" --progress plain
+"${MOON_BIN}" lock profile get "${TARGET}+moonstone/lua+5.4" --json > "${WORKDIR}/transitive-profile.json"
+grep -q 'moonstone/foreign-parent' "${WORKDIR}/transitive-profile.json"
+grep -q 'foreign-root' "${WORKDIR}/transitive-profile.json"
+grep -q 'foreign-base' "${WORKDIR}/transitive-profile.json"
+grep -q "foreign-${BRANCH}" "${WORKDIR}/transitive-profile.json"
+
 NATIVE_APP="${WORKDIR}/native-app"
 mkdir -p "${NATIVE_APP}"
 cd "${NATIVE_APP}"
