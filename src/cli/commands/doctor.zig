@@ -447,11 +447,9 @@ pub const DoctorCommand = struct {
                     defer allocator.free(r.stderr);
                     if (r.term != .exited or r.term.exited != 0) {
                         const err_out = r.stderr;
-                        if (std.mem.indexOf(u8, err_out, "undefined symbol: lua_") != null or
-                            std.mem.indexOf(u8, err_out, "undefined symbol: luaL_") != null)
-                        {
+                        if (try nativeModuleSymbolFailureMessage(allocator, err_out)) |message| {
                             cmod_ok = false;
-                            cmod_msg = try std.fmt.allocPrint(allocator, "FAIL: ELF dynamic symbol error on C-module load ('undefined symbol: lua_*'). On NixOS/Linux, set LD_PRELOAD=/path/to/liblua.so or use nix-ld.", .{});
+                            cmod_msg = message;
                         } else if (std.mem.indexOf(u8, err_out, "cannot open shared object file") != null) {
                             cmod_ok = false;
                             cmod_msg = try std.fmt.allocPrint(allocator, "WARN: Missing C shared library dependency. On NixOS, run inside a nix-shell with required C libraries.", .{});
@@ -589,6 +587,20 @@ pub const DoctorCommand = struct {
         return missing;
     }
 
+    fn nativeModuleSymbolFailureMessage(allocator: std.mem.Allocator, stderr: []const u8) !?[]const u8 {
+        if (std.mem.indexOf(u8, stderr, "undefined symbol: lua_") == null and
+            std.mem.indexOf(u8, stderr, "undefined symbol: luaL_") == null)
+        {
+            return null;
+        }
+
+        return try std.fmt.allocPrint(
+            allocator,
+            "FAIL: native module cannot resolve the Lua C API from the active runtime ('undefined symbol: lua_*'). The runtime lacks exported Lua API symbols. Upgrade the selected Moonstone Lua runtime (for example, 'moon use lua@5.4.8') and run 'moon sync'.",
+            .{},
+        );
+    }
+
     fn countBrokenSymlinks(allocator: std.mem.Allocator, io: std.Io, abs_dir_path: []const u8) !usize {
         var broken: usize = 0;
         var dir = std.Io.Dir.cwd().openDir(io, abs_dir_path, .{ .iterate = true }) catch return 0;
@@ -635,3 +647,17 @@ pub const DoctorCommand = struct {
         }
     }
 };
+
+test "doctor identifies missing Lua API exports from native module loader output" {
+    const message = try DoctorCommand.nativeModuleSymbolFailureMessage(std.testing.allocator, "error loading module 'cqueues._core': undefined symbol: lua_rawgetp");
+    defer std.testing.allocator.free(message.?);
+
+    try std.testing.expect(message != null);
+    try std.testing.expectStringContains(message.?, "runtime lacks exported Lua API symbols");
+    try std.testing.expectStringContains(message.?, "moon use lua@5.4.8");
+}
+
+test "doctor leaves unrelated native module failures to their dedicated diagnostics" {
+    const message = try DoctorCommand.nativeModuleSymbolFailureMessage(std.testing.allocator, "error loading module 'ssl.core': cannot open shared object file");
+    try std.testing.expect(message == null);
+}
