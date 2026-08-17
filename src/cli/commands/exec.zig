@@ -240,22 +240,38 @@ pub const ExecCommand = struct {
             try stdout.flush();
         }
 
-        // Replace this process with the child. Signals (SIGINT, SIGTERM, etc.)
-        // will be delivered directly to the child, avoiding orphaned process
-        // trees when the user presses Ctrl+C.
-        //
-        // replace() never returns on success — the process image is replaced.
-        // On failure it returns an error from ReplaceError.
-        const err = std.process.replace(io, .{
+        if (comptime std.process.can_replace) {
+            // Replace this process with the child. Signals (SIGINT, SIGTERM,
+            // etc.) are delivered directly to the child, avoiding orphaned
+            // process trees when the user presses Ctrl+C.
+            const err = std.process.replace(io, .{
+                .argv = argv,
+                .environ_map = &run_env.env_map,
+                .expand_arg0 = .expand,
+            });
+            if (err == error.FileNotFound) {
+                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
+                return error.CommandNotFound;
+            }
+            return err;
+        }
+
+        var child = std.process.spawn(io, .{
             .argv = argv,
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
-        });
-        if (err == error.FileNotFound) {
-            if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
-            return error.CommandNotFound;
+        }) catch |err| {
+            if (err == error.FileNotFound) {
+                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
+                return error.CommandNotFound;
+            }
+            return err;
+        };
+        const wait_result = try child.wait(io);
+        if (wait_result != .exited or wait_result.exited != 0) {
+            std.process.exit(if (wait_result == .exited) @intCast(wait_result.exited) else 1);
         }
-        return err;
     }
 };
