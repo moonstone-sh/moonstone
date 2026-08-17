@@ -70,17 +70,14 @@ pub const EnvCommand = struct {
         defer run_env.deinit();
 
         if (self.json) {
-            if (run_env.native_lib_path) |native_lib_path| {
-                try stdout.print(
-                    \\{{"path":"{s}","lua_path":"{s}","lua_cpath":"{s}","native_lib_path":"{s}","lua_version":"{s}"}}
-                    \\
-                , .{ run_env.bin_path, run_env.lua_path, run_env.lua_cpath, native_lib_path, run_env.lua_ver_dot });
-            } else {
-                try stdout.print(
-                    \\{{"path":"{s}","lua_path":"{s}","lua_cpath":"{s}","native_lib_path":null,"lua_version":"{s}"}}
-                    \\
-                , .{ run_env.bin_path, run_env.lua_path, run_env.lua_cpath, run_env.lua_ver_dot });
-            }
+            try std.json.Stringify.value(.{
+                .path = run_env.bin_path,
+                .lua_path = run_env.lua_path,
+                .lua_cpath = run_env.lua_cpath,
+                .native_lib_path = run_env.native_lib_path,
+                .lua_version = run_env.lua_ver_dot,
+            }, .{}, stdout);
+            try stdout.writeAll("\n");
         } else if (self.paths) {
             try stdout.print("{s}\n", .{run_env.bin_path});
         } else if (self.shell) |s| {
