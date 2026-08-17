@@ -76,6 +76,9 @@ jobs:
       - name: Verify pinned luv CMake materialization and locked replay
         run: MOONSTONE_REAL_LUAROCKS=1 tests/e2e/resolution/luv_real_contract.sh
 
+      - name: Verify pinned luaposix command materialization and locked replay
+        run: MOONSTONE_REAL_LUAROCKS=1 tests/e2e/resolution/luaposix_real_contract.sh
+
       - name: Verify LuaRocks command materialization and locked replay
         run: tests/e2e/build/luarocks_command_contract.sh
 

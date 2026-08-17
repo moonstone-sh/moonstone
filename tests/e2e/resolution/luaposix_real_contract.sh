@@ -50,12 +50,26 @@ PORT=$(( ( RANDOM % 1000 ) + 9800 ))
 rm -rf "${WORKDIR}"
 mkdir -p "${MIRROR_DIR}" "${TEST_APP}"
 
+fetch_fixture() {
+    local name="$1"
+    local url="$2"
+    local cache_path="${MOONSTONE_LUAROCKS_FIXTURE_CACHE:-}/${name}"
+
+    if [[ -n "${MOONSTONE_LUAROCKS_FIXTURE_CACHE:-}" && -f "${cache_path}" ]]; then
+        cp "${cache_path}" "${MIRROR_DIR}/${name}"
+        return
+    fi
+
+    curl --fail --location --silent --show-error \
+        --retry 4 --retry-delay 2 --retry-all-errors \
+        --output "${MIRROR_DIR}/${name}" \
+        "${url}"
+}
+
 echo "━━━ fetch and verify pinned luaposix upstream release ━━━"
-curl --fail --location --silent --show-error \
-    --output "${MIRROR_DIR}/${PACKAGE}-${VERSION}.upstream.rockspec" \
+fetch_fixture "${PACKAGE}-${VERSION}.upstream.rockspec" \
     "https://luarocks.org/${PACKAGE}-${VERSION}.rockspec"
-curl --fail --location --silent --show-error \
-    --output "${MIRROR_DIR}/${PACKAGE}-36.3.zip" \
+fetch_fixture "${PACKAGE}-36.3.zip" \
     "https://github.com/luaposix/luaposix/archive/v36.3.zip"
 test "$(sha256_file "${MIRROR_DIR}/${PACKAGE}-${VERSION}.upstream.rockspec")" = "${ROCKSPEC_SHA256}"
 test "$(sha256_file "${MIRROR_DIR}/${PACKAGE}-36.3.zip")" = "${SOURCE_SHA256}"
@@ -116,7 +130,7 @@ assert_luaposix_contract() {
     grep -q '^resolver = "rocks"$' "${manifest_path}"
     grep -Fq "source_hash = \"${SOURCE_B3}\"" "${manifest_path}"
     grep -Fq "source = \"http://localhost:${PORT}/${PACKAGE}-36.3.zip\"" "${manifest_path}"
-    [[ -f "${artifact_dir}/files/lib/lua/5.4/posix/_base.so" ]]
+    [[ -f "${artifact_dir}/files/lib/lua/5.4/posix/unistd.so" ]]
     moon exec -- lua -e 'local posix = assert(require("posix")); assert(type(posix.unistd.getpid()) == "number"); print(posix.unistd.getpid())' >/dev/null
 }
 
