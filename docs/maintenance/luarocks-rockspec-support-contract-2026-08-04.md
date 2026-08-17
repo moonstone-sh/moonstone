@@ -1,6 +1,6 @@
 # LuaRocks Rockspec Support Contract
 
-**Status:** August 16, 2026. This document describes the support boundary that
+**Status:** August 17, 2026. This document describes the support boundary that
 Moonstone currently tests. It is a contract for project authors, not a claim of
 full LuaRocks compatibility.
 
@@ -14,6 +14,7 @@ full LuaRocks compatibility.
 | `source.md5` | Verify the fetched LuaRocks payload against its declared legacy checksum before extraction; retain BLAKE3 for Moonstone artifact identity | `tests/e2e/materialization/luarocks_capability_refusals.sh` |
 | `source.file` | Use the declared payload filename to select the archive decoder when the source URL itself has no archive extension | `tests/e2e/materialization/luarocks_source_dir_contract.sh` |
 | `supported_platforms` | Reject resolution before source fetching when the selected Moonstone target platform is not declared; `unix` matches non-Windows LuaRocks targets | `tests/e2e/materialization/luarocks_capability_refusals.sh` |
+| platform-scoped pure-Lua dependency branches in an artifact-backed foreign target profile | Select LuaRocks' target-platform dependency projection, materialize only pure-Lua source rocks, and keep the target runtime out of the host execution path by using the host runtime only for rockspec metadata | `tests/e2e/resolution/foreign_target_pure_lua_rocks.sh` |
 | mapped `build.install.lua` modules | Preserve LuaRocks dotted module keys in Moonstone Lua-module provisions and replay them from the lock | `tests/e2e/materialization/luarocks_install_lua_contract.sh` |
 | `build.copy_directories` | Preserve declared package files as inspectable artifact assets under `assets/`; do not expose them through Lua or executable runtime paths | `tests/e2e/materialization/luarocks_copy_directories_contract.sh` |
 | `builtin` C sources in `build.modules` | Translate to ABI-bound native C-module materialization, preserve declared assets, project the module at runtime, and reconstruct it from the lock | `tests/e2e/build/luarocks_builtin_cmodule.sh`, pinned LuaFileSystem `1.9.0-1` in `tests/e2e/resolution/luafilesystem_real_contract.sh` |
@@ -54,7 +55,6 @@ not a promise that every historical rock can build on every host.
 
 | Rockspec shape | Current implementation | Before guarantee |
 | --- | --- | --- |
-| Platform-specific rockspec branches | The bridge emits a `moonstone:luarocks-intent:v1` projection using LuaRocks' least-to-most-specific override order, selected from Moonstone's target profile | Versioned validation, target-specific dependency resolution, and resolver consumption of every platform-scoped field |
 | arbitrary `external_dependencies` semantics | Bounded `NAME_INCDIR` / `NAME_LIBDIR` projection is implemented for supported build adapters; generic discovery, package-manager integration, and provisioners are absent | More upstream P2–P4 fixtures across host SDKs and targets |
 
 ## Deliberately Rejected
@@ -87,6 +87,14 @@ concurrent waves, so unrelated rocks remain eligible while a dependent build
 waits for its declared prerequisites. The complete isolation, scheduling, and
 locked-replay contract is covered by
 `tests/e2e/build/luarocks_build_dependencies_contract.sh`.
+
+Foreign target profiles are deliberately narrower than host materialization.
+They require an artifact-backed runtime for the requested target and may only
+materialize `pure_lua` LuaRocks sources. Moonstone resolves rockspec metadata
+through an artifact-backed runtime for the **host**; that parser runtime is not
+added to the foreign lock profile and the foreign runtime is never executed.
+Make, CMake, command, and native builtin rocks remain rejected for foreign
+profiles rather than being accidentally built or run for the host.
 
 The remaining explicit capability errors and rationale are recorded in
 `docs/maintenance/luarocks-materialization-equivalence-audit-2026-08-08.md`.

@@ -1,6 +1,6 @@
 # LuaRocks Upstream Conformance Corpus
 
-**Status:** August 16, 2026.
+**Status:** August 17, 2026.
 
 ## Purpose
 
@@ -45,6 +45,7 @@ Only the final applicable level is a compatibility guarantee.
 | luv `1.51.0-1` | Pinned official rockspec and `.src.rock`, LuaRocks CMake variable map, bundled libuv native module, projected Lua runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 where CMake and a native C toolchain are available; CI-gated | `tests/e2e/resolution/luv_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
 | luaposix `36.3-1` | Pinned official rockspec and source ZIP, LuaRocks command backend placeholders, generated Lua/native POSIX modules, projected runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 on supported POSIX hosts with a C compiler; CI-gated | `tests/e2e/resolution/luaposix_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
 | cqueues `20200726.54-0` | Pinned official rockspec and source archive, Makefile/target/variable-map translation, `source.dir`, source MD5 verification, declared OpenSSL/crypto host paths, projected runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 on supported GNU/Linux hosts with a C compiler and declared OpenSSL SDK; CI-gated | `tests/e2e/resolution/cqueues_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
+| Foreign pure-Lua target-profile fixture | Artifact-backed target runtime, host-only rockspec parser, shared and platform-scoped dependencies, and target-profile lock verification | P1/P2 for pure-Lua source rocks; CI-gated. No foreign execution or native-build claim | `tests/e2e/resolution/foreign_target_pure_lua_rocks.sh` |
 
 Moonstone's existing synthetic scenarios already certify related, but not
 upstream-fixture-identical, behavior for builtin native modules, Make builds,

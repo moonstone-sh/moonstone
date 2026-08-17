@@ -112,6 +112,9 @@ jobs:
       - name: Verify LuaRocks source-rock checksum boundaries
         run: tests/e2e/materialization/luarocks_source_rock_md5_contract.sh
 
+      - name: Verify foreign pure-Lua LuaRocks target profile
+        run: tests/e2e/resolution/foreign_target_pure_lua_rocks.sh
+
       - name: Verify parallel LuaRocks source task lifecycle
         run: tests/e2e/materialization/luarocks_source_parallel_tasks.sh
 

@@ -767,11 +767,14 @@ pub const RegistryProvider = struct {
 
     fn selectArtifactForRuntime(desc: manifest.RemotePackageDescriptor, options: root.ResolveOptions) ?usize {
         const allocator = std.heap.page_allocator;
-        const host = get_host_target_sync(allocator) catch return null;
-        defer allocator.free(host);
+        const selected_target = options.target orelse blk: {
+            const host = get_host_target_sync(allocator) catch return null;
+            break :blk host;
+        };
+        defer if (options.target == null) allocator.free(selected_target);
 
         for (desc.artifact, 0..) |art, i| {
-            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, host) or std.mem.eql(u8, art.target, "any") or std.mem.eql(u8, art.target, "native"))) {
+            if (artifactMatchesRuntimeAbi(desc.package.kind, art, options) and (std.mem.eql(u8, art.target, selected_target) or std.mem.eql(u8, art.target, "any") or (options.target == null and std.mem.eql(u8, art.target, "native")))) {
                 return i;
             }
         }

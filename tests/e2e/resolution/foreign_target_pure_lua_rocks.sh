@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Contract: foreign profiles may resolve and materialize pure-Lua LuaRocks
+# sources when the target runtime is an artifact and a matching host runtime
+# exists solely to evaluate rockspec metadata. The foreign runtime below exits
+# 99 if executed, proving Moonstone never runs it while constructing the
+# profile.
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+MOON_BIN="${PROJECT_ROOT}/zig-out/bin/moon"
+if [[ -z "${MOONSTONE_HOME:-}" ]]; then
+    source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
+fi
+
+case "$(uname -s)" in
+    Darwin) TARGET="x86_64-linux-gnu"; BRANCH="unix" ;;
+    Linux) TARGET="x86_64-windows-gnu"; BRANCH="windows" ;;
+    *) echo "SKIP: unsupported host platform"; exit 0 ;;
+esac
+
+WORKDIR="$(mktemp -d /tmp/moonstone-foreign-pure-lua.XXXXXX)"
+REGISTRY="${WORKDIR}/registry"
+MIRROR="${WORKDIR}/rocks"
+APP="${WORKDIR}/app"
+PORT=$(((RANDOM % 1000) + 10800))
+cleanup() {
+    kill "${SERVER_PID:-}" 2>/dev/null || true
+    wait "${SERVER_PID:-}" 2>/dev/null || true
+    rm -rf "${WORKDIR}"
+}
+trap cleanup EXIT
+
+cp -R "${SANDBOX_DIR}/registry" "${REGISTRY}"
+export MOONSTONE_REGISTRY_PATH="${REGISTRY}"
+mkdir -p "${WORKDIR}/runtime/files/bin" "${MIRROR}" "${APP}"
+
+printf '#!/bin/sh\necho foreign runtime must not execute\nexit 99\n' > "${WORKDIR}/runtime/files/bin/lua"
+chmod +x "${WORKDIR}/runtime/files/bin/lua"
+tar -czf "${WORKDIR}/foreign-runtime.tar.gz" -C "${WORKDIR}/runtime" .
+
+cat > "${WORKDIR}/foreign-runtime.toml" <<EOF
+[package]
+name = "lua"
+version = "5.4.7"
+kind = "runtime"
+
+[[artifacts]]
+kind = "compiled"
+target = "${TARGET}"
+lua_abi = "lua-5.4"
+runtime = "lua@5.4.7"
+url = "placeholder"
+hash = "b3:placeholder"
+format = "tar.gz"
+bytes = 1
+
+[artifacts.materialize]
+type = "archive"
+
+[[artifacts.provides]]
+kind = "runtime"
+name = "lua"
+version = "5.4.7"
+lua_abi = "lua-5.4"
+
+[[artifacts.provides]]
+kind = "bin"
+name = "lua"
+path = "bin/lua"
+EOF
+
+cp "${REGISTRY}/packages/lua/5.4.7/package.toml" "${WORKDIR}/host-runtime.toml"
+WORKDIR="${WORKDIR}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+workdir = Path(os.environ["WORKDIR"])
+host = (workdir / "host-runtime.toml").read_text()
+foreign = (workdir / "foreign-runtime.toml").read_text()
+foreign_header, foreign_artifact = foreign.split("[[artifacts]]", 1)
+host_artifact = host[host.index("[[artifacts]]"):]
+(workdir / "combined-runtime.toml").write_text(
+    foreign_header.rstrip()
+    + "\n\n[[artifacts]]"
+    + foreign_artifact.rstrip()
+    + "\n\n"
+    + host_artifact
+)
+PY
+"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/combined-runtime.toml" --blob "${WORKDIR}/foreign-runtime.tar.gz" --replace --yes
+
+make_rock() {
+    local name="$1"
+    local module="$2"
+    local body="$3"
+    local deps="$4"
+    mkdir -p "${WORKDIR}/${name}-1.0/foreign"
+    printf '%s\n' "${body}" > "${WORKDIR}/${name}-1.0/foreign/${module}.lua"
+    cat > "${MIRROR}/${name}-1.0-1.rockspec" <<EOF
+rockspec_format = "3.1"
+package = "${name}"
+version = "1.0-1"
+source = { url = "http://127.0.0.1:${PORT}/${name}-1.0.tar.gz", dir = "${name}-1.0" }
+dependencies = ${deps}
+build = { type = "builtin", modules = { ["foreign.${module}"] = "foreign/${module}.lua" } }
+EOF
+    tar -czf "${MIRROR}/${name}-1.0.tar.gz" -C "${WORKDIR}" "${name}-1.0"
+}
+
+make_rock foreign-base base 'return "base"' '{ "lua >= 5.1" }'
+make_rock foreign-unix unix 'return "unix"' '{ "lua >= 5.1" }'
+make_rock foreign-windows windows 'return "windows"' '{ "lua >= 5.1" }'
+mkdir -p "${WORKDIR}/foreign-native-1.0/foreign"
+cat > "${WORKDIR}/foreign-native-1.0/foreign/native.c" <<'EOF'
+#include <lua.h>
+
+int luaopen_foreign_native(lua_State *state) {
+    lua_pushboolean(state, 1);
+    return 1;
+}
+EOF
+cat > "${MIRROR}/foreign-native-1.0-1.rockspec" <<EOF
+rockspec_format = "3.1"
+package = "foreign-native"
+version = "1.0-1"
+source = { url = "http://127.0.0.1:${PORT}/foreign-native-1.0.tar.gz", dir = "foreign-native-1.0" }
+dependencies = { "lua >= 5.1" }
+build = { type = "builtin", modules = { ["foreign.native"] = "foreign/native.c" } }
+EOF
+tar -czf "${MIRROR}/foreign-native-1.0.tar.gz" -C "${WORKDIR}" foreign-native-1.0
+mkdir -p "${WORKDIR}/foreign-root-1.0/foreign"
+printf 'return "root"\n' > "${WORKDIR}/foreign-root-1.0/foreign/root.lua"
+cat > "${MIRROR}/foreign-root-1.0-1.rockspec" <<EOF
+rockspec_format = "3.1"
+package = "foreign-root"
+version = "1.0-1"
+source = { url = "http://127.0.0.1:${PORT}/foreign-root-1.0.tar.gz", dir = "foreign-root-1.0" }
+dependencies = { "foreign-platform-default == 1.0-1", "foreign-base == 1.0-1", platforms = { unix = { "foreign-unix == 1.0-1" }, win32 = { "foreign-windows == 1.0-1" } } }
+build = { type = "builtin", modules = { ["foreign.root"] = "foreign/root.lua" } }
+EOF
+tar -czf "${MIRROR}/foreign-root-1.0.tar.gz" -C "${WORKDIR}" foreign-root-1.0
+cat > "${MIRROR}/manifest-5.4.json" <<'EOF'
+{"repository":{"foreign-root":{"1.0-1":[{"arch":"rockspec"}]},"foreign-base":{"1.0-1":[{"arch":"rockspec"}]},"foreign-unix":{"1.0-1":[{"arch":"rockspec"}]},"foreign-windows":{"1.0-1":[{"arch":"rockspec"}]},"foreign-native":{"1.0-1":[{"arch":"rockspec"}]}}}
+EOF
+
+python3 -m http.server "${PORT}" --bind 127.0.0.1 --directory "${MIRROR}" >/tmp/moonstone-foreign-pure-lua-server.log 2>&1 &
+SERVER_PID=$!
+export MOONSTONE_LUAROCKS_URL="http://127.0.0.1:${PORT}"
+for _ in {1..60}; do
+    if curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null 2>&1; then break; fi
+    sleep 0.5
+done
+curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
+
+cd "${APP}"
+"${MOON_BIN}" init . --name foreign-pure-lua --no-git --no-sync
+"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" add rocks:foreign-root@1.0-1
+"${MOON_BIN}" sync --target "${TARGET}" --progress plain
+
+"${MOON_BIN}" lock profile list --json > "${WORKDIR}/profiles.json"
+grep -q "${TARGET}" "${WORKDIR}/profiles.json"
+"${MOON_BIN}" lock profile get "${TARGET}+moonstone/lua+5.4" --json > "${WORKDIR}/profile.json"
+grep -q 'foreign-root' "${WORKDIR}/profile.json"
+grep -q 'foreign-base' "${WORKDIR}/profile.json"
+grep -q "foreign-${BRANCH}" "${WORKDIR}/profile.json"
+if grep -q 'foreign-platform-default' "${WORKDIR}/profile.json"; then
+    echo "ERROR: platform override did not replace its array slot" >&2
+    exit 1
+fi
+if grep -q "foreign-$( [[ "${BRANCH}" = unix ]] && echo windows || echo unix )" "${WORKDIR}/profile.json"; then
+    echo "ERROR: foreign profile selected the opposite LuaRocks platform branch" >&2
+    exit 1
+fi
+"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
+
+NATIVE_APP="${WORKDIR}/native-app"
+mkdir -p "${NATIVE_APP}"
+cd "${NATIVE_APP}"
+"${MOON_BIN}" init . --name foreign-native-rejection --no-git --no-sync
+"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+cat >> moonstone.toml <<'EOF'
+
+[[dependencies]]
+name = "foreign-native"
+constraint = "^1.0-1"
+registry = "rocks"
+role = "runtime"
+EOF
+if "${MOON_BIN}" sync --target "${TARGET}" --progress plain >"${WORKDIR}/foreign-native.log" 2>&1; then
+    echo "ERROR: foreign target accepted a native LuaRocks source build" >&2
+    exit 1
+fi
+grep -q 'Foreign profiles currently support pure-Lua rocks only' "${WORKDIR}/foreign-native.log"
+
+echo "━━━ ✓ foreign pure-Lua LuaRocks target profile passed ━━━"

@@ -98,6 +98,17 @@ The typed intent also applies LuaRocks' legacy CVS source normalization after
 platform projection: `cvs_module` overrides `module`, `cvs_tag` overrides
 `tag`, and an omitted `dir` defaults to the effective module name.
 
+Foreign profiles now have a bounded execution boundary: the requested target
+must provide an artifact-backed runtime, while Moonstone separately
+materializes the selected runtime for the host solely to parse LuaRocks
+metadata. That host parser is never recorded as a foreign-profile package, and
+the target runtime is never executed during resolution. The current foreign
+profile contract accepts pure-Lua rocks only; native builtin, Make, CMake, and
+command backends fail explicitly until a real cross-materialization contract
+exists. `tests/e2e/resolution/foreign_target_pure_lua_rocks.sh` proves target
+platform selection, pure-Lua materialization, profile isolation, and lock
+verification without asserting cross-target execution.
+
 1. Define the supported LuaRocks rockspec-format versions.
 2. Port or isolate versioned schema validation without requiring LuaRocks CLI
    execution during normal Moonstone resolution.

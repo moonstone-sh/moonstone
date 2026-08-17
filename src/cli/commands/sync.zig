@@ -2722,7 +2722,8 @@ pub const SyncCommand = struct {
                 backend.status("materialize", "Materializing [{d}/{d}] {s}@{s}...", .{ materialize_index, materialize_total, pkg.name, pkg.version });
             }
 
-            if (!target_is_host and pkg.local_path != null) {
+            const pkg_is_live_source = std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path");
+            if (!target_is_host and pkg.local_path != null and pkg_is_live_source) {
                 moonstone.diagnostics.error_context.setFmt(
                     allocator,
                     "Cannot realize live {s} dependency {s}@{s} for foreign target `{s}`. Use a registry or artifact-backed dependency for cross-target profiles.",
