@@ -21,6 +21,7 @@ full LuaRocks compatibility.
 | `build.type = "make"` installing into Moonstone's Lua roots and declaring generated outputs | Translate to the command materializer, project the runtime/compiler environment, discover installed Lua modules, then collect only declared `install.bin`, `install.lib`, `copy_directories`, and `install.conf` outputs before locked replay | `tests/e2e/build/luarocks_make_cmodule_contract.sh` |
 | `build.type = "command"` with `build_command` and `install_command` on POSIX hosts | Invoke each declared shell body through non-interactive `sh -c` in Moonstone's projected build environment, then collect only declared Lua, executable, copied-directory, and configuration outputs before locked replay | `tests/e2e/build/luarocks_command_contract.sh` |
 | `build.type = "cmake"` with standard CMake install rules for Lua C modules and declared `install.bin`, `install.lib`, `copy_directories`, or `install.conf` paths | Configure with Moonstone's Lua headers, build in a disposable source-workspace directory, install into an isolated staging prefix, then promote only discovered Lua modules and explicitly declared typed outputs before locked replay | `tests/e2e/build/luarocks_cmake_contract.sh` |
+| pinned cqueues `20200726.54-0` Make release on supported GNU/Linux hosts | Translate `source.dir`, source MD5, Makefile/target/variable-map declarations, and explicit OpenSSL paths; import the resulting native module and reproduce it from the lock | `tests/e2e/resolution/cqueues_real_contract.sh` in Linux CI |
 | LuaRocks dependencies | Resolve transitively with explicit `rocks:` provenance | Transitive/offline resolver scenarios |
 | Source archives | Handle zip, tar, gzip, bzip2, xz, and `.rock` archive forms when required host tools exist | Resolver/materialization scenarios |
 
@@ -55,7 +56,6 @@ not a promise that every historical rock can build on every host.
 | --- | --- | --- |
 | Platform-specific rockspec branches | The bridge emits a `moonstone:luarocks-intent:v1` projection using LuaRocks' least-to-most-specific override order, selected from Moonstone's target profile | Versioned validation, target-specific dependency resolution, and resolver consumption of every platform-scoped field |
 | arbitrary `external_dependencies` semantics | Bounded `NAME_INCDIR` / `NAME_LIBDIR` projection is implemented for supported build adapters; generic discovery, package-manager integration, and provisioners are absent | More upstream P2–P4 fixtures across host SDKs and targets |
-| cqueues `20200726.54-0` Make release | A pinned Linux fixture and CI gate cover `source.dir`, source MD5, Makefile/target/variable-map translation, declared OpenSSL paths, execution, and locked replay | First passing native Ubuntu CI run |
 
 ## Deliberately Rejected
 
