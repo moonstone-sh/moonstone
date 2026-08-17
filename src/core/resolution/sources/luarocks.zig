@@ -434,6 +434,35 @@ fn rock_source_url(rock: *const luarocks.RockspecIntent) []const u8 {
     return rock.source.url orelse "";
 }
 
+fn stable_source_build_workspace_name(
+    allocator: std.mem.Allocator,
+    pkg_name: []const u8,
+    version: []const u8,
+    source_hash: []const u8,
+    rockspec_hash: []const u8,
+    runtime: []const u8,
+    target: []const u8,
+    build_env: []const manifest.EnvPair,
+) ![]const u8 {
+    var hasher = std.crypto.hash.Blake3.init(.{});
+    const fields = [_][]const u8{ pkg_name, version, source_hash, rockspec_hash, runtime, target };
+    for (fields) |field| {
+        hasher.update(field);
+        hasher.update("\x00");
+    }
+    for (build_env) |entry| {
+        hasher.update(entry.key);
+        hasher.update("=");
+        hasher.update(entry.value);
+        hasher.update("\x00");
+    }
+
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return try std.fmt.allocPrint(allocator, "rocks-build-{s}", .{hex[0..20]});
+}
+
 fn source_fallback_url(
     allocator: std.mem.Allocator,
     source_url: []const u8,
@@ -3446,12 +3475,66 @@ pub fn materialize_prepared_rock(
     const paths = prepared.paths;
     const fetched_rockspec = prepared.fetched_rockspec;
     const fetched_source = prepared.fetched_source;
-    const work_dir = fetched_source.path;
+    const prepared_work_dir = fetched_source.path;
     const compatibility_recipe = prepared.compatibility_recipe;
-    const build_out_dir = prepared.build_out_path;
     const lua_module_dir_version = try lua_module_directory_version(allocator, runtime_spec);
     defer allocator.free(lua_module_dir_version);
     const is_cmake_build = std.mem.eql(u8, rock_build_type(&intent), "cmake");
+    const uses_foreign_build = rock_class == .command_build;
+
+    var stable_workspace_lock: ?std.Io.File = null;
+    defer if (stable_workspace_lock) |lock_file| {
+        lock_file.unlock(io);
+        lock_file.close(io);
+    };
+    var stable_workspace: ?[]const u8 = null;
+    defer if (stable_workspace) |workspace| {
+        std.Io.Dir.cwd().deleteTree(io, workspace) catch |err| if (err != error.FileNotFound) {};
+        allocator.free(workspace);
+    };
+
+    const work_dir: []const u8 = if (uses_foreign_build) blk: {
+        const target = options.target orelse "native";
+        const workspace_name = try stable_source_build_workspace_name(
+            allocator,
+            pkg_name,
+            version,
+            fetched_source.hash,
+            fetched_rockspec.hash,
+            runtime_spec,
+            target,
+            options.build_env,
+        );
+        defer allocator.free(workspace_name);
+
+        const locks_dir = try std.fs.path.join(allocator, &.{ paths.tmp, "source-build-locks" });
+        defer allocator.free(locks_dir);
+        try std.Io.Dir.cwd().createDirPath(io, locks_dir);
+        const lock_path = try std.fmt.allocPrint(allocator, "{s}/{s}.lock", .{ locks_dir, workspace_name });
+        defer allocator.free(lock_path);
+        stable_workspace_lock = try std.Io.Dir.cwd().createFile(io, lock_path, .{});
+        try stable_workspace_lock.?.lock(io, .exclusive);
+
+        const workspace = try std.fs.path.join(allocator, &.{ paths.tmp, workspace_name });
+        errdefer allocator.free(workspace);
+        std.Io.Dir.cwd().deleteTree(io, workspace) catch |err| if (err != error.FileNotFound) return err;
+        try std.Io.Dir.cwd().createDirPath(io, workspace);
+        stable_workspace = workspace;
+
+        const source_dir = try std.fs.path.join(allocator, &.{ workspace, "source" });
+        errdefer allocator.free(source_dir);
+        try fs.copyTreeAbsolute(allocator, io, prepared_work_dir, source_dir);
+        break :blk source_dir;
+    } else prepared_work_dir;
+    defer if (uses_foreign_build) allocator.free(work_dir);
+
+    const build_out_dir: []const u8 = if (stable_workspace) |workspace|
+        try std.fs.path.join(allocator, &.{ workspace, "out" })
+    else
+        prepared.build_out_path;
+    defer if (stable_workspace != null) allocator.free(build_out_dir);
+    if (stable_workspace != null) try std.Io.Dir.cwd().createDirPath(io, build_out_dir);
+
     const cmake_install_root = if (is_cmake_build)
         try std.fs.path.join(allocator, &.{ build_out_dir, cmake_mat.install_staging_dir_name })
     else

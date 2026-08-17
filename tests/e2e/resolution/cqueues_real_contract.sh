@@ -106,6 +106,14 @@ cd "${TEST_APP}"
 
 echo "━━━ materialize pinned cqueues Make backend ━━━"
 moon init . --name real-cqueues-contract --no-git
+cat >> moonstone.toml <<EOF
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
+priority = 10
+EOF
 moon interpreter set lua@5.4
 moon add "rocks:${PACKAGE}@${VERSION}"
 
