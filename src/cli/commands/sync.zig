@@ -1836,18 +1836,25 @@ pub const SyncCommand = struct {
 
         profile_span = profiler.now();
         var provider_impl = try allocator.create(moonstone.resolution.provider.graph_provider.RegistryProvider);
-        provider_impl.init(allocator, io, idx, registries, .{
-            .on_event = on_resolve_cb,
-            .on_event_context = on_resolve_ctx,
-            .offline = self.offline,
-            .prefer_local = !self.update,
-            .runtime = active_lua_abi,
-            .runtime_c_api = runtime_c_api,
-            .runtime_artifact_hash = rt_res.artifact_hash,
-            .runtime_path = rt_mat_res.path,
-            .build_env = build_env,
-            .target = lock_target,
-        }, env, host_rockspec_parser,
+        provider_impl.init(
+            allocator,
+            io,
+            idx,
+            registries,
+            .{
+                .on_event = on_resolve_cb,
+                .on_event_context = on_resolve_ctx,
+                .offline = self.offline,
+                .prefer_local = !self.update,
+                .runtime = active_lua_abi,
+                .runtime_c_api = runtime_c_api,
+                .runtime_artifact_hash = rt_res.artifact_hash,
+                .runtime_path = rt_mat_res.path,
+                .build_env = build_env,
+                .target = lock_target,
+            },
+            env,
+            host_rockspec_parser,
             if (!target_is_host) ForeignRocksMetadataInterpreter.provide else null,
             if (!target_is_host) @ptrCast(&lazy_rockspec_parser) else null,
             targets.items,
