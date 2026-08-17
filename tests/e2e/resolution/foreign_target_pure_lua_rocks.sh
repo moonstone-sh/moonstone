@@ -175,6 +175,14 @@ if grep -q "foreign-$( [[ "${BRANCH}" = unix ]] && echo windows || echo unix )" 
 fi
 "${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
 
+for package in foreign-root foreign-base "foreign-${BRANCH}"; do
+    while IFS= read -r artifact_manifest; do
+        rm -rf "$(dirname "${artifact_manifest}")"
+    done < <(find "${MOONSTONE_DATA}/store/v0" -name manifest.toml -exec grep -l "^name = \"${package}\"$" {} \;)
+done
+"${MOON_BIN}" sync --target "${TARGET}" --locked --progress plain
+"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
+
 NATIVE_APP="${WORKDIR}/native-app"
 mkdir -p "${NATIVE_APP}"
 cd "${NATIVE_APP}"

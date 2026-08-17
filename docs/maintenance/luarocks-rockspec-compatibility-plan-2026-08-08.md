@@ -106,8 +106,9 @@ the target runtime is never executed during resolution. The current foreign
 profile contract accepts pure-Lua rocks only; native builtin, Make, CMake, and
 command backends fail explicitly until a real cross-materialization contract
 exists. `tests/e2e/resolution/foreign_target_pure_lua_rocks.sh` proves target
-platform selection, pure-Lua materialization, profile isolation, and lock
-verification without asserting cross-target execution.
+platform selection, pure-Lua materialization, profile isolation, and locked
+replay after its target artifacts are purged, without asserting cross-target
+execution.
 
 1. Define the supported LuaRocks rockspec-format versions.
 2. Port or isolate versioned schema validation without requiring LuaRocks CLI
