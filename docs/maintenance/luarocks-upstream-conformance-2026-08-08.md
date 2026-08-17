@@ -42,9 +42,9 @@ Only the final applicable level is a compatibility guarantee.
 | Moonstone `format-3.1-surface.rockspec` | Source, description, dependency classes, build, test, hooks, deployment | P0 | Per-feature materialization capability inventory |
 | LuaFileSystem `1.9.0-1` | Pinned official rockspec and `.src.rock`, builtin native module, copied assets, runtime filesystem behavior, and locked replay through a verified local mirror | P2/P3/P4 on the native Lua 5.4 target; CI-gated | `tests/e2e/resolution/luafilesystem_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
 | LuaSQL SQLite3 `2.8.0-1` | Pinned official rockspec and `.src.rock`, builtin native module linked through caller-projected `SQLITE_INCDIR` and `SQLITE_LIBDIR`, copied docs, SQL runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 where the host provides the declared SQLite SDK; CI-gated | `tests/e2e/resolution/luasql_sqlite3_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
-| luv `1.51.0-1` | Pinned official rockspec and `.src.rock`, LuaRocks CMake variable map, bundled libuv native module, projected Lua runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 where CMake and a native C toolchain are available | `tests/e2e/resolution/luv_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
+| luv `1.51.0-1` | Pinned official rockspec and `.src.rock`, LuaRocks CMake variable map, bundled libuv native module, projected Lua runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 where CMake and a native C toolchain are available; CI-gated | `tests/e2e/resolution/luv_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
 | luaposix `36.3-1` | Pinned official rockspec and source ZIP, LuaRocks command backend placeholders, generated Lua/native POSIX modules, projected runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 on supported POSIX hosts with a C compiler | `tests/e2e/resolution/luaposix_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
-| cqueues `20200726.54-0` | Pinned official rockspec and source archive, Makefile/target/variable-map translation, `source.dir`, source MD5 verification, declared OpenSSL/crypto host paths, projected runtime behavior, and locked replay through a verified local mirror | P0/P1; P2/P3/P4 pending first native Ubuntu CI run | `tests/e2e/resolution/cqueues_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
+| cqueues `20200726.54-0` | Pinned official rockspec and source archive, Makefile/target/variable-map translation, `source.dir`, source MD5 verification, declared OpenSSL/crypto host paths, projected runtime behavior, and locked replay through a verified local mirror | P2/P3/P4 on supported GNU/Linux hosts with a C compiler and declared OpenSSL SDK; CI-gated | `tests/e2e/resolution/cqueues_real_contract.sh` with `MOONSTONE_REAL_LUAROCKS=1` |
 
 Moonstone's existing synthetic scenarios already certify related, but not
 upstream-fixture-identical, behavior for builtin native modules, Make builds,
@@ -102,8 +102,8 @@ declared collection rules now participate in the materialization recipe hash;
 changing an adapter argument, projected external path, or collected output
 cannot reuse a recipe identity from the old configuration.
 Each fixture skips, rather than pretends conformance, when its required host
-capability is unavailable. The typed Make adapter now has a real upstream
-cqueues candidate on Linux: it translates declared makefiles, targets,
-variable maps, and external path declarations without discovering or
-provisioning OpenSSL itself. cqueues does not support macOS, so native Linux
-CI must pass before the candidate is promoted to P2/P3/P4.
+capability is unavailable. The typed Make adapter's cqueues contract is
+certified on Linux CI: it translates declared makefiles, targets, variable
+maps, and external path declarations without discovering or provisioning
+OpenSSL itself. cqueues does not support macOS, so its claim remains bounded
+to supported GNU/Linux hosts with the declared native capability.

@@ -347,7 +347,7 @@ pub const Materializer = struct {
                     defer self.allocator.free(log_file_name);
 
                     const cmake = @import("materializers/cmake.zig");
-                    try cmake.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, self.on_event, self.on_event_context);
+                    try cmake.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, .cleanup, self.on_event, self.on_event_context);
 
                     var new_provides = try art.provides.clone(self.allocator);
                     errdefer new_provides.deinit(self.allocator);

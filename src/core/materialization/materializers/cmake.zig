@@ -4,6 +4,15 @@ const command = @import("command.zig");
 
 pub const install_staging_dir_name = ".moonstone-cmake-install";
 
+/// Controls ownership of CMake's private install tree after the build exits.
+/// Generic materialization promotes declared outputs during the build and can
+/// discard it immediately. LuaRocks materialization needs to inspect and
+/// promote the staged install tree after CMake returns.
+pub const InstallStagingDisposition = enum {
+    cleanup,
+    preserve_for_caller,
+};
+
 pub fn build(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -14,6 +23,7 @@ pub fn build(
     lua_abi: []const u8,
     config: manifest.MaterializeConfig,
     log_file_name: []const u8,
+    install_staging_disposition: InstallStagingDisposition,
     on_event: ?@import("../../resolution/options.zig").ResolveCallback,
     on_event_context: ?*anyopaque,
 ) !void {
@@ -132,12 +142,14 @@ pub fn build(
 
     try command.build_internal(allocator, io, env_map, source_dir_path, out_dir_path, runtime_path, lua_abi, cmd_config, build_dir, log_file_name, on_event, on_event_context);
 
-    // The install root is an execution-only staging area. Declared outputs
-    // have already been promoted into the artifact workspace; retaining this
-    // tree would leak CMake's private layout into the content-addressed
-    // closure and make replayed artifacts carry duplicate module files.
-    // Cleanup occurs only after the staged outputs have been promoted. It is
-    // deliberately best-effort because filesystem error sets differ by target
-    // and a failed cleanup cannot invalidate the already-complete artifact.
-    std.Io.Dir.cwd().deleteTree(io, install_dir) catch {};
+    if (install_staging_disposition == .cleanup) {
+        // The install root is an execution-only staging area. Declared outputs
+        // have already been promoted into the artifact workspace; retaining
+        // this tree would leak CMake's private layout into the content-addressed
+        // closure and make replayed artifacts carry duplicate module files.
+        // Cleanup is deliberately best-effort because filesystem error sets
+        // differ by target and a failed cleanup cannot invalidate the already-
+        // complete artifact.
+        std.Io.Dir.cwd().deleteTree(io, install_dir) catch {};
+    }
 }

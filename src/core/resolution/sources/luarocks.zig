@@ -3709,7 +3709,7 @@ pub fn materialize_prepared_rock(
             } else if (std.mem.eql(u8, config.kind, "cmake")) {
                 const log_file_name = try std.fmt.allocPrint(allocator, "{s}-{s}-{s}.log", .{ pkg_name, version, hash_short });
                 defer allocator.free(log_file_name);
-                cmake_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, lua_module_dir_version, config, log_file_name, options.on_event, options.on_event_context) catch |err| {
+                cmake_mat.build(allocator, io, env_map, work_dir, build_out_dir, runtime_path, lua_module_dir_version, config, log_file_name, .preserve_for_caller, options.on_event, options.on_event_context) catch |err| {
                     @import("../../diagnostics/error_context.zig").setFmt(allocator, "cmake compilation failed for LuaRocks package {s}@{s}\nmodule: {s}\nsource: {s}\nreason: {s}", .{ pkg_name, version, mod.name, fetched_source.url, @errorName(err) });
                     return err;
                 };
