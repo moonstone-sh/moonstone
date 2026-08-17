@@ -6,6 +6,7 @@ const platform_target = @import("../platform/target.zig");
 const store = @import("../store.zig");
 const resolver = @import("../resolution/root.zig");
 const package_spec = @import("../domain/package_spec.zig");
+const error_context = @import("../diagnostics/error_context.zig");
 
 fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePackageDescriptor) ![]manifest.StoreDependency {
     var dependencies = std.ArrayList(manifest.StoreDependency).empty;
@@ -193,8 +194,28 @@ pub const Materializer = struct {
         }
         defer if (strip_arg) |sa| self.allocator.free(sa);
 
-        const tar_res = try std.process.run(self.allocator, self.io, .{ .argv = tar_argv.items });
-        if (tar_res.term != .exited or tar_res.term.exited != 0) return error.UnpackError;
+        const tar_res = std.process.run(self.allocator, self.io, .{ .argv = tar_argv.items }) catch |err| {
+            if (err == error.FileNotFound) {
+                error_context.setFmt(
+                    self.allocator,
+                    "system utility '{s}' is missing but required to unpack {s} package artifact for {s}@{s}",
+                    .{ tar_argv.items[0], art.format, desc.package.name, desc.package.version },
+                );
+                return error.SystemUtilityMissing;
+            }
+            return err;
+        };
+        defer self.allocator.free(tar_res.stdout);
+        defer self.allocator.free(tar_res.stderr);
+
+        if (tar_res.term != .exited or tar_res.term.exited != 0) {
+            error_context.setFmt(
+                self.allocator,
+                "failed to unpack {s} package artifact for {s}@{s}\narchive: {s}\ncommand: {s}\nresult: {any}\nstderr: {s}",
+                .{ art.format, desc.package.name, desc.package.version, blob_path, tar_argv.items[0], tar_res.term, tar_res.stderr },
+            );
+            return error.UnpackError;
+        }
 
         var final_art = art;
         final_art.source_hash = source_hash;
