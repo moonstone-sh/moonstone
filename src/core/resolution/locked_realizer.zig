@@ -50,6 +50,38 @@ pub fn requiresExactArtifactHash(entry: *const LockEntry) bool {
         !std.mem.eql(u8, entry.artifact_hash, "path");
 }
 
+/// A locked LuaRocks replay must retain the exact location that supplied the
+/// rockspec. Older realizations may only have recorded the matching source
+/// rock. Its sibling rockspec is still an exact, case-preserving derivation;
+/// it is materially different from rediscovering a URL from the package name.
+fn lockedRockspecUrl(
+    allocator: std.mem.Allocator,
+    entry: *const LockEntry,
+) !?[]u8 {
+    if (entry.rockspec.len > 0) return try allocator.dupe(u8, entry.rockspec);
+
+    const source_url = if (entry.source.len > 0) entry.source else entry.source_url;
+    const suffix = ".src.rock";
+    if (!std.mem.endsWith(u8, source_url, suffix)) return null;
+
+    return try std.fmt.allocPrint(allocator, "{s}.rockspec", .{source_url[0 .. source_url.len - suffix.len]});
+}
+
+test "locked LuaRocks rockspec derivation preserves recorded source spelling" {
+    const allocator = std.testing.allocator;
+    const entry = LockEntry{
+        .source = "https://mirror.example/luasql-sqlite3-2.8.0-1.src.rock",
+    };
+    const url = (try lockedRockspecUrl(allocator, &entry)).?;
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://mirror.example/luasql-sqlite3-2.8.0-1.rockspec", url);
+}
+
+test "locked LuaRocks rockspec derivation rejects non-source-rock provenance" {
+    const entry = LockEntry{ .source = "https://mirror.example/source.tar.gz" };
+    try std.testing.expect((try lockedRockspecUrl(std.testing.allocator, &entry)) == null);
+}
+
 test "native locked artifacts retain exact identity" {
     var entry = LockEntry{
         .artifact_hash = "b3:artifact",
@@ -159,7 +191,19 @@ pub fn ensureLockedArtifact(
     const luarocks_src = @import("sources/luarocks.zig");
     const options_mod = @import("options.zig");
 
+    const derived_rockspec_url = try lockedRockspecUrl(allocator, entry);
+    defer if (derived_rockspec_url) |url| allocator.free(url);
+    if (std.mem.eql(u8, entry.resolver, "rocks") and derived_rockspec_url == null) {
+        error_context.setFmt(
+            allocator,
+            "Locked LuaRocks replay for {s}@{s} has no recorded rockspec URL. Restore an artifact with provenance or run 'moon sync --update' to refresh the lockfile.",
+            .{ entry.name, entry.version },
+        );
+        return error.ReplayProvenanceMissing;
+    }
+
     const resolve_opts = options_mod.ResolveOptions{
+        .locked = true,
         .offline = policy.offline,
         .runtime = if (entry.lua_abi.len > 0) entry.lua_abi else "5.4",
         .runtime_artifact_hash = if (entry.runtime.len > 0) entry.runtime else null,
@@ -167,7 +211,7 @@ pub fn ensureLockedArtifact(
         .runtime_c_api = provider.options.runtime_c_api,
         .target = if (entry.target.len > 0) entry.target else "native",
         .lua_exe = provider.lua_exe,
-        .locked_rockspec_url = if (entry.rockspec.len > 0) entry.rockspec else null,
+        .locked_rockspec_url = derived_rockspec_url,
         .locked_rockspec_hash = if (entry.rockspec_hash.len > 0) entry.rockspec_hash else null,
         .locked_source_url = if (entry.source.len > 0) entry.source else null,
         .locked_source_hash = if (entry.source_hash.len > 0) entry.source_hash else null,

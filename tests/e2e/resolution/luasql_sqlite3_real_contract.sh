@@ -116,6 +116,12 @@ moon init . --name real-luasql-sqlite3-contract --no-git
 moon interpreter set lua@5.4
 moon add "rocks:${PACKAGE}@${VERSION}"
 
+# Lock replay must use the exact mirror URLs rather than reconstructing a
+# rockspec name from LuaRocks' display casing.
+grep -Fq "source = \"http://localhost:${PORT}/${PACKAGE}-${VERSION}.src.rock\"" moonstone.lock
+grep -Fq "rockspec = \"http://localhost:${PORT}/${PACKAGE}-${VERSION}.rockspec\"" moonstone.lock
+grep -q '^rockspec_hash = "b3:' moonstone.lock
+
 STORE_DIR="${MOONSTONE_DATA}/store/v0"
 ARTIFACT_MANIFEST=$(find "${STORE_DIR}" -name manifest.toml -exec grep -il '^name = "luasql-sqlite3"$' {} \; | head -1)
 if [[ -z "${ARTIFACT_MANIFEST}" || ! -f "${ARTIFACT_MANIFEST}" ]]; then

@@ -1161,6 +1161,8 @@ pub fn prepare_source_rock(
 ) !PreparedRock {
     const fetched_rockspec = if (options.locked_rockspec_url) |url|
         try fetch_locked_rockspec(allocator, io, url, options.locked_rockspec_hash, env_map, options.on_event, options.on_event_context, options.cancellation_flag)
+    else if (options.locked)
+        return error.ReplayProvenanceMissing
     else
         try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context, options.cancellation_flag);
     errdefer fetched_rockspec.deinit(allocator);
