@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 pub const supported_targets = [_][]const u8{
     "x86_64-linux-gnu",
     "aarch64-linux-gnu",
+    "riscv64-linux-gnu",
     "x86_64-macos",
     "aarch64-macos",
     "x86_64-windows-gnu",
@@ -33,7 +34,8 @@ pub fn hostTargetLiteral() []const u8 {
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "aarch64",
-        else => @compileError("Moonstone only supports x86_64 and aarch64 hosts"),
+        .riscv64 => "riscv64",
+        else => @compileError("Moonstone only supports x86_64, aarch64, and riscv64 hosts"),
     };
     const os = switch (builtin.os.tag) {
         .linux => "linux-gnu",
@@ -57,4 +59,8 @@ test "host target has a concrete architecture and operating system" {
     defer std.testing.allocator.free(target);
     try std.testing.expect(std.mem.indexOfScalar(u8, target, '-') != null);
     try std.testing.expect(!std.mem.eql(u8, target, "native"));
+}
+
+test "RISC-V Linux is an accepted target profile" {
+    try validate("riscv64-linux-gnu");
 }

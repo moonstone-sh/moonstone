@@ -419,6 +419,7 @@ fn host_to_luarocks_arch(allocator: std.mem.Allocator) !?[]const u8 {
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "arm64",
+        .riscv64 => "riscv64",
         else => return null,
     };
     const os_tag = switch (builtin.os.tag) {
