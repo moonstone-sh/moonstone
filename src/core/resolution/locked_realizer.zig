@@ -108,8 +108,17 @@ pub fn ensureLockedArtifact(
     const coordinator_mod = @import("coordinator.zig");
     const exact_artifact_hash = if (requiresExactArtifactHash(entry)) entry.artifact_hash else "";
     const requested_artifact_hash: ?[]const u8 = if (exact_artifact_hash.len > 0) exact_artifact_hash else null;
-    // 1. Check local CAS index by artifact_hash
-    if (entry.artifact_hash.len > 0 and !std.mem.eql(u8, entry.artifact_hash, "link") and !std.mem.eql(u8, entry.artifact_hash, "path")) {
+    // 1. Check configured artifact providers by hash. A source-replayable
+    // LuaRocks entry must skip RegistryProvider here: its Rocks branch is an
+    // ordinary resolver probe and reconstructs rockspec URLs from the package
+    // name before this locked replay can apply the recorded provenance.
+    const is_source_replayable_rocks = std.mem.eql(u8, entry.resolver, "rocks") and
+        entry.replay_mode != .artifact_only;
+    if (!is_source_replayable_rocks and
+        entry.artifact_hash.len > 0 and
+        !std.mem.eql(u8, entry.artifact_hash, "link") and
+        !std.mem.eql(u8, entry.artifact_hash, "path"))
+    {
         const req = package_provider.ArtifactRequest{
             .name = entry.name,
             .version = entry.version,
