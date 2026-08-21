@@ -8,6 +8,7 @@ const profiler = @import("../diagnostics/profiler.zig");
 const manifest_cache_mod = @import("../cache/manifest_cache.zig");
 
 var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
+var compact_index_staging_counter: std.atomic.Value(u64) = .init(0);
 
 /// Resolved registry entry ready for use by the client.
 pub const ResolvedRegistry = struct {
@@ -252,10 +253,23 @@ pub const RegistryClient = struct {
         try std.Io.Dir.cwd().createDirPath(self.io, reg_cache);
 
         const final_sqlite = try std.fs.path.join(self.allocator, &.{ reg_cache, "index.sqlite" });
-        const tmp_zst = try std.fs.path.join(self.allocator, &.{ reg_cache, "index.sqlite.zst.tmp" });
-        const tmp_sqlite = try std.fs.path.join(self.allocator, &.{ reg_cache, "index.sqlite.tmp" });
+        const staging_id = compact_index_staging_counter.fetchAdd(1, .monotonic);
+        const tmp_zst_name = try std.fmt.allocPrint(self.allocator, ".index.sqlite.{d}-{d}.zst.tmp", .{
+            std.Thread.getCurrentId(),
+            staging_id,
+        });
+        defer self.allocator.free(tmp_zst_name);
+        const tmp_sqlite_name = try std.fmt.allocPrint(self.allocator, ".index.sqlite.{d}-{d}.tmp", .{
+            std.Thread.getCurrentId(),
+            staging_id,
+        });
+        defer self.allocator.free(tmp_sqlite_name);
+        const tmp_zst = try std.fs.path.join(self.allocator, &.{ reg_cache, tmp_zst_name });
+        const tmp_sqlite = try std.fs.path.join(self.allocator, &.{ reg_cache, tmp_sqlite_name });
         defer self.allocator.free(tmp_zst);
         defer self.allocator.free(tmp_sqlite);
+        defer std.Io.Dir.cwd().deleteFile(self.io, tmp_zst) catch {};
+        defer std.Io.Dir.cwd().deleteFile(self.io, tmp_sqlite) catch {};
 
         // 1. Download compressed index
         const zst_bytes = try self.read_file_from_registry(compact.url);
@@ -303,7 +317,6 @@ pub const RegistryClient = struct {
 
         // 6. Atomic replace
         try std.Io.Dir.renameAbsolute(tmp_sqlite, final_sqlite, self.io);
-        try std.Io.Dir.cwd().deleteFile(self.io, tmp_zst);
 
         return final_sqlite;
     }
