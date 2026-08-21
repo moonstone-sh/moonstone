@@ -10,8 +10,50 @@ permissions:
   packages: write
 
 jobs:
+  verify-release:
+    name: Verify Release Certification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Checkout pinned LuaRocks reference
+        uses: actions/checkout@v4
+        with:
+          repository: luarocks/luarocks
+          ref: 665f160b4d0b79e85e66c6cc83e442d72eb40868
+          path: .ci/luarocks-upstream
+          fetch-depth: 1
+
+      - name: Install release-certification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
+
+      - name: Verify tag matches build metadata
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          build_version="$(sed -nE 's/^\s*\.version\s*=\s*"([^"]+)".*/\1/p' build.zig.zon)"
+          test -n "${build_version}"
+          test "${tag_version}" = "${build_version}"
+
+      - name: Run blocking Linux release certification
+        run: |
+          export LUAROCKS_UPSTREAM_DIR="$GITHUB_WORKSPACE/.ci/luarocks-upstream"
+          LUA_BIN=lua5.4 scripts/release/verify-release.sh --with-upstream --with-contracts
+
   build-and-release:
     name: Build & Publish GitHub Release
+    needs: verify-release
     runs-on: ubuntu-latest
     outputs:
       mac_arm: ${{ steps.hashes.outputs.mac_arm }}
