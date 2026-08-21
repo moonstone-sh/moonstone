@@ -80,6 +80,20 @@ optional, discoverable entrypoint declared in `[scripts]`; keep simple commands
 inline and move substantial orchestration to Lua, Ballad, or ordinary script
 files.
 
+## Testing
+
+Moonstone separates deterministic developer checks from opt-in upstream and
+platform coverage:
+
+```bash
+tests/run-fast.sh        # formatting, Zig unit tests, public contracts
+tests/run-synthetic.sh   # generated fixtures and isolated E2E coverage
+tests/run-real-rocks.sh  # pinned upstream LuaRocks compatibility contracts
+```
+
+See [TESTING.md](./TESTING.md) for prerequisites, CI reproduction, platform
+coverage, and the policy for local-only experiments.
+
 ---
 
 ## 🛠️ CLI Lifecycle

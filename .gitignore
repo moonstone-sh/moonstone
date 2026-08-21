@@ -52,6 +52,10 @@ node_modules/
 .DS_Store
 .AppleDouble
 .LSOverride
+/tests/local/*.env
+!/tests/local/*.env.example
+/tests/local/*.ps1
+!/tests/local/*.ps1.example
 *~
 *.swp
 *.swo
