@@ -107,8 +107,12 @@ moon add rocks:install-lib-keyed
 moon add rocks:install-lib-static
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"
-KEYED_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "install-lib-keyed"$' {} \; | head -1)"
-STATIC_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "install-lib-static"$' {} \; | head -1)"
+find_artifact_manifest() {
+    find "${STORE_DIR}" -name manifest.toml -exec grep -ql "^name = \"${1}\"$" {} \; -print -quit
+}
+
+KEYED_MANIFEST="$(find_artifact_manifest install-lib-keyed)"
+STATIC_MANIFEST="$(find_artifact_manifest install-lib-static)"
 [[ -n "${KEYED_MANIFEST}" && -n "${STATIC_MANIFEST}" ]]
 KEYED_ARTIFACT="$(dirname "${KEYED_MANIFEST}")"
 STATIC_ARTIFACT="$(dirname "${STATIC_MANIFEST}")"
@@ -119,19 +123,19 @@ grep -F "path = \"${EXPECTED_SHARED_PATH}\"" "${KEYED_MANIFEST}"
 grep -F 'linkage = "shared"' "${KEYED_MANIFEST}"
 grep -F "path = \"${EXPECTED_STATIC_PATH}\"" "${STATIC_MANIFEST}"
 grep -F 'linkage = "static"' "${STATIC_MANIFEST}"
-[[ -f "${KEYED_ARTIFACT}/${EXPECTED_SHARED_PATH}" ]]
-[[ -f "${STATIC_ARTIFACT}/${EXPECTED_STATIC_PATH}" ]]
+[[ -f "${KEYED_ARTIFACT}/files/${EXPECTED_SHARED_PATH}" ]]
+[[ -f "${STATIC_ARTIFACT}/files/${EXPECTED_STATIC_PATH}" ]]
 [[ -L ".moonstone/env/lib/native/${SHARED_LIBRARY}" ]]
 [[ ! -e ".moonstone/env/lib/native/libinstalllib-static.a" ]]
 
 rm -rf "${KEYED_ARTIFACT}" "${STATIC_ARTIFACT}" .moonstone/env
 moon sync --locked
 
-KEYED_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "install-lib-keyed"$' {} \; | head -1)"
-STATIC_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "install-lib-static"$' {} \; | head -1)"
+KEYED_MANIFEST="$(find_artifact_manifest install-lib-keyed)"
+STATIC_MANIFEST="$(find_artifact_manifest install-lib-static)"
 [[ -n "${KEYED_MANIFEST}" && -n "${STATIC_MANIFEST}" ]]
-[[ -f "$(dirname "${KEYED_MANIFEST}")/${EXPECTED_SHARED_PATH}" ]]
-[[ -f "$(dirname "${STATIC_MANIFEST}")/${EXPECTED_STATIC_PATH}" ]]
+[[ -f "$(dirname "${KEYED_MANIFEST}")/files/${EXPECTED_SHARED_PATH}" ]]
+[[ -f "$(dirname "${STATIC_MANIFEST}")/files/${EXPECTED_STATIC_PATH}" ]]
 [[ -L ".moonstone/env/lib/native/${SHARED_LIBRARY}" ]]
 [[ ! -e ".moonstone/env/lib/native/libinstalllib-static.a" ]]
 

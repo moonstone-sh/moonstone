@@ -13,11 +13,20 @@ if [[ -z "${MOONSTONE_HOME:-}" ]]; then
     source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
 fi
 
-case "$(uname -s)" in
-    Darwin) TARGET="x86_64-linux-gnu"; BRANCH="unix" ;;
-    Linux) TARGET="x86_64-windows-gnu"; BRANCH="windows" ;;
-    *) echo "SKIP: unsupported host platform"; exit 0 ;;
-esac
+if [[ -n "${MOONSTONE_FOREIGN_TARGET:-}" ]]; then
+    TARGET="${MOONSTONE_FOREIGN_TARGET}"
+    case "${TARGET}" in
+        *-windows-*) BRANCH="windows" ;;
+        *-linux-*|*-macos|*-freebsd) BRANCH="unix" ;;
+        *) echo "SKIP: unsupported foreign target ${TARGET}"; exit 0 ;;
+    esac
+else
+    case "$(uname -s)" in
+        Darwin) TARGET="x86_64-linux-gnu"; BRANCH="unix" ;;
+        Linux) TARGET="x86_64-windows-gnu"; BRANCH="windows" ;;
+        *) echo "SKIP: unsupported host platform"; exit 0 ;;
+    esac
+fi
 
 WORKDIR="$(mktemp -d /tmp/moonstone-foreign-pure-lua.XXXXXX)"
 REGISTRY="${WORKDIR}/registry"
@@ -89,6 +98,7 @@ host_artifact = host[host.index("[[artifacts]]"):]
 )
 PY
 "${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/combined-runtime.toml" --blob "${WORKDIR}/foreign-runtime.tar.gz" --replace --yes
+grep -q '^name = "lua"$' "${REGISTRY}/index.toml"
 
 make_rock() {
     local name="$1"
@@ -153,36 +163,6 @@ for _ in {1..60}; do
 done
 curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 
-cd "${APP}"
-"${MOON_BIN}" init . --name foreign-pure-lua --no-git --no-sync
-"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
-"${MOON_BIN}" add rocks:foreign-root@1.0-1
-"${MOON_BIN}" sync --target "${TARGET}" --progress plain
-
-"${MOON_BIN}" lock profile list --json > "${WORKDIR}/profiles.json"
-grep -q "${TARGET}" "${WORKDIR}/profiles.json"
-"${MOON_BIN}" lock profile get "${TARGET}+moonstone/lua+5.4" --json > "${WORKDIR}/profile.json"
-grep -q 'foreign-root' "${WORKDIR}/profile.json"
-grep -q 'foreign-base' "${WORKDIR}/profile.json"
-grep -q "foreign-${BRANCH}" "${WORKDIR}/profile.json"
-if grep -q 'foreign-platform-default' "${WORKDIR}/profile.json"; then
-    echo "ERROR: platform override did not replace its array slot" >&2
-    exit 1
-fi
-if grep -q "foreign-$( [[ "${BRANCH}" = unix ]] && echo windows || echo unix )" "${WORKDIR}/profile.json"; then
-    echo "ERROR: foreign profile selected the opposite LuaRocks platform branch" >&2
-    exit 1
-fi
-"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
-
-for package in foreign-root foreign-base "foreign-${BRANCH}"; do
-    while IFS= read -r artifact_manifest; do
-        rm -rf "$(dirname "${artifact_manifest}")"
-    done < <(find "${MOONSTONE_DATA}/store/v0" -name manifest.toml -exec grep -l "^name = \"${package}\"$" {} \;)
-done
-"${MOON_BIN}" sync --target "${TARGET}" --locked --progress plain
-"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
-
 mkdir -p "${WORKDIR}/foreign-parent"
 tar -czf "${WORKDIR}/foreign-parent.tar.gz" -C "${WORKDIR}/foreign-parent" .
 cat > "${WORKDIR}/foreign-parent.toml" <<'EOF'
@@ -216,15 +196,62 @@ strip_components = 0
 EOF
 "${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/foreign-parent.toml" --blob "${WORKDIR}/foreign-parent.tar.gz" --replace --yes
 
+cd "${APP}"
+"${MOON_BIN}" init . --name foreign-pure-lua --no-git --no-sync
+"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" add rocks:foreign-root@1.0-1
+"${MOON_BIN}" sync --target "${TARGET}" --progress plain
+
+profile_id_for_target() {
+    "${MOON_BIN}" lock profile list --json | TARGET="${TARGET}" python3 -c '
+import json
+import os
+import sys
+
+target = os.environ["TARGET"]
+for profile in json.load(sys.stdin)["profiles"]:
+    if profile["target"] == target:
+        print(profile["id"])
+        break
+else:
+    raise SystemExit(f"missing lock profile for target {target}")
+'
+}
+
+"${MOON_BIN}" lock profile list --json > "${WORKDIR}/profiles.json"
+grep -q "${TARGET}" "${WORKDIR}/profiles.json"
+"${MOON_BIN}" lock profile get "$(profile_id_for_target)" --json > "${WORKDIR}/profile.json"
+grep -q 'foreign-root' "${WORKDIR}/profile.json"
+grep -q 'foreign-base' "${WORKDIR}/profile.json"
+grep -q "foreign-${BRANCH}" "${WORKDIR}/profile.json"
+if grep -q 'foreign-platform-default' "${WORKDIR}/profile.json"; then
+    echo "ERROR: platform override did not replace its array slot" >&2
+    exit 1
+fi
+if grep -q "foreign-$( [[ "${BRANCH}" = unix ]] && echo windows || echo unix )" "${WORKDIR}/profile.json"; then
+    echo "ERROR: foreign profile selected the opposite LuaRocks platform branch" >&2
+    exit 1
+fi
+"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
+
+for package in foreign-root foreign-base "foreign-${BRANCH}"; do
+    while IFS= read -r artifact_manifest; do
+        rm -rf "$(dirname "${artifact_manifest}")"
+    done < <(find "${MOONSTONE_DATA}/store/v0" -name manifest.toml -exec grep -l "^name = \"${package}\"$" {} \;)
+done
+"${MOON_BIN}" sync --target "${TARGET}" --locked --progress plain
+"${MOON_BIN}" lock verify --target "${TARGET}" --json | grep -q '"valid":true'
+
 TRANSITIVE_APP="${WORKDIR}/transitive-app"
 mkdir -p "${TRANSITIVE_APP}"
 cd "${TRANSITIVE_APP}"
 "${MOON_BIN}" init . --name foreign-transitive-rocks --no-git --no-sync
-"${MOON_BIN}" registry add local-synthetic "${REGISTRY}" --default
 "${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" sync --progress plain
+"${MOON_BIN}" registry add local-synthetic "${REGISTRY}" --default
 "${MOON_BIN}" add local-synthetic:moonstone/foreign-parent@1.0.0 --no-sync
 "${MOON_BIN}" sync --target "${TARGET}" --progress plain
-"${MOON_BIN}" lock profile get "${TARGET}+moonstone/lua+5.4" --json > "${WORKDIR}/transitive-profile.json"
+"${MOON_BIN}" lock profile get "$(profile_id_for_target)" --json > "${WORKDIR}/transitive-profile.json"
 grep -q 'moonstone/foreign-parent' "${WORKDIR}/transitive-profile.json"
 grep -q 'foreign-root' "${WORKDIR}/transitive-profile.json"
 grep -q 'foreign-base' "${WORKDIR}/transitive-profile.json"

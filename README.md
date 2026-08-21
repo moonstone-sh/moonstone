@@ -191,3 +191,29 @@ even when Docker has sufficient memory. Use the host-native `linux/arm64` run
 for the supported local contract; CI's native GitHub Ubuntu runner is the
 authoritative `linux/amd64` gate. The ARM run still validates the Linux
 toolchain and loader boundaries.
+
+### Reproduce the GitHub Actions workflow locally
+
+Use [nektos/act](https://github.com/nektos/act) when a change touches workflow
+configuration, runner behavior, progress execution, or CI-only failures. The
+wrapper runs the checked-in `Build & Test` job from `.github/workflows/ci.yml`,
+including setup actions and job ordering, against a pinned Ubuntu 24.04 Act
+runner image. It stages a disposable copy of the current working tree, so the
+Linux build cannot overwrite local `zig-out` or cache state:
+
+```bash
+brew install act
+scripts/ci/run-github-actions.sh test
+```
+
+The wrapper defaults to the host-native Linux Docker architecture. To add an
+emulated GitHub-like amd64 signal from Apple Silicon:
+
+```bash
+MOONSTONE_ACT_ARCH=linux/amd64 scripts/ci/run-github-actions.sh test
+```
+
+Act is a local workflow reproduction layer, not a replacement for GitHub's
+hosted Windows or amd64 runners. Run `scripts/ci/run-linux.sh all` for the fast
+native-rock preflight, run the Act wrapper before pushing workflow-sensitive
+changes, and retain GitHub Actions as the final platform gate.

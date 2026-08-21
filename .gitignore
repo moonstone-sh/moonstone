@@ -6,6 +6,7 @@ zig-cache/
 
 # --- Moonstone Projects & Tests ---
 .moonstone/
+.ci/
 moonstone.db
 moonstone.lock
 moonstone_test/

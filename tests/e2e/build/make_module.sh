@@ -38,6 +38,11 @@ moon interpreter set lua@5.4
 moon add synthetic:synthetic-make-module
 moon sync
 
+# Exercise the queued progress worker during a locked replay. This is distinct
+# from the normal CI/non-interactive output path and protects cancellation and
+# scheduler context handling from regressing behind a direct-output-only test.
+moon sync --progress fancy </dev/null
+
 echo "━━━ check make module symlink ━━━"
 find .moonstone/env/lib/lua -type l -name 'synthetic_make_module.*' | grep -q .
 

@@ -131,7 +131,7 @@ pub fn resolve(
     }
 
     // ── 3. Add the immutable built-in Moonstone identity ─────────────────
-    const default_url = @import("build_options").default_registry_url;
+    const default_url = environ_map.get("MOONSTONE_REGISTRY_PATH") orelse @import("build_options").default_registry_url;
     try result.append(allocator, .{
         .name = try allocator.dupe(u8, "moonstone"),
         .resolver = try allocator.dupe(u8, "moonstone"),

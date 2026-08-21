@@ -82,7 +82,12 @@ if ! command -v script >/dev/null 2>&1; then
     echo "ERROR: pseudo-terminal utility 'script' is required for the fancy progress contract" >&2
     exit 1
 fi
-script -q "${WORKDIR}/fancy.typescript" moon sync --jobs 2 --progress fancy </dev/null >/dev/null 2>&1
+
+if script --version 2>&1 | grep -q 'util-linux'; then
+    script -q -e -c 'moon sync --jobs 2 --progress fancy' "${WORKDIR}/fancy.typescript" </dev/null >/dev/null 2>&1
+else
+    script -q "${WORKDIR}/fancy.typescript" moon sync --jobs 2 --progress fancy </dev/null >/dev/null 2>&1
+fi
 for package_name in fakebin fakealt; do
     grep -Fq "preparing: ${package_name}@1.0-1" "${WORKDIR}/fancy.typescript"
     grep -Fq "materializing: ${package_name}@1.0-1" "${WORKDIR}/fancy.typescript"

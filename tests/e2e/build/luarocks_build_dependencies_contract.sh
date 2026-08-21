@@ -158,8 +158,12 @@ awk '
 }
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"
-PARENT_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "build-dependent-rock"$' {} \; | head -1)"
-TOOL_MANIFEST="$(find "${STORE_DIR}" -name manifest.toml -exec grep -l '^name = "build-only-tool"$' {} \; | head -1)"
+find_artifact_manifest() {
+    find "${STORE_DIR}" -name manifest.toml -exec grep -ql "^name = \"${1}\"$" {} \; -print -quit
+}
+
+PARENT_MANIFEST="$(find_artifact_manifest build-dependent-rock)"
+TOOL_MANIFEST="$(find_artifact_manifest build-only-tool)"
 [[ -n "${PARENT_MANIFEST}" && -f "${PARENT_MANIFEST}" ]]
 [[ -n "${TOOL_MANIFEST}" && -f "${TOOL_MANIFEST}" ]]
 

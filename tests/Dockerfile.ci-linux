@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     m4 \
     pkg-config \
     python3 \
+    sqlite3 \
     tar \
     unzip \
     xz-utils \

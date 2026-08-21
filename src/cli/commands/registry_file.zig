@@ -97,9 +97,10 @@ fn replaceFirstStringAssignment(allocator: std.mem.Allocator, content: []const u
 }
 
 fn rewriteBlobMetadata(allocator: std.mem.Allocator, descriptor: []const u8, blob_rel: []const u8, blob_hash: []const u8) ![]const u8 {
-    // Ballad already emits the correct relative blob path. For descriptors produced elsewhere,
-    // rewrite the first artifact url/hash assignment as a convenience for local registry push.
-    const with_url = if (std.mem.indexOf(u8, descriptor, "url = \"blobs/")) |_| try allocator.dupe(u8, descriptor) else try replaceFirstStringAssignment(allocator, descriptor, "url", blob_rel);
+    // A local push binds its supplied blob to the descriptor's first artifact.
+    // Later artifacts may legitimately reference their own blobs, so they must
+    // not prevent the first artifact from receiving this blob's provenance.
+    const with_url = try replaceFirstStringAssignment(allocator, descriptor, "url", blob_rel);
     defer allocator.free(with_url);
     return try replaceFirstStringAssignment(allocator, with_url, "hash", blob_hash);
 }
@@ -143,6 +144,24 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
         var ns_it = ns_dir.iterate();
         while (try ns_it.next(io)) |name_entry| {
             if (name_entry.kind != .directory) continue;
+            const direct_desc_abs = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name, "package.toml" });
+            defer allocator.free(direct_desc_abs);
+            const direct_desc = readFile(allocator, io, direct_desc_abs) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => return err,
+            };
+            if (direct_desc) |desc| {
+                defer allocator.free(desc);
+                var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
+                defer parsed.deinit(allocator);
+                const desc_hash = try hashHexAlloc(allocator, desc);
+                defer allocator.free(desc_hash);
+                const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
+                defer allocator.free(rel);
+                const entry = try std.fmt.allocPrint(allocator, "[[package]]\nname = \"{s}\"\nversion = \"{s}\"\nkind = \"{s}\"\ndescriptor = \"{s}\"\ndescriptor_hash = \"{s}\"\n\n", .{ parsed.package.name, parsed.package.version, packageKindString(parsed.package.kind), rel, desc_hash });
+                try index_entries.append(allocator, entry);
+                continue;
+            }
             const full_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_entry.name, name_entry.name });
             defer allocator.free(full_name);
             const full_name_root = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name });
@@ -230,6 +249,56 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
         var ns_it = ns_dir.iterate();
         while (try ns_it.next(io)) |name_entry| {
             if (name_entry.kind != .directory) continue;
+            const direct_desc_abs = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name, "package.toml" });
+            defer allocator.free(direct_desc_abs);
+            const direct_desc = readFile(allocator, io, direct_desc_abs) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => return err,
+            };
+            if (direct_desc) |desc| {
+                defer allocator.free(desc);
+                var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
+                defer parsed.deinit(allocator);
+                const desc_hash = try hashHexAlloc(allocator, desc);
+                defer allocator.free(desc_hash);
+                const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
+                defer allocator.free(rel);
+
+                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                const kind_str = packageKindString(parsed.package.kind);
+                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 3, kind_str.ptr, @intCast(kind_str.len), transient);
+                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 4, rel.ptr, @intCast(rel.len), transient);
+                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 5, desc_hash.ptr, @intCast(desc_hash.len), transient);
+                _ = sqlite_driver.c.sqlite3_step(stmt_pkg);
+                _ = sqlite_driver.c.sqlite3_reset(stmt_pkg);
+
+                for (parsed.artifact) |art| {
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 3, art.hash.ptr, @intCast(art.hash.len), transient);
+                    if (art.target.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 4, art.target.ptr, @intCast(art.target.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 4);
+                    if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 5, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 5);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 6, art.url.ptr, @intCast(art.url.len), transient);
+                    if (art.bytes) |b| _ = sqlite_driver.c.sqlite3_bind_int64(stmt_art, 7, @intCast(b)) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 7);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 8, art.format.ptr, @intCast(art.format.len), transient);
+                    _ = sqlite_driver.c.sqlite3_step(stmt_art);
+                    _ = sqlite_driver.c.sqlite3_reset(stmt_art);
+
+                    const all_provs = [_][]const moonstone.domain.manifest.FeatureProvision{ art.provides.lua_module, art.provides.lua_cmodule };
+                    for (all_provs) |provs| {
+                        for (provs) |prov| {
+                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 1, art.hash.ptr, @intCast(art.hash.len), transient);
+                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 2, prov.name.ptr, @intCast(prov.name.len), transient);
+                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 3, prov.path.ptr, @intCast(prov.path.len), transient);
+                            if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 4, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_prov, 4);
+                            _ = sqlite_driver.c.sqlite3_step(stmt_prov);
+                            _ = sqlite_driver.c.sqlite3_reset(stmt_prov);
+                        }
+                    }
+                }
+                continue;
+            }
             const full_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_entry.name, name_entry.name });
             defer allocator.free(full_name);
             const full_name_root = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name });

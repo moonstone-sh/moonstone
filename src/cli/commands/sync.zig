@@ -1383,7 +1383,12 @@ const LockedReplayPool = struct {
                         if (current.pool.jobs[current.indexes[task_index]].err) |err| return err;
                     }
                 }.run,
-                .is_cancelled = isCancelled,
+                .is_cancelled = struct {
+                    fn check(context: *anyopaque) bool {
+                        const current: *Wave = @ptrCast(@alignCast(context));
+                        return if (current.pool.wctx) |wctx| wctx.isCancelled() else false;
+                    }
+                }.check,
             };
             try scheduler.execute(jobs);
             for (ready.items) |index| pending[index] = false;

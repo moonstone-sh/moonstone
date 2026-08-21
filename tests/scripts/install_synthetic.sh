@@ -25,6 +25,24 @@ export XDG_DATA_HOME="${MOONSTONE_HOME}/xdg-data"
 export XDG_CACHE_HOME="${MOONSTONE_HOME}/xdg-cache"
 export PATH="${MOON_BIN%/*}:${PATH}"
 
+ensure_mock_luarocks_archive() {
+    local fixture_dir="${PROJECT_ROOT}/fixtures/sandbox-reference/mock-luarocks"
+    local source_dir="${fixture_dir}/fakebin-1.0"
+    local archive_path="${fixture_dir}/fakebin-1.0.tar.gz"
+
+    if [[ -f "${archive_path}" ]]; then
+        return
+    fi
+    if [[ ! -f "${source_dir}/fake.lua" ]]; then
+        echo "ERROR: missing tracked mock LuaRocks source: ${source_dir}/fake.lua" >&2
+        return 1
+    fi
+
+    tar -czf "${archive_path}" -C "${source_dir}" fake.lua
+}
+
+ensure_mock_luarocks_archive
+
 echo "Cleaning up old synthetic home..."
 rm -rf "${MOONSTONE_HOME}"
 
