@@ -31,10 +31,16 @@ else
 fi
 
 cp "${MOCK_DIR}/source-md5-1.0.tar.gz" "${SRC_ROCK_DIR}/"
-(
-    cd "${SRC_ROCK_DIR}"
-    zip -q "${MOCK_DIR}/source-md5-1.0-1.src.rock" source-md5-1.0.tar.gz
-)
+python3 - "${SRC_ROCK_DIR}" "${MOCK_DIR}/source-md5-1.0-1.src.rock" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+source_dir = pathlib.Path(sys.argv[1])
+archive_path = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write(source_dir / "source-md5-1.0.tar.gz", "source-md5-1.0.tar.gz")
+PY
 
 cat > "${MOCK_DIR}/source-md5-1.0-1.rockspec" <<EOF
 package = "source-md5"

@@ -2,6 +2,8 @@
 .zig-cache
 zig-out
 .zig-global-cache
+dist
+build
 release-tools/.venv
 fixtures/sandbox
 testing-suite/lua-tools/.moonstone

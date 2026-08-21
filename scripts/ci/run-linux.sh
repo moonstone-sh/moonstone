@@ -51,9 +51,7 @@ esac
 cd "${ROOT_DIR}"
 docker build --platform "${PLATFORM}" -f tests/Dockerfile.ci-linux -t "${IMAGE_TAG}" .
 # The image intentionally excludes generated sandbox state from its build
-# context. Native LuaRocks contracts still need the immutable synthetic
-# Moonstone registry to bootstrap the pinned runtime, so mount it explicitly
-# rather than baking mutable fixture state into the image.
+# context. Release certification regenerates that mutable fixture tree inside
+# the disposable container, so never bind the developer's sandbox into it.
 docker run --rm --platform "${PLATFORM}" \
-    --mount "type=bind,src=${ROOT_DIR}/fixtures/sandbox,dst=/workspace/fixtures/sandbox,readonly" \
     "${IMAGE_TAG}" "${scope}"
