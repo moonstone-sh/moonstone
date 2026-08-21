@@ -167,6 +167,10 @@ pub fn ensureLockedArtifact(
         .runtime_c_api = provider.options.runtime_c_api,
         .target = if (entry.target.len > 0) entry.target else "native",
         .lua_exe = provider.lua_exe,
+        .locked_rockspec_url = if (entry.rockspec.len > 0) entry.rockspec else null,
+        .locked_rockspec_hash = if (entry.rockspec_hash.len > 0) entry.rockspec_hash else null,
+        .locked_source_url = if (entry.source.len > 0) entry.source else null,
+        .locked_source_hash = if (entry.source_hash.len > 0) entry.source_hash else null,
     };
 
     const rocks_lookup_name = try allocator.dupe(u8, entry.name);

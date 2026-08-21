@@ -1159,7 +1159,10 @@ pub fn prepare_source_rock(
     env_map: *std.process.Environ.Map,
     base: []const u8,
 ) !PreparedRock {
-    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context, options.cancellation_flag);
+    const fetched_rockspec = if (options.locked_rockspec_url) |url|
+        try fetch_locked_rockspec(allocator, io, url, options.locked_rockspec_hash, env_map, options.on_event, options.on_event_context, options.cancellation_flag)
+    else
+        try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context, options.cancellation_flag);
     errdefer fetched_rockspec.deinit(allocator);
 
     const lua_exe = blk: {
@@ -1214,7 +1217,7 @@ pub fn prepare_source_rock(
     try rockspec_file.writeStreamingAll(io, fetched_rockspec.content);
     rockspec_file.close(io);
 
-    const fetched_source = fetch_and_unpack_source(allocator, io, base, pkg_name, version, &intent, workspace_path, env_map, options.on_event, options.on_event_context) catch |err| {
+    const fetched_source = fetch_and_unpack_source(allocator, io, base, pkg_name, version, &intent, workspace_path, env_map, options.on_event, options.on_event_context, options.locked_source_url, options.locked_source_hash) catch |err| {
         @import("../../diagnostics/error_context.zig").setFmt(
             allocator,
             "failed to prepare LuaRocks source for {s}@{s}\nreason: {s}",
@@ -1879,6 +1882,38 @@ fn fetch_rockspec(
     return error.RockspecNotFound;
 }
 
+fn fetch_locked_rockspec(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    expected_hash: ?[]const u8,
+    env_map: *std.process.Environ.Map,
+    on_event: ?options_mod.ResolveCallback,
+    on_event_context: ?*anyopaque,
+    cancellation_flag: ?*const std.atomic.Value(bool),
+) !FetchedRockspec {
+    const content = try http_get(allocator, io, url, env_map, on_event, on_event_context, null, cancellation_flag);
+    errdefer allocator.free(content);
+    if (std.mem.indexOf(u8, content, "package =") == null) return error.RockspecNotFound;
+
+    const content_hash = try blake3_prefixed(allocator, content);
+    errdefer allocator.free(content_hash);
+    if (expected_hash) |expected| if (!std.mem.eql(u8, expected, content_hash)) {
+        @import("../../diagnostics/error_context.zig").setFmt(
+            allocator,
+            "locked LuaRocks rockspec hash mismatch\nurl: {s}\nexpected: {s}\nactual: {s}",
+            .{ url, expected, content_hash },
+        );
+        return error.LockedRockspecHashMismatch;
+    };
+
+    return .{
+        .content = content,
+        .url = try allocator.dupe(u8, url),
+        .hash = content_hash,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 4 — Classify
 // ---------------------------------------------------------------------------
@@ -2302,6 +2337,8 @@ fn fetch_and_unpack_source(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
+    locked_source_url: ?[]const u8,
+    expected_source_hash: ?[]const u8,
 ) !FetchedSource {
     // 5a. Prefer the LuaRocks source rock when available. Many modern
     // rockspecs point source.url at git+https repositories, while LuaRocks
@@ -2309,7 +2346,14 @@ fn fetch_and_unpack_source(
     const guessed_src_rock = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.src.rock", .{ base, pkg_name, version });
     defer allocator.free(guessed_src_rock);
 
-    const source_fetch: SourceFetch = blk: {
+    const source_fetch: SourceFetch = if (locked_source_url) |url| blk: {
+        const source_data = try http_get(allocator, io, url, env_map, on_event, on_event_context, null, null);
+        break :blk SourceFetch{
+            .url = try allocator.dupe(u8, url),
+            .data = source_data,
+            .is_declared_source = std.mem.eql(u8, url, rock_source_url(rock)),
+        };
+    } else blk: {
         const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null, null) catch |err| {
             if (err != error.HttpError and err != error.FileNotFound and err != error.UnsupportedUriScheme) return err;
             const src_url = rock_source_url(rock);
@@ -2344,6 +2388,14 @@ fn fetch_and_unpack_source(
     try verify_declared_source_md5(source_fetch, rock.source.md5);
     const source_hash = try blake3_prefixed(allocator, source_data);
     errdefer allocator.free(source_hash);
+    if (expected_source_hash) |expected| if (!std.mem.eql(u8, expected, source_hash)) {
+        @import("../../diagnostics/error_context.zig").setFmt(
+            allocator,
+            "locked LuaRocks source hash mismatch\nurl: {s}\nexpected: {s}\nactual: {s}",
+            .{ url, expected, source_hash },
+        );
+        return error.LockedSourceHashMismatch;
+    };
     const source_url = try allocator.dupe(u8, url);
     errdefer allocator.free(source_url);
     // The selected payload determines the archive format. `source.file`

@@ -17,6 +17,10 @@ pub const ResolveOptions = struct {
     build_env: []const @import("../domain/manifest.zig").EnvPair = &.{},
     build_artifacts: []const BuildArtifact = &.{},
     cancellation_flag: ?*const std.atomic.Value(bool) = null,
+    locked_rockspec_url: ?[]const u8 = null,
+    locked_rockspec_hash: ?[]const u8 = null,
+    locked_source_url: ?[]const u8 = null,
+    locked_source_hash: ?[]const u8 = null,
 };
 
 /// One already-resolved artifact made visible only to a foreign build. The
