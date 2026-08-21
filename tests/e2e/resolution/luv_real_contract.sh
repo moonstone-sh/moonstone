@@ -92,18 +92,70 @@ if [[ -z "${ARTIFACT_MANIFEST}" || ! -f "${ARTIFACT_MANIFEST}" ]]; then
 fi
 ARTIFACT_DIR="$(dirname "${ARTIFACT_MANIFEST}")"
 
+dump_artifact_context() {
+    local manifest_path="$1"
+    local artifact_dir
+    artifact_dir="$(dirname "${manifest_path}")"
+
+    echo "--- luv artifact manifest: ${manifest_path} ---" >&2
+    cat "${manifest_path}" >&2 || true
+    echo "--- luv artifact files: ${artifact_dir}/files ---" >&2
+    find "${artifact_dir}/files" -maxdepth 5 -print >&2 || true
+}
+
+require_manifest_line() {
+    local manifest_path="$1"
+    local expected="$2"
+    local label="$3"
+
+    if ! grep -Fqx "${expected}" "${manifest_path}"; then
+        echo "ERROR: luv artifact ${label} was not recorded as expected" >&2
+        echo "Expected: ${expected}" >&2
+        dump_artifact_context "${manifest_path}"
+        exit 1
+    fi
+}
+
+require_artifact_file() {
+    local manifest_path="$1"
+    local file_path="$2"
+    local label="$3"
+
+    if [[ ! -f "${file_path}" ]]; then
+        echo "ERROR: luv artifact ${label} is missing: ${file_path}" >&2
+        dump_artifact_context "${manifest_path}"
+        exit 1
+    fi
+}
+
+require_absent_path() {
+    local manifest_path="$1"
+    local path="$2"
+    local label="$3"
+
+    if [[ -e "${path}" ]]; then
+        echo "ERROR: luv artifact ${label} remains: ${path}" >&2
+        dump_artifact_context "${manifest_path}"
+        exit 1
+    fi
+}
+
 assert_luv_contract() {
     local manifest_path="$1"
     local artifact_dir
     artifact_dir="$(dirname "${manifest_path}")"
 
-    grep -q '^resolver = "rocks"$' "${manifest_path}"
-    grep -Fq "source_hash = \"${SOURCE_B3}\"" "${manifest_path}"
-    grep -Fq "source = \"http://localhost:${PORT}/${PACKAGE}-${VERSION}.src.rock\"" "${manifest_path}"
-    grep -Fq 'lua_cmodule = [{ name = "luv", path = "lib/lua/5.4/luv.so" }]' "${manifest_path}"
-    [[ -f "${artifact_dir}/files/lib/lua/5.4/luv.so" ]]
-    [[ ! -e "${artifact_dir}/files/.moonstone-cmake-install" ]]
-    moon exec -- lua -e 'local uv = assert(require("luv")); assert(type(uv.version) == "function"); assert(uv.version() > 0); print(uv.version())' >/dev/null
+    require_manifest_line "${manifest_path}" 'resolver = "rocks"' "resolver"
+    require_manifest_line "${manifest_path}" "source_hash = \"${SOURCE_B3}\"" "source hash"
+    require_manifest_line "${manifest_path}" "source = \"http://localhost:${PORT}/${PACKAGE}-${VERSION}.src.rock\"" "source URL"
+    require_manifest_line "${manifest_path}" 'lua_cmodule = [{ name = "luv", path = "lib/lua/5.4/luv.so" }]' "native module interface"
+    require_artifact_file "${manifest_path}" "${artifact_dir}/files/lib/lua/5.4/luv.so" "native module"
+    require_absent_path "${manifest_path}" "${artifact_dir}/files/.moonstone-cmake-install" "CMake staging directory"
+    if ! moon exec -- lua -e 'local uv = assert(require("luv")); assert(type(uv.version) == "function"); assert(uv.version() > 0); print(uv.version())' >/dev/null; then
+        echo "ERROR: projected Lua runtime could not load luv" >&2
+        dump_artifact_context "${manifest_path}"
+        exit 1
+    fi
 }
 
 echo "━━━ assert normalized CMake artifact and projected runtime ━━━"

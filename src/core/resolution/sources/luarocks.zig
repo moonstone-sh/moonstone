@@ -3905,6 +3905,16 @@ pub fn materialize_prepared_rock(
         if (cmake_install_root) |root| try copy_provisions_from_root(allocator, io, root, build_out_dir, lua_cmodules);
     }
 
+    if (cmake_install_root) |root| {
+        // CMake installs into a private staging tree below build_out_dir. The
+        // declared provisions above have now been copied into their canonical
+        // artifact locations, so remove the staging tree before committing the
+        // whole output directory to CAS. Deferring this cleanup until function
+        // exit would make the committed artifact retain a duplicate private
+        // CMake layout.
+        std.Io.Dir.cwd().deleteTree(io, root) catch |err| if (err != error.FileNotFound) return err;
+    }
+
     const commit_res = try commit_synthetic_artifact(
         allocator,
         io,
