@@ -1242,13 +1242,15 @@ const LockedReplayPool = struct {
         };
         defer worker_index.deinit();
 
+        var provider_options = self.provider_options;
+        provider_options.locked = true;
         var worker_provider: moonstone.resolution.provider.graph_provider.RegistryProvider = undefined;
         worker_provider.init(
             self.allocator,
             self.io,
             worker_index,
             self.registries,
-            self.provider_options,
+            provider_options,
             self.env,
             self.lua_exe,
             null,
@@ -2791,7 +2793,7 @@ pub const SyncCommand = struct {
                 if (p.location == .remote and p.origin == .moonstone_registry) {
                     try download_jobs.append(allocator, .{ .pkg = entry.value_ptr });
                     try job_map.put(try allocator.dupe(u8, entry.key_ptr.*), download_jobs.items.len - 1);
-                } else if (p.location == .remote and p.origin == .luarocks) {
+                } else if (!replay_lock and p.location == .remote and p.origin == .luarocks and p.local_path == null) {
                     var job = RocksJob{ .pkg = entry.value_ptr };
                     job.build_dependency_names = try collectSolvedRocksDependencyNames(
                         allocator,

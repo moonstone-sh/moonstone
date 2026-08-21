@@ -97,7 +97,7 @@ cat > "${MIRROR_DIR}/manifest-5.4.json" <<EOF2
 {"repository":{"${PACKAGE}":{"${VERSION}":[{"arch":"rockspec"}]}}}
 EOF2
 
-python3 -m http.server "${PORT}" --directory "${MIRROR_DIR}" >/tmp/moonstone-real-luasql-sqlite3-contract-server.log 2>&1 &
+python3 -u -m http.server "${PORT}" --directory "${MIRROR_DIR}" >/tmp/moonstone-real-luasql-sqlite3-contract-server.log 2>&1 &
 MIRROR_PID=$!
 trap 'kill "${MIRROR_PID}" 2>/dev/null || true' EXIT
 
@@ -155,7 +155,18 @@ moon exec -- lua -e '
 
 printf '━━━ purge and replay the locked LuaSQL SQLite3 artifact ━━━\n'
 rm -rf "${ARTIFACT_DIR}" .moonstone/env
+: > /tmp/moonstone-real-luasql-sqlite3-contract-server.log
 moon sync --locked
+
+# A locked replay may use the URLs stored in moonstone.lock, but it must not
+# re-enter ordinary LuaRocks discovery and reconstruct URLs from the display
+# name (LuaSQL-SQLite3). That path is case-sensitive on this mirror.
+REPLAY_REQUESTS=$(cat /tmp/moonstone-real-luasql-sqlite3-contract-server.log)
+if grep -Fq 'LuaSQL-SQLite3' <<<"${REPLAY_REQUESTS}"; then
+    echo "ERROR: locked replay performed display-cased LuaRocks discovery"
+    printf '%s\n' "${REPLAY_REQUESTS}"
+    exit 1
+fi
 
 RESTORED_MANIFEST=$(find "${STORE_DIR}" -name manifest.toml -exec grep -il '^name = "luasql-sqlite3"$' {} \; | head -1)
 if [[ -z "${RESTORED_MANIFEST}" || ! -f "${RESTORED_MANIFEST}" ]]; then

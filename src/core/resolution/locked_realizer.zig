@@ -247,6 +247,11 @@ pub fn ensureLockedArtifact(
     };
     errdefer cand.deinit(allocator);
 
+    // `luarocks.resolve` has already materialized and committed this source
+    // replay. Keep the candidate out of sync's later remote Rocks scheduler,
+    // which is reserved for unresolved candidates selected by PubGrub.
+    cand.location = .local_store;
+
     // Validate plan hash if locked in entry
     if (entry.plan_hash.len > 0) {
         const plan_mod = @import("../materialization/plan.zig");

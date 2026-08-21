@@ -404,8 +404,9 @@ pub const RegistryProvider = struct {
         // request rather than materializing inside PubGrub solution
         // extraction. `moon sync` realizes these candidates after the whole
         // graph is accepted, through its bounded realization scheduler.
-        // Locked replay retains the existing concrete-artifact path until it
-        // is migrated to that same post-solve scheduler.
+        // Locked replay is provenance-driven. This generic provider has no
+        // locked rockspec/source URLs, so it must not materialize Rocks by
+        // rediscovering package metadata; locked_realizer owns that path.
         if (!self.options.offline and self.env != null) {
             var is_rocks = request.resolver == .rocks;
             if (!is_rocks) {
@@ -414,44 +415,23 @@ pub const RegistryProvider = struct {
                 }
             }
             if (is_rocks) {
-                if (!self.options.locked) {
-                    const base = self.env.?.get("MOONSTONE_LUAROCKS_URL") orelse self.registryUrlFor(null, "rocks") orelse "https://luarocks.org";
-                    return candidate_mod.Candidate{
-                        .name = try self.allocator.dupe(u8, request.name),
-                        .version = try self.allocator.dupe(u8, request.version),
-                        .kind = .lib,
-                        .artifact_hash = try self.allocator.dupe(u8, ""),
-                        .lua_abi = if (self.options.runtime) |abi| try self.allocator.dupe(u8, abi) else null,
-                        .runtime_artifact_hash = if (self.options.runtime_artifact_hash) |artifact_hash| try self.allocator.dupe(u8, artifact_hash) else try self.allocator.dupe(u8, ""),
-                        .registry_name = try self.allocator.dupe(u8, "rocks"),
-                        .registry_url = try self.allocator.dupe(u8, base),
-                        .origin = .{ .luarocks = .{
-                            .url = try self.allocator.dupe(u8, base),
-                            .rockspec_path = try self.allocator.dupe(u8, ""),
-                        } },
-                        .location = .remote,
-                    };
-                }
-
-                var opts = self.options;
-                opts.lua_exe = try self.luaMetadataInterpreter();
-                const built = rocks_resolver.resolve(self.allocator, self.io, request.name, request.version, opts, self.env.?, null, null) catch |err| {
-                    if (err == error.PackageNotFound or err == error.RockspecNotFound or
-                        err == error.UnsupportedLuaRocksBuildType or err == error.FileNotFound or
-                        err == error.RocksVersionDiscoveryFailed)
-                    {
-                        return null;
-                    }
-                    return err;
+                if (self.options.locked) return null;
+                const base = self.env.?.get("MOONSTONE_LUAROCKS_URL") orelse self.registryUrlFor(null, "rocks") orelse "https://luarocks.org";
+                return candidate_mod.Candidate{
+                    .name = try self.allocator.dupe(u8, request.name),
+                    .version = try self.allocator.dupe(u8, request.version),
+                    .kind = .lib,
+                    .artifact_hash = try self.allocator.dupe(u8, ""),
+                    .lua_abi = if (self.options.runtime) |abi| try self.allocator.dupe(u8, abi) else null,
+                    .runtime_artifact_hash = if (self.options.runtime_artifact_hash) |artifact_hash| try self.allocator.dupe(u8, artifact_hash) else try self.allocator.dupe(u8, ""),
+                    .registry_name = try self.allocator.dupe(u8, "rocks"),
+                    .registry_url = try self.allocator.dupe(u8, base),
+                    .origin = .{ .luarocks = .{
+                        .url = try self.allocator.dupe(u8, base),
+                        .rockspec_path = try self.allocator.dupe(u8, ""),
+                    } },
+                    .location = .remote,
                 };
-                defer built.deinit(self.allocator);
-
-                const arena = self.arena.allocator();
-                var cloned = try built.clone(arena);
-                cloned.location = .local_store;
-                try self.artifacts.append(arena, cloned);
-
-                return try built.clone(self.allocator);
             }
         }
 
