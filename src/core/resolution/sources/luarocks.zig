@@ -773,6 +773,7 @@ fn expand_luarocks_command_value(
     const default_libflag = switch (builtin.os.tag) {
         .macos => "-fPIC -bundle -undefined dynamic_lookup",
         .windows => "-shared",
+        .linux => "-shared -fPIC -Wl,--whole-archive,${runtime.lualib},--no-whole-archive",
         else => "-shared -fPIC",
     };
     var result = try allocator.dupe(u8, raw_value);
@@ -1016,6 +1017,26 @@ test "LuaRocks command variables become projected command values" {
     defer allocator.free(command);
     try std.testing.expectEqualStrings(
         "${runtime.bin_dir}/lua build.lua CC=\"clang\" LUA_INCDIR=\"${runtime.include}\" LIBDIR=\"${out}/lib/lua/${lua_abi}\"",
+        command,
+    );
+}
+
+test "LuaRocks command build defaults link the projected Lua archive on Linux" {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag != .linux) return;
+
+    const allocator = std.testing.allocator;
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+
+    const command = try expand_luarocks_command_value(
+        allocator,
+        "$(CC) $(LIBFLAG) source.c -o module.so",
+        &env,
+    );
+    defer allocator.free(command);
+    try std.testing.expectEqualStrings(
+        "cc -shared -fPIC -Wl,--whole-archive,${runtime.lualib},--no-whole-archive source.c -o module.so",
         command,
     );
 }

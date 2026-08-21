@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-dev \
     libssl-dev \
     lua5.4 \
+    m4 \
     pkg-config \
     python3 \
     tar \

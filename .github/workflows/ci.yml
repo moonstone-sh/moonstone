@@ -51,7 +51,7 @@ jobs:
       - name: Verify LuaRocks rockspec compatibility corpus
         run: |
           sudo apt-get update
-          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
+          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 m4 pkg-config
           export LUAROCKS_UPSTREAM_DIR="$GITHUB_WORKSPACE/.ci/luarocks-upstream"
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_conformance.sh
           LUA_BIN=lua5.4 tests/upstream/luarocks/run_schema_mutation_matrix.sh

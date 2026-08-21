@@ -37,7 +37,7 @@ jobs:
       - name: Install release-certification dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 pkg-config
+          sudo apt-get install -y b3sum build-essential cmake jq libsqlite3-dev libssl-dev lua5.4 m4 pkg-config
 
       - name: Verify tag matches build metadata
         run: |
