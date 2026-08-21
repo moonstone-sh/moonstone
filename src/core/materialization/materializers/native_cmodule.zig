@@ -9,6 +9,19 @@ fn is_macos_target(target: []const u8) bool {
     return false;
 }
 
+fn is_elf_target(target: []const u8) bool {
+    if (std.mem.eql(u8, target, "native")) return switch (builtin.os.tag) {
+        .linux, .freebsd, .netbsd, .openbsd, .dragonfly => true,
+        else => false,
+    };
+
+    return std.mem.indexOf(u8, target, "-linux") != null or
+        std.mem.indexOf(u8, target, "-freebsd") != null or
+        std.mem.indexOf(u8, target, "-netbsd") != null or
+        std.mem.indexOf(u8, target, "-openbsd") != null or
+        std.mem.indexOf(u8, target, "-dragonfly") != null;
+}
+
 fn normalize_macos_uuid(io: std.Io, output_path: []const u8) !void {
     const mach_header_64_magic: u32 = 0xfeedfacf;
     const lc_uuid: u32 = 0x1b;
@@ -213,6 +226,7 @@ pub fn build(
     on_event_context: ?*anyopaque,
 ) !void {
     const target_is_macos = is_macos_target(target);
+    const target_is_elf = is_elf_target(target);
 
     // 1. Resolve Lua headers path
     const lua_include = try find_lua_include(allocator, io, runtime_path);
@@ -288,11 +302,15 @@ pub fn build(
         try append_external_path_flag(allocator, env_map, &argv, &expanded_flags, flag);
     }
 
-    if (target_is_macos) {
-        // Native module artifacts are release closures, not debugger payloads.
-        // Suppress temporary source paths in DWARF before normalizing the Mach-O
-        // UUID and applying the deterministic ad-hoc signature below.
-        try argv.append(allocator, "-g0");
+    // Native module artifacts are release closures, not debugger payloads.
+    // Suppress temporary workspace paths in DWARF on every target.
+    try argv.append(allocator, "-g0");
+
+    if (target_is_elf) {
+        // LLD may otherwise emit an ELF build ID based on host/linker defaults.
+        // The module closure already has Moonstone's content identity, so omit
+        // that non-semantic linker note to keep source replay byte-stable.
+        try argv.append(allocator, "-Wl,--build-id=none");
     }
 
     // Output path
@@ -411,4 +429,12 @@ test "macOS target detection is independent of the build host" {
     try std.testing.expect(!is_macos_target("x86_64-linux-gnu"));
     try std.testing.expect(!is_macos_target("x86_64-windows-gnu"));
     try std.testing.expectEqual(comptime builtin.os.tag == .macos, is_macos_target("native"));
+}
+
+test "ELF target detection is independent of the build host" {
+    try std.testing.expect(is_elf_target("x86_64-linux-gnu"));
+    try std.testing.expect(is_elf_target("aarch64-linux-musl"));
+    try std.testing.expect(is_elf_target("x86_64-freebsd"));
+    try std.testing.expect(!is_elf_target("aarch64-macos"));
+    try std.testing.expect(!is_elf_target("x86_64-windows-gnu"));
 }
