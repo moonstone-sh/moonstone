@@ -168,6 +168,7 @@ grep -Fq 'build tool was projected' "$(dirname "${PARENT_MANIFEST}")/files/asset
 moon exec -- lua -e 'print(require("build_dependent_rock"))' | grep -q 'built with a projected tool'
 [[ ! -e ".moonstone/env/bin/build-marker" ]]
 grep -A 30 'name = "build-only-tool"' moonstone.lock | grep -q '^roles = \["build"\]$'
+grep -A 30 'name = "build-dependent-rock"' moonstone.lock | grep -q '^build_dependencies = \["build-only-tool"\]$'
 
 echo "━━━ assert recipe identity records the build closure ━━━"
 grep -q '^recipe_hash = "b3:' "${PARENT_MANIFEST}"

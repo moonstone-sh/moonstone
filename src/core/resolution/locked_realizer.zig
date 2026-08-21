@@ -100,6 +100,7 @@ pub fn ensureLockedArtifact(
     io: std.Io,
     env: *std.process.Environ.Map,
     entry: *const LockEntry,
+    build_artifacts: []const @import("options.zig").BuildArtifact,
     provider: *graph_provider.RegistryProvider,
     store_drv: *store_driver,
     policy: ReplayPolicy,
@@ -224,6 +225,7 @@ pub fn ensureLockedArtifact(
         .locked_rockspec_hash = if (entry.rockspec_hash.len > 0) entry.rockspec_hash else null,
         .locked_source_url = if (entry.source.len > 0) entry.source else null,
         .locked_source_hash = if (entry.source_hash.len > 0) entry.source_hash else null,
+        .build_artifacts = build_artifacts,
     };
 
     const rocks_lookup_name = try allocator.dupe(u8, entry.name);

@@ -32,6 +32,9 @@ pub const LockEntry = struct {
     link_mode: []const u8 = &.{},
     reproducible: bool = true,
     roles: []const []const u8 = &.{},
+    /// Build-only package names required while replaying this realization from
+    /// source. These are not linked into the project runtime environment.
+    build_dependencies: []const []const u8 = &.{},
     replay_mode: replay_mod.ReplayMode = .artifact_only,
     replay_contract: ?replay_mod.ReplayContract = null,
 
@@ -60,6 +63,8 @@ pub const LockEntry = struct {
         if (self.link_mode.len > 0) allocator.free(self.link_mode);
         for (self.roles) |g| allocator.free(g);
         if (self.roles.len > 0) allocator.free(self.roles);
+        for (self.build_dependencies) |dependency| allocator.free(dependency);
+        if (self.build_dependencies.len > 0) allocator.free(self.build_dependencies);
         if (self.replay_contract) |rc| {
             var mut_rc = rc;
             mut_rc.deinit(allocator);
@@ -209,6 +214,14 @@ pub const LockFile = struct {
                 }
                 try writer.print("]\n", .{});
             }
+            if (entry.build_dependencies.len > 0) {
+                try writer.print("build_dependencies = [", .{});
+                for (entry.build_dependencies, 0..) |dependency, j| {
+                    if (j > 0) try writer.print(", ", .{});
+                    try writer.print("\"{s}\"", .{dependency});
+                }
+                try writer.print("]\n", .{});
+            }
         }
         for (self.profiles.items) |profile| {
             try writer.print("\n[[profile]]\nid = \"{s}\"\ntarget = \"{s}\"\nruntime = \"{s}\"\n", .{ profile.id, profile.target, profile.runtime });
@@ -327,6 +340,20 @@ pub const LockFile = struct {
                         }
                         break :blk &.{};
                     },
+                    .build_dependencies = blk: {
+                        if (t.get("build_dependencies")) |dependencies| {
+                            if (dependencies == .array) {
+                                var list = std.ArrayList([]const u8).empty;
+                                for (dependencies.array.items) |item| {
+                                    if (item != .string) return error.InvalidLockFile;
+                                    try list.append(allocator, try allocator.dupe(u8, item.string));
+                                }
+                                break :blk try list.toOwnedSlice(allocator);
+                            }
+                            return error.InvalidLockFile;
+                        }
+                        break :blk &.{};
+                    },
                 });
 
                 var entry = &lf.packages.items[lf.packages.items.len - 1];
@@ -441,6 +468,16 @@ pub fn computeRealizationHash(allocator: std.mem.Allocator, entry: LockEntry) ![
         }
     }.lessThan);
     for (roles) |role| try writer.print("role={s}\n", .{role});
+
+    const build_dependencies = try allocator.alloc([]const u8, entry.build_dependencies.len);
+    defer allocator.free(build_dependencies);
+    @memcpy(build_dependencies, entry.build_dependencies);
+    std.mem.sort([]const u8, build_dependencies, {}, struct {
+        fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+            return std.mem.lessThan(u8, lhs, rhs);
+        }
+    }.lessThan);
+    for (build_dependencies) |dependency| try writer.print("build_dependency={s}\n", .{dependency});
 
     var digest: [32]u8 = undefined;
     std.crypto.hash.Blake3.hash(preimage.written(), &digest, .{});

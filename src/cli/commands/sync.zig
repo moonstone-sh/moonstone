@@ -1259,11 +1259,83 @@ const LockedReplayPool = struct {
         );
         defer worker_provider.deinit();
 
+        var scoped_environment: ?moonstone.project.build_scope.BuildScope = null;
+        defer if (scoped_environment) |*scope| scope.deinit();
+        var build_artifacts = std.ArrayList(moonstone.resolution.options.BuildArtifact).empty;
+        defer build_artifacts.deinit(self.allocator);
+        var roots = std.ArrayList(moonstone.project.build_scope.ArtifactRoot).empty;
+        defer roots.deinit(self.allocator);
+        var owned_root_paths = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_root_paths.items) |path| self.allocator.free(path);
+            owned_root_paths.deinit(self.allocator);
+        }
+
+        var build_env = self.env;
+        if (entry.build_dependencies.len > 0) {
+            for (entry.build_dependencies) |dependency_name| {
+                const dependency = self.completedBuildArtifact(dependency_name) orelse {
+                    job.err = error.BuildDependencyResolutionMissing;
+                    return;
+                };
+                const artifact_path = dependency.local_path orelse {
+                    job.err = error.BuildDependencyResolutionMissing;
+                    return;
+                };
+                const files_path = std.fs.path.join(self.allocator, &.{ artifact_path, "files" }) catch |err| {
+                    job.err = err;
+                    return;
+                };
+                owned_root_paths.append(self.allocator, files_path) catch |err| {
+                    self.allocator.free(files_path);
+                    job.err = err;
+                    return;
+                };
+                roots.append(self.allocator, .{ .files_path = files_path }) catch |err| {
+                    job.err = err;
+                    return;
+                };
+                build_artifacts.append(self.allocator, .{
+                    .name = dependency.name,
+                    .artifact_hash = dependency.artifact_hash,
+                }) catch |err| {
+                    job.err = err;
+                    return;
+                };
+            }
+
+            const runtime_path = self.provider_options.runtime_path orelse {
+                job.err = error.RuntimePathRequired;
+                return;
+            };
+            const runtime_files_path = std.fs.path.join(self.allocator, &.{ runtime_path, "files" }) catch |err| {
+                job.err = err;
+                return;
+            };
+            owned_root_paths.append(self.allocator, runtime_files_path) catch |err| {
+                self.allocator.free(runtime_files_path);
+                job.err = err;
+                return;
+            };
+            roots.append(self.allocator, .{ .files_path = runtime_files_path }) catch |err| {
+                job.err = err;
+                return;
+            };
+            var runtime_buf: [8]u8 = undefined;
+            const lua_ver_dot = moonstone.resolution.options.normalizeRuntimeAbi(entry.lua_abi, &runtime_buf);
+            scoped_environment = moonstone.project.build_scope.project(self.allocator, self.io, self.env, roots.items, lua_ver_dot) catch |err| {
+                job.err = err;
+                return;
+            };
+            build_env = &scoped_environment.?.env_map;
+        }
+
         const real_res = moonstone.resolution.locked_realizer.ensureLockedArtifact(
             self.allocator,
             self.io,
-            self.env,
+            build_env,
             entry,
+            build_artifacts.items,
             &worker_provider,
             &worker_index,
             self.policy,
@@ -1281,15 +1353,56 @@ const LockedReplayPool = struct {
     }
 
     fn execute(self: *LockedReplayPool, jobs: usize) !void {
-        var scheduler = moonstone.realization.scheduler.Scheduler{
-            .allocator = self.allocator,
-            .io = self.io,
-            .task_count = self.jobs.len,
-            .context = @ptrCast(self),
-            .run_task = runScheduled,
-            .is_cancelled = isCancelled,
-        };
-        try scheduler.execute(jobs);
+        var pending = try self.allocator.alloc(bool, self.jobs.len);
+        defer self.allocator.free(pending);
+        @memset(pending, true);
+
+        while (true) {
+            var ready = std.ArrayList(usize).empty;
+            defer ready.deinit(self.allocator);
+            var remaining: usize = 0;
+            for (self.jobs, 0..) |*job, index| {
+                if (!pending[index]) continue;
+                remaining += 1;
+                if (self.buildDependenciesReady(job.entry)) try ready.append(self.allocator, index);
+            }
+            if (remaining == 0) break;
+            if (ready.items.len == 0) return error.LuaRocksBuildDependencyCycle;
+
+            const Wave = struct { pool: *LockedReplayPool, indexes: []const usize };
+            var wave = Wave{ .pool = self, .indexes = ready.items };
+            var scheduler = moonstone.realization.scheduler.Scheduler{
+                .allocator = self.allocator,
+                .io = self.io,
+                .task_count = wave.indexes.len,
+                .context = @ptrCast(&wave),
+                .run_task = struct {
+                    fn run(context: *anyopaque, task_index: usize) !void {
+                        const current: *Wave = @ptrCast(@alignCast(context));
+                        current.pool.processJob(current.indexes[task_index]);
+                        if (current.pool.jobs[current.indexes[task_index]].err) |err| return err;
+                    }
+                }.run,
+                .is_cancelled = isCancelled,
+            };
+            try scheduler.execute(jobs);
+            for (ready.items) |index| pending[index] = false;
+        }
+    }
+
+    fn completedBuildArtifact(self: *const LockedReplayPool, name: []const u8) ?*const moonstone.resolution.candidate.ResolvedArtifact {
+        for (self.jobs) |*job| {
+            if (!std.ascii.eqlIgnoreCase(job.entry.name, name)) continue;
+            if (job.result) |*result| return result;
+        }
+        return null;
+    }
+
+    fn buildDependenciesReady(self: *const LockedReplayPool, entry: *const moonstone.domain.lockfile.LockEntry) bool {
+        for (entry.build_dependencies) |dependency_name| {
+            if (self.completedBuildArtifact(dependency_name) == null) return false;
+        }
+        return true;
     }
 
     fn runScheduled(context: *anyopaque, task_index: usize) !void {
@@ -2785,6 +2898,16 @@ pub const SyncCommand = struct {
             for (rocks_jobs.items) |*job| job.deinit(allocator);
             rocks_jobs.deinit(allocator);
         }
+        var rocks_build_dependencies = std.StringArrayHashMapUnmanaged([]const []const u8).empty;
+        defer {
+            var build_it = rocks_build_dependencies.iterator();
+            while (build_it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                for (entry.value_ptr.*) |dependency| allocator.free(dependency);
+                if (entry.value_ptr.*.len > 0) allocator.free(entry.value_ptr.*);
+            }
+            rocks_build_dependencies.deinit(allocator);
+        }
 
         {
             var prescan = solution.iterator();
@@ -2879,6 +3002,19 @@ pub const SyncCommand = struct {
                 };
                 defer pool.deinit();
                 try pool.execute(jobs);
+                for (pool.jobs) |job| {
+                    if (job.build_dependency_names.len == 0) continue;
+                    const owned_dependencies = try mergeDependencyNames(allocator, &.{}, job.build_dependency_names);
+                    errdefer {
+                        for (owned_dependencies) |dependency| allocator.free(dependency);
+                        allocator.free(owned_dependencies);
+                    }
+                    try rocks_build_dependencies.put(
+                        allocator,
+                        try allocator.dupe(u8, job.pkg.name),
+                        owned_dependencies,
+                    );
+                }
             }
         }
 
@@ -3149,6 +3285,10 @@ pub const SyncCommand = struct {
                                 break :blk moonstone.domain.replay_contract.ReplayMode.artifact_only;
                             },
                             .roles = try entry_roles.toOwnedSlice(allocator),
+                            .build_dependencies = if (rocks_build_dependencies.get(pkg.name)) |dependencies|
+                                try mergeDependencyNames(allocator, &.{}, dependencies)
+                            else
+                                &.{},
                         });
                     }
                     if (package_roles.get(pkg.name)) |glist| {
