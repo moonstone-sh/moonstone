@@ -12,6 +12,28 @@
 - 🔗 **Smart Linking** — Symlinks binaries and modules from a global CAS store.
 - 🧱 **ABI-Aware** — Built-in detection of Lua ABI compatibility.
 - 🧰 **Self-Contained** — Compiled Zig binary with no runtime dependencies.
+- 🎯 **Target Profiles** — Locks concrete runtime, ABI, package, and realization closures per target.
+- 🤖 **Semantic Automation** — Exposes versioned manifest and read-only lock JSON contracts for tools and CI.
+- ⚡ **Bounded Sync Work** — Materializes independent selected packages concurrently with controlled terminal or NDJSON output.
+
+## 🆕 Moonstone 0.4
+
+Moonstone 0.4 makes project automation and target-aware replay explicit:
+
+```bash
+moon -C ./my-app manifest export --json
+moon -C ./my-app sync --target x86_64-windows-gnu --update
+moon -C ./my-app lock profile list --json
+moon -C ./my-app sync --jobs 8 --progress fancy
+```
+
+- `moon manifest` reads and applies bounded semantic project edits; integrations do not need to rewrite TOML layout.
+- `moon lock` is a read-only inspection surface for profiles, packages, realizations, graphs, and verification.
+- `[scripts]` remains intentionally simple: `moon run` projects the environment and the host shell interprets the command. Keep orchestration in Lua, Ballad, or ordinary script files.
+- Windows uses the same linked `.moonstone/env` projection as Unix. Enable Developer Mode or equivalent symlink permission before syncing.
+- LuaRocks materialization now covers pure Lua rocks and selected native build contracts while retaining explicit ABI, target, and system-tool boundaries.
+
+Read the [Moonstone 0.4 Upgrade Guide](https://moonstone.sh/docs/guide/v0-4/) for migration details and CI examples.
 
 ---
 
@@ -123,7 +145,8 @@ Moonstone relies on several unified concepts to achieve offline-first, determini
 ## 🧰 Build & System Requirements
 
 - **Zig 0.16.0**
-- **POSIX system** (Linux/macOS)
+- **Supported hosts:** Linux, macOS, and Windows
+- **Windows:** Developer Mode or an account/policy permitted to create symbolic links
 - **Common Tools**: `gcc`, `make`, `cmake`, `tar`, `curl`, `zstd`, `sqlite3`
 
 ---

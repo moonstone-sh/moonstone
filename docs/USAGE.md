@@ -114,8 +114,10 @@ moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --versio
 The importer produces `moonstone/love@11.5`, with `files/bin/love` and runtime metadata suitable for:
 
 ```toml
-[dependencies.runtime]
-"moonstone:moonstone/love" = "11.5"
+[[dependencies]]
+name = "moonstone/love"
+constraint = "11.5"
+role = "runtime"
 ```
 
 See [LÖVE + Moonstone](LOVE.md) for the full game workflow.
@@ -278,22 +280,20 @@ Roles prevent contamination. Moonstone does not dump every dependency into one g
 - **Helper scope** — `helper` executables available to the runtime package
 - **External/Optional slots** — metadata only; not linked into the output closure
 
-## Authoring Aliases
+## Semantic Manifest Edits
 
-In `moonstone.toml` you may use legacy section names that canonicalize to `role`:
+The canonical storage form is explicit `[[dependencies]]` records. Tools that
+need to inspect or alter a project should use Moonstone's semantic JSON API
+instead of reconstructing TOML sections:
 
-```toml
-[dependencies.dev]
-# equivalent to [[dependencies]] role = "dev"
-
-[dependencies.vendor-exec]
-# equivalent to [[dependencies]] role = "helper"
-
-[dependencies.interpreter-exec]
-# equivalent to [[dependencies]] role = "helper"
+```bash
+moon manifest export --json
+moon manifest apply --json --force < request.json
 ```
 
-These aliases are preserved for backward compatibility but resolve to the canonical flat-array format internally.
+The request carries the manifest `storage_revision` and bounded domain
+operations. It cannot address arbitrary TOML paths, which keeps project edits
+transactional and independent of storage formatting.
 # Global Tools
 
 Global tools are Moonstone packages installed into a shared tools project instead of the current project. They are useful for ecosystem commands such as `moonstone/love-importer` that you want to run from anywhere.
@@ -508,12 +508,14 @@ The generated manifest includes the imported runtime and a dev script:
 ```toml
 manifest_version = 2
 
-[dependencies.runtime]
-"moonstone:moonstone/love" = "11.5"
+[[dependencies]]
+name = "moonstone/love"
+constraint = "11.5"
+role = "runtime"
 
 [scripts]
 dev = "love ."
-export = "moon exec ballad -- play partiture.lua"
+export = "ballad play partiture.lua"
 ```
 
 Sync and run the normal LÖVE dev loop:

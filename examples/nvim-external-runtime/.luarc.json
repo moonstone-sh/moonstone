@@ -1,0 +1,25 @@
+{
+  "workspace": {
+    "library": [
+      "$VIMRUNTIME/lua",
+      ".moonstone/env/share/lua/5.1"
+    ],
+    "checkThirdParty": false,
+    "useGitIgnore": false,
+    "ignoreDir": [
+      ".moonstone/env/bin",
+      ".moonstone/env/lib",
+      ".moonstone/env/include",
+      ".moonstone/env/libexec",
+      ".ballad",
+      "dist",
+      ".git"
+    ]
+  },
+  "runtime": {
+    "version": "Lua 5.1"
+  },
+  "diagnostics": {
+    "globals": ["vim"]
+  }
+}

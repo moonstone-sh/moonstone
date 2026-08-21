@@ -1,0 +1,21 @@
+manifest_version = 2
+
+[package]
+name = "nvim-external-runtime-example"
+version = "0.1.0"
+kind = "lib"
+description = "A Moonstone-built Neovim plugin that runs in Neovim's LuaJIT host"
+
+[interpreter]
+name = "luajit"
+version = "2.1"
+abi = "5.1"
+
+[scripts]
+export = 'moon exec ballad play partiture.lua "$@"'
+smoke = 'nvim --headless -u tests/minimal_init.lua "+lua assert(require(\"nvim_host_example\").host() == \"neovim\")" +qa'
+
+[[dependencies]]
+name = "moonstone/ballad"
+constraint = "^0.2.41"
+role = "tool"

@@ -118,10 +118,15 @@ Rules:
 The same package may appear multiple times with different roles:
 
 ```toml
-[dependencies.runtime]
-"moonstone/my-lib" = "1.0"
-[dependencies.dev]
-"moonstone/my-lib" = { version = "1.0", role = "dev" }
+[[dependencies]]
+name = "moonstone/my-lib"
+constraint = "1.0"
+role = "runtime"
+
+[[dependencies]]
+name = "moonstone/my-lib"
+constraint = "1.0"
+role = "dev"
 ```
 
 Moonstone preserves all roles. The linker places capabilities into the correct scopes.

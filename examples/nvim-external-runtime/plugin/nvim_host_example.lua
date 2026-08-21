@@ -1,0 +1,5 @@
+vim.api.nvim_create_user_command("NvimHostExample", function()
+  local plugin = require("nvim_host_example")
+  local path = plugin.plenary_path()
+  vim.notify("plenary is available from " .. path)
+end, {})
