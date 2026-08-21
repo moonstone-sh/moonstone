@@ -9,16 +9,16 @@ min_client = "0.1.0"
 [index]
 format = "toml"
 url = "index.toml"
-hash = "b3:3e37374ffa277c226abb656645eb0a34c19bf2411d1020b8fa77e6ef7be2ca1c"
+hash = "b3:036b86ba3ca1f353dc900c5755125de1895b19ec85a2939c3ef3f62fc92f118e"
 bytes = 2275
 revision = 1
 
 [index.compact]
 format = "sqlite-zstd"
 url = "index.sqlite.zst"
-compressed_hash = "b3:48e026499fdd841260bd3c543bc520d3ef254afecc7c1fb085aff3aceb2cf405"
-compressed_bytes = 4053
-content_hash = "b3:274607860827baa424f05b969da8d38aff646e8f21122b6774ee9d5b90797566"
+compressed_hash = "b3:e5cdf6cb19e26380e4f9723f67954459eb49b8981f03c8daa824ff55e3e0526f"
+compressed_bytes = 4054
+content_hash = "b3:f57bc1faa327a69cb721e5112efe949b505d8c16e5e78114586aed622cdcee76"
 content_bytes = 69632
 revision = 1
 

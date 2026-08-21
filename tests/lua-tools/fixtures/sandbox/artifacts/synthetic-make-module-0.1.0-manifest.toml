@@ -2,9 +2,9 @@
 name = "synthetic-make-module"
 version = "0.1.0"
 kind = "lib"
-source_hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
-recipe_hash = "b3:cbc00a74f109affbf7829d593957b4f4e05bdb94457746e754186cbfdfec3235"
-artifact_hash = "b3:10b3210fa481fd1d39272fa5c246d35e220f7c59c8af9f6520156a16aa45420e"
+source_hash = "b3:f4790ce7f3b82d5fa1bb2a273a3e8f4ba591dcf5c9a756ecba113daa61f641bd"
+recipe_hash = "b3:0eefe5b7dc3e20297fc754de4fda39551544a221c13687df03c300431c4a800f"
+artifact_hash = "b3:f4790ce7f3b82d5fa1bb2a273a3e8f4ba591dcf5c9a756ecba113daa61f641bd"
 target = "source"
 
 [compat]

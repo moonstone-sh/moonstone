@@ -3,8 +3,8 @@ name = "luassert"
 version = "1.9.0"
 kind = "lib"
 source_hash = "b3:4a1bc1962912c5d8acfc13d839844f64f4f22533041964158d8fb3987828a5dd"
-recipe_hash = "b3:f29b04a3f29c526412efacd681ff4e20dc0d66f961ac7ed2003b0a206c919589"
-artifact_hash = "b3:5684acf1cf9b9cc34cbfdfaa6e2f4c5b9884285dfcaf880b10a97860be8e203c"
+recipe_hash = "b3:1d0beac314e3b100bbe385ef0d8bf4e23d7b42eb9320db7143c1d701ad527e66"
+artifact_hash = "b3:15cb5d60d9aa387509126d691232e944c87ff309060191da3eb1c2cd39ccd8d0"
 target = "any"
 
 [compat]

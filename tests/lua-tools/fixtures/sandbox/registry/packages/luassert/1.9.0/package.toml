@@ -4,33 +4,24 @@ version = "1.9.0"
 kind = "lib"
 description = "Assertion library for Lua"
 
-[compat]
-runtimes = ["lua@5.4.7"]
-
-[source]
-kind = "archive"
-format = "tar.gz"
-hash = "b3:4a1bc1962912c5d8acfc13d839844f64f4f22533041964158d8fb3987828a5dd"
-
-[[artifact]]
+[[artifacts]]
+id = "lua_module-any-lua-5.4"
+kind = "lua_module"
 target = "any"
 lua_api = "lua-5.4"
 lua_abi = "lua-5.4"
 runtime = "lua@5.4.7"
-runtime_artifact_hash = ""
 format = "tar.gz"
-url = "../../../blobs/b3/56/84/5684acf1cf9b9cc34cbfdfaa6e2f4c5b9884285dfcaf880b10a97860be8e203c.tar.gz"
-hash = "b3:5684acf1cf9b9cc34cbfdfaa6e2f4c5b9884285dfcaf880b10a97860be8e203c"
-recipe_hash = "b3:f29b04a3f29c526412efacd681ff4e20dc0d66f961ac7ed2003b0a206c919589"
+url = "blobs/b3/15/cb/15cb5d60d9aa387509126d691232e944c87ff309060191da3eb1c2cd39ccd8d0.tar.gz"
+hash = "b3:15cb5d60d9aa387509126d691232e944c87ff309060191da3eb1c2cd39ccd8d0"
+recipe_hash = "b3:1d0beac314e3b100bbe385ef0d8bf4e23d7b42eb9320db7143c1d701ad527e66"
 bytes = 21809
 
-[artifact.layout]
+[artifacts.materialize]
+type = "archive"
 strip_components = 0
 
-[artifact.provides]
-runtime = []
-bin = []
-headers = []
-native_lib = []
-lua_module = [{ name = "luassert", path = "lua/luassert.lua" }]
-lua_cmodule = []
+[[artifacts.provides]]
+kind = "lua_module"
+name = "luassert"
+path = "lua/luassert.lua"

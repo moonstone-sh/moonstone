@@ -32,9 +32,8 @@ cat > "${SOURCE_DIR}/nested/subtool" <<'EOF'
 echo source-dir binary works
 EOF
 chmod +x "${SOURCE_DIR}/nested/subtool"
-tar -czf "${MOCK_DIR}/source-dir-rock-0.1.0.tar.gz" -C "${MOCK_DIR}" source-dir-rock-0.1.0
-cp "${MOCK_DIR}/source-dir-rock-0.1.0.tar.gz" "${MOCK_DIR}/source-download"
-SOURCE_MD5=$(python3 - "${MOCK_DIR}/source-download" <<'PY'
+tar -czf "${MOCK_DIR}/source-dir-rock-0.1.0.tar.gz" -C "${SOURCE_DIR}" nested
+SOURCE_MD5=$(python3 - "${MOCK_DIR}/source-dir-rock-0.1.0.tar.gz" <<'PY'
 import hashlib
 import pathlib
 import sys
@@ -47,7 +46,7 @@ cat > "${MOCK_DIR}/source-dir-rock-0.1.0-1.rockspec" <<EOF
 package = "source-dir-rock"
 version = "0.1.0-1"
 source = {
-  url = "http://127.0.0.1:${RANDOM_PORT}/source-download",
+  url = "http://127.0.0.1:${RANDOM_PORT}/source-dir-rock-0.1.0.tar.gz",
   file = "source-dir-rock-0.1.0.tar.gz",
   md5 = "${SOURCE_MD5}",
   dir = "nested",

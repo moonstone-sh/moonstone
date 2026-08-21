@@ -16,6 +16,7 @@ pub const ResolveOptions = struct {
     on_event_context: ?*anyopaque = null,
     build_env: []const @import("../domain/manifest.zig").EnvPair = &.{},
     build_artifacts: []const BuildArtifact = &.{},
+    cancellation_flag: ?*const std.atomic.Value(bool) = null,
 };
 
 /// One already-resolved artifact made visible only to a foreign build. The

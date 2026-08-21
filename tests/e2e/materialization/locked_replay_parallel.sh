@@ -45,10 +45,10 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name locked-replay-parallel --no-git --no-sync
+moon registry add synthetic "${SANDBOX_DIR}/registry" --default
 moon interpreter set lua@5.4 --no-sync
-moon add rocks:fakebin --no-sync
-moon add rocks:fakealt --no-sync
-moon sync --jobs 2
+moon add rocks:fakebin
+moon add rocks:fakealt
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"
 purge_replay_artifacts() {

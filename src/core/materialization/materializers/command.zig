@@ -38,6 +38,8 @@ pub fn build_internal(
     defer allocator.free(lua_include);
     const lua_lib = try std.fs.path.join(allocator, &.{ runtime_path, "files", "lib" });
     defer allocator.free(lua_lib);
+    const lua_link_library = try findLuaLinkLibrary(allocator, io, lua_lib);
+    defer if (lua_link_library) |path| allocator.free(path);
     const lua_bin_dir = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin" });
     defer allocator.free(lua_bin_dir);
 
@@ -58,14 +60,14 @@ pub fn build_internal(
     if (config.steps.len > 0) {
         for (config.steps) |s| {
             try steps.append(allocator, .{
-                .cmd = try expandVariables(allocator, s.command, out_abs, src_abs, bdir, lua_include, lua_lib, lua_bin_dir, lua_abi),
-                .args = try expandArray(allocator, s.args, out_abs, src_abs, bdir, lua_include, lua_lib, lua_bin_dir, lua_abi),
+                .cmd = try expandVariables(allocator, s.command, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
+                .args = try expandArray(allocator, s.args, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
             });
         }
     } else if (config.command) |cmd| {
         try steps.append(allocator, .{
-            .cmd = try expandVariables(allocator, cmd, out_abs, src_abs, bdir, lua_include, lua_lib, lua_bin_dir, lua_abi),
-            .args = try expandArray(allocator, config.args, out_abs, src_abs, bdir, lua_include, lua_lib, lua_bin_dir, lua_abi),
+            .cmd = try expandVariables(allocator, cmd, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
+            .args = try expandArray(allocator, config.args, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
         });
     } else return error.MissingCommand;
 
@@ -80,11 +82,12 @@ pub fn build_internal(
     // try final_env.put("AR", "zig ar");
     try final_env.put("LUA_INCDIR", lua_include);
     try final_env.put("LUA_LIBDIR", lua_lib);
+    try final_env.put("LUALIB", lua_link_library orelse "");
     try final_env.put("LUA_BINDIR", lua_bin_dir);
     try final_env.put("LUA_ABI", lua_abi);
 
     for (config.env) |pair| {
-        const expanded_val = try expandVariables(allocator, pair.value, out_abs, src_abs, bdir, lua_include, lua_lib, lua_bin_dir, lua_abi);
+        const expanded_val = try expandVariables(allocator, pair.value, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi);
         defer allocator.free(expanded_val);
         try final_env.put(pair.key, expanded_val);
     }
@@ -146,7 +149,34 @@ pub fn build_internal(
     }
 
     // 4. Collect outputs
-    try collectOutputs(allocator, io, src_abs, out_abs, bdir, config.collect, lua_abi, lua_include, lua_lib, lua_bin_dir);
+    try collectOutputs(allocator, io, src_abs, out_abs, bdir, config.collect, lua_abi, lua_include, lua_lib, lua_link_library, lua_bin_dir);
+}
+
+fn findLuaLinkLibrary(allocator: std.mem.Allocator, io: std.Io, lua_lib_dir: []const u8) !?[]const u8 {
+    const candidates = [_][]const u8{
+        "liblua.a",
+        "libluajit-5.1.a",
+        "lua54.lib",
+        "lua53.lib",
+        "lua52.lib",
+        "lua51.lib",
+        "lua.lib",
+        "liblua.so",
+        "libluajit-5.1.so",
+        "liblua.dylib",
+        "libluajit-5.1.dylib",
+    };
+
+    for (candidates) |candidate| {
+        const path = try std.fs.path.join(allocator, &.{ lua_lib_dir, candidate });
+        if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+            return path;
+        } else |_| {
+            allocator.free(path);
+        }
+    }
+
+    return null;
 }
 
 pub fn resolve_command_from_path(
@@ -181,6 +211,7 @@ fn expandVariables(
     build_path: []const u8,
     lua_include: []const u8,
     lua_lib: []const u8,
+    lua_link_library: ?[]const u8,
     lua_bin_dir: []const u8,
     lua_abi: []const u8,
 ) ![]const u8 {
@@ -193,6 +224,7 @@ fn expandVariables(
         .{ .key = "${build}", .val = build_path },
         .{ .key = "${runtime.include}", .val = lua_include },
         .{ .key = "${runtime.lib}", .val = lua_lib },
+        .{ .key = "${runtime.lualib}", .val = lua_link_library orelse "" },
         .{ .key = "${runtime.bin_dir}", .val = lua_bin_dir },
         .{ .key = "${lua_abi}", .val = lua_abi },
     };
@@ -213,12 +245,13 @@ fn expandArray(
     build_path: []const u8,
     lua_include: []const u8,
     lua_lib: []const u8,
+    lua_link_library: ?[]const u8,
     lua_bin_dir: []const u8,
     lua_abi: []const u8,
 ) ![]const []const u8 {
     var results = std.ArrayList([]const u8).empty;
     for (inputs) |in| {
-        try results.append(allocator, try expandVariables(allocator, in, out_path, src_path, build_path, lua_include, lua_lib, lua_bin_dir, lua_abi));
+        try results.append(allocator, try expandVariables(allocator, in, out_path, src_path, build_path, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi));
     }
     return try results.toOwnedSlice(allocator);
 }
@@ -233,6 +266,7 @@ fn collectOutputs(
     lua_abi: []const u8,
     lua_include: []const u8,
     lua_lib: []const u8,
+    lua_link_library: ?[]const u8,
     lua_bin_dir: []const u8,
 ) !void {
     const categories = [_][]const manifest.FeatureProvision{
@@ -245,7 +279,7 @@ fn collectOutputs(
 
     for (categories) |items| {
         for (items) |item| {
-            const expanded_src = try expandVariables(allocator, item.path, out_path, src_path, build_path, lua_include, lua_lib, lua_bin_dir, lua_abi);
+            const expanded_src = try expandVariables(allocator, item.path, out_path, src_path, build_path, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi);
             defer allocator.free(expanded_src);
 
             const src_abs = if (std.fs.path.isAbsolute(expanded_src)) expanded_src else try std.fs.path.join(allocator, &.{ src_path, expanded_src });

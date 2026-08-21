@@ -4,44 +4,31 @@ version = "0.1.0"
 kind = "lib"
 description = "Synthetic C module for testing materialization"
 
-[compat]
-runtimes = ["lua@5.4.7"]
-
-[source]
-kind = "archive"
-format = "tar.gz"
-hash = "b3:4bab58d89ff4214f629ee9c7195e07d30d3f2b8702fe2b20ed2e742635f4f594"
-
-[[artifact]]
+[[artifacts]]
+id = "source-source-lua-5.4"
+kind = "source"
 target = "source"
 lua_api = "lua-5.4"
 lua_abi = "lua-5.4"
 runtime = "lua@5.4.7"
-runtime_artifact_hash = ""
 format = "tar.gz"
-url = "../../../blobs/b3/4b/ab/4bab58d89ff4214f629ee9c7195e07d30d3f2b8702fe2b20ed2e742635f4f594.tar.gz"
-hash = "b3:4bab58d89ff4214f629ee9c7195e07d30d3f2b8702fe2b20ed2e742635f4f594"
-recipe_hash = "b3:3dbd818a125efda7e53639fc6c1ceb744e3cf36a069a885cdcc29e67500dc107"
+url = "blobs/b3/84/39/8439ec54b135be37c9178a6e469161268b475deccd46c9b912d980bc0c591ff2.tar.gz"
+hash = "b3:8439ec54b135be37c9178a6e469161268b475deccd46c9b912d980bc0c591ff2"
+recipe_hash = "b3:a0f28fa99ae95de840066ffee514613df2c93f0288125bfbfb983591222980e2"
 bytes = 460
 
-[artifact.materialize]
-kind = "native-cmodule"
+[artifacts.materialize]
+type = "native_cmodule"
+strip_components = 0
 strategy = "zig-cc"
 
-[artifact.materialize.input]
+[artifacts.materialize.input]
 sources = ["synthetic_cmodule.c"]
 
-[artifact.materialize.output]
+[artifacts.materialize.output]
 module = "synthetic_cmodule"
 path = "synthetic_cmodule.so"
-
-[artifact.layout]
-strip_components = 0
-
-[artifact.provides]
-runtime = []
-bin = []
-headers = []
-native_lib = []
-lua_module = []
-lua_cmodule = [{ name = "synthetic_cmodule.so", path = "synthetic_cmodule.so" }]
+[[artifacts.provides]]
+kind = "lua_cmodule"
+name = "synthetic_cmodule.so"
+path = "synthetic_cmodule.so"

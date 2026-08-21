@@ -8,6 +8,8 @@ const resolver = @import("../resolution/root.zig");
 const package_spec = @import("../domain/package_spec.zig");
 const error_context = @import("../diagnostics/error_context.zig");
 
+var materialization_workspace_counter: std.atomic.Value(u64) = .init(0);
+
 fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePackageDescriptor) ![]manifest.StoreDependency {
     var dependencies = std.ArrayList(manifest.StoreDependency).empty;
     errdefer {
@@ -138,7 +140,11 @@ pub const Materializer = struct {
             p.deinit(self.allocator);
         }
 
-        const tmp_dir_name = try std.fmt.allocPrint(self.allocator, "unpack-{s}", .{actual_hash[3..15]});
+        const tmp_dir_name = try std.fmt.allocPrint(self.allocator, "unpack-{s}-{d}-{d}", .{
+            actual_hash[3..15],
+            std.Thread.getCurrentId(),
+            materialization_workspace_counter.fetchAdd(1, .monotonic),
+        });
         defer self.allocator.free(tmp_dir_name);
 
         const tmp_path = try std.fs.path.join(self.allocator, &.{ paths.tmp, tmp_dir_name });
@@ -224,7 +230,11 @@ pub const Materializer = struct {
         if (is_source and art.materialize != null) {
             const m = art.materialize.?;
 
-            const build_out_dir_name = try std.fmt.allocPrint(self.allocator, "build-{s}", .{actual_hash[3..15]});
+            const build_out_dir_name = try std.fmt.allocPrint(self.allocator, "build-{s}-{d}-{d}", .{
+                actual_hash[3..15],
+                std.Thread.getCurrentId(),
+                materialization_workspace_counter.fetchAdd(1, .monotonic),
+            });
             defer self.allocator.free(build_out_dir_name);
             const build_out_path = try std.fs.path.join(self.allocator, &.{ paths.tmp, build_out_dir_name });
             defer self.allocator.free(build_out_path);

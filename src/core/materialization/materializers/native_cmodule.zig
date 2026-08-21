@@ -165,6 +165,39 @@ fn find_lua_include(allocator: std.mem.Allocator, io: std.Io, runtime_path: []co
     return try std.fs.path.join(allocator, &.{ runtime_path, "include" });
 }
 
+fn find_lua_link_library(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8) !?[]const u8 {
+    const files_lib = try std.fs.path.join(allocator, &.{ runtime_path, "files", "lib" });
+    const direct_lib = try std.fs.path.join(allocator, &.{ runtime_path, "lib" });
+    defer {
+        allocator.free(files_lib);
+        allocator.free(direct_lib);
+    }
+
+    const directories = [_][]const u8{ files_lib, direct_lib };
+    const candidates = [_][]const u8{
+        "liblua.a",
+        "libluajit-5.1.a",
+        "lua54.lib",
+        "lua53.lib",
+        "lua52.lib",
+        "lua51.lib",
+        "lua.lib",
+    };
+
+    for (directories) |directory| {
+        for (candidates) |candidate| {
+            const path = try std.fs.path.join(allocator, &.{ directory, candidate });
+            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+                return path;
+            } else |_| {
+                allocator.free(path);
+            }
+        }
+    }
+
+    return null;
+}
+
 pub fn build(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -184,6 +217,8 @@ pub fn build(
     // 1. Resolve Lua headers path
     const lua_include = try find_lua_include(allocator, io, runtime_path);
     defer allocator.free(lua_include);
+    const lua_link_library = if (target_is_macos) null else try find_lua_link_library(allocator, io, runtime_path);
+    defer if (lua_link_library) |path| allocator.free(path);
 
     // 2. Prepare argv for zig cc
     var argv = std.ArrayList([]const u8).empty;
@@ -293,6 +328,16 @@ pub fn build(
         // spelling prevents __FILE__ and debug metadata from embedding the
         // per-materialization temporary directory into the produced artifact.
         try argv.append(allocator, src);
+    }
+
+    if (lua_link_library) |path| {
+        // Moonstone's Linux and Windows runtimes do not promise to export Lua
+        // C API symbols from the interpreter executable. Resolve them into the
+        // module from the matching runtime archive instead. The library must
+        // follow module objects so static archive resolution sees their uses.
+        try argv.append(allocator, path);
+    } else if (!target_is_macos) {
+        return error.RuntimeLuaLibraryNotFound;
     }
 
     // 3. Spawn compilation

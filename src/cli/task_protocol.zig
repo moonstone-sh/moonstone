@@ -3,6 +3,7 @@ const ndjson = @import("commands/ndjson.zig");
 const progress_runtime = @import("progress.zig");
 
 pub const TaskKind = enum {
+    metadata,
     realize,
     replay,
 };

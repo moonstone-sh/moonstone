@@ -9,6 +9,65 @@ const profiler = moonstone.diagnostics.profiler;
 
 pub const sync_command = SyncCommand;
 
+const MetadataPrefetchTaskContext = struct {
+    io: std.Io,
+    reporter: task_protocol.Reporter,
+    target: []const u8,
+};
+
+fn reportMetadataPrefetchTask(context: ?*anyopaque, event: moonstone.resolution.metadata_prefetch.RocksMetadataPrefetch.TaskEvent) void {
+    const task_context: *MetadataPrefetchTaskContext = @ptrCast(@alignCast(context orelse return));
+    const version = event.version orelse "*";
+    var task_buffer: [384]u8 = undefined;
+    const task_id = task_protocol.formatId(&task_buffer, .metadata, task_context.target, "rocks", event.package_name, version) catch return;
+    const state: []const u8 = switch (event.state) {
+        .started => "fetching",
+        .completed => "completed",
+        .failed => "failed",
+    };
+    const revision: u64 = switch (event.state) {
+        .started => 1,
+        .completed, .failed => 2,
+    };
+    var message_buffer: [256]u8 = undefined;
+    const message = switch (event.kind) {
+        .versions => std.fmt.bufPrint(&message_buffer, "{s}: LuaRocks version index", .{event.package_name}) catch return,
+        .dependencies => std.fmt.bufPrint(&message_buffer, "{s}@{s}: LuaRocks rockspec", .{ event.package_name, version }) catch return,
+    };
+    task_context.reporter.report(task_context.io, task_id, revision, state, event.error_name orelse message, .{
+        .package = event.package_name,
+        .version = version,
+        .resolver = "rocks",
+        .metadata = @tagName(event.kind),
+        .error_name = event.error_name,
+    });
+}
+
+fn exactVersionForMetadataPrefetch(range: moonstone.domain.semver.VersionRange) ?moonstone.domain.semver.Version {
+    if (range.intervals.len != 1 or range.excludes.len != 0) return null;
+    const interval = range.intervals[0];
+    const min = interval.min orelse return null;
+    const max = interval.max orelse return null;
+    if (!interval.include_min or !interval.include_max) return null;
+    if (min.compare(max) != 0) return null;
+    return min;
+}
+
+fn preferredVersionForMetadataPrefetch(
+    versions: []const moonstone.domain.semver.Version,
+    range: moonstone.domain.semver.VersionRange,
+) ?moonstone.domain.semver.Version {
+    var preferred: ?moonstone.domain.semver.Version = null;
+    for (versions) |version| {
+        if (!range.contains(version)) continue;
+        if (preferred) |current| {
+            if (version.compare(current) <= 0) continue;
+        }
+        preferred = version;
+    }
+    return preferred;
+}
+
 fn solutionContainsPackage(solution: *const std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact), name: []const u8) bool {
     for (solution.keys()) |candidate_name| {
         if (std.ascii.eqlIgnoreCase(candidate_name, name)) return true;
@@ -1469,22 +1528,24 @@ pub const SyncCommand = struct {
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
-        if (self.locked) {
-            const lock_content = std.Io.Dir.cwd().readFileAlloc(io, "moonstone.lock", allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
-                if (err == error.FileNotFound) return error.LockfileOutOfSync;
-                return err;
-            };
-            defer allocator.free(lock_content);
-
-            var locked_preflight = try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
-            defer locked_preflight.deinit();
-
-            if (!lockedDependenciesMatch(mt.dependencies.items, &locked_preflight)) return error.LockfileOutOfSync;
-        }
-
         if (self.check) {
             return try self.runCheck(ctx, &mt, &idx);
         }
+
+        var existing_lock = blk: {
+            const lock_content = std.Io.Dir.cwd().readFileAlloc(io, "moonstone.lock", allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+                if (err == error.FileNotFound) {
+                    if (self.locked) return error.LockfileOutOfSync;
+                    break :blk moonstone.domain.lockfile.LockFile.init(allocator);
+                }
+                return err;
+            };
+            defer allocator.free(lock_content);
+            break :blk try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
+        };
+        defer existing_lock.deinit();
+
+        if (self.locked and !lockedDependenciesMatch(mt.dependencies.items, &existing_lock)) return error.LockfileOutOfSync;
 
         const build_env = try mt.resolveBuildEnv(allocator, env);
         defer {
@@ -1558,6 +1619,7 @@ pub const SyncCommand = struct {
         const resolve_started_ns = nowNs(io);
         const pkg_name = moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName());
         const pkg_ver = mt.runtimeConstraint();
+        const active_lua_abi = mt.runtimeAbi();
         const host_target = try moonstone.platform.target.hostTarget(allocator);
         defer allocator.free(host_target);
         const lock_target = if (self.target_arg) |target| try allocator.dupe(u8, target) else try allocator.dupe(u8, host_target);
@@ -1583,16 +1645,36 @@ pub const SyncCommand = struct {
 
         var coordinator = moonstone.resolution.coordinator.Coordinator{ .allocator = allocator, .io = io };
         profile_span = profiler.now();
-        var rt_res = try coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
-            .on_event = on_resolve_cb,
-            .on_event_context = on_resolve_ctx,
-            .offline = self.offline,
-            .build_env = build_env,
-            .target = lock_target,
-        }, env);
+        const locked_runtime_profile = if (self.locked and existing_lock.version == 3)
+            findLockedRuntimeProfile(&existing_lock, lock_target, pkg_name, mt.runtimeName(), active_lua_abi)
+        else
+            null;
+        if (self.locked and existing_lock.version == 3 and locked_runtime_profile == null) {
+            moonstone.diagnostics.error_context.setFmt(
+                allocator,
+                "moonstone.lock has no profile for target `{s}`, runtime `{s}`, and Lua ABI `{s}`. Run `moon sync --target {s}` first.",
+                .{ lock_target, pkg_name, active_lua_abi, lock_target },
+            );
+            return error.LockedProfileMissing;
+        }
+        const locked_runtime = if (locked_runtime_profile) |profile| blk: {
+            const entry = lockedRuntimeEntry(&existing_lock, profile) orelse return error.LockfileOutOfSync;
+            break :blk try lockedRuntimeFromStore(allocator, io, &idx, entry);
+        } else null;
+        if (locked_runtime != null) profiler.mark("sync.runtime.lock_store_hit");
+        if (self.locked and locked_runtime == null) profiler.mark("sync.runtime.lock_store_miss");
+        var rt_res = if (locked_runtime) |candidate|
+            candidate
+        else
+            try coordinator.resolve(pkg_name, pkg_ver, idx, registries, .{
+                .on_event = on_resolve_cb,
+                .on_event_context = on_resolve_ctx,
+                .offline = self.offline,
+                .build_env = build_env,
+                .target = lock_target,
+            }, env);
         profiler.span("sync.runtime.resolve", profile_span);
         defer rt_res.deinit(allocator);
-        const active_lua_abi = mt.runtimeAbi();
 
         if (emitter) |e| {
             try e.emit(io, .STATUS, rt_res.name, "runtime.resolved", .{
@@ -1742,7 +1824,7 @@ pub const SyncCommand = struct {
         // may have predated registry descriptors gaining source_url/source_kind.
         // This fetches the source payload and updates the on-disk manifest so that
         // downstream tools (e.g. Meteorite cross-compilation) can access source archives.
-        if (rt_res.location == .local_store and !self.offline) {
+        if (rt_res.location == .local_store and !self.offline and !self.locked) {
             for (registries) |reg| {
                 const remote_res = coordinator.resolve_remote(
                     pkg_name,
@@ -1878,17 +1960,6 @@ pub const SyncCommand = struct {
                 .remote_desc = if (rt_res.remote_desc) |rd| try rd.clone(arena) else null,
             });
         }
-
-        // Read lockfile early so --locked can bypass the solver
-        var existing_lock = blk: {
-            const lock_content = std.Io.Dir.cwd().readFileAlloc(io, "moonstone.lock", allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
-                if (err == error.FileNotFound) break :blk moonstone.domain.lockfile.LockFile.init(allocator);
-                return err;
-            };
-            defer allocator.free(lock_content);
-            break :blk try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
-        };
-        defer existing_lock.deinit();
 
         // v3 locks carry multiple target profiles. Select only the requested
         // target/runtime/ABI closure; legacy flat locks are migration input and
@@ -2084,6 +2155,72 @@ pub const SyncCommand = struct {
             } else if (self.update and !self.json) {
                 backend.phase("Updating lockfile within declared constraints...", .{});
             }
+
+            var metadata_prefetch = moonstone.resolution.metadata_prefetch.RocksMetadataPrefetch.init(
+                io,
+                env,
+                provider_impl.options,
+                try provider_impl.luaMetadataInterpreter(),
+            );
+            defer metadata_prefetch.deinit();
+            switch (backend) {
+                .queue => |wctx| metadata_prefetch.setCancellationFlag(wctx.cancel),
+                .direct, .silent => metadata_prefetch.setCancellationFlag(null),
+            }
+            var metadata_task_context = MetadataPrefetchTaskContext{
+                .io = io,
+                .reporter = task_reporter,
+                .target = lock_target,
+            };
+            metadata_prefetch.setTaskCallback(reportMetadataPrefetchTask, @ptrCast(&metadata_task_context));
+
+            if (!self.offline) {
+                for (targets.items) |target| {
+                    if (target.resolver != .rocks) continue;
+                    const base = provider_impl.luarocksMetadataBaseFor(target.registry);
+                    try metadata_prefetch.addVersions(
+                        target.name,
+                        base,
+                        provider_impl.options.target orelse "",
+                        provider_impl.options.runtime orelse "",
+                    );
+                }
+            }
+
+            if (metadata_prefetch.hasEntries()) {
+                if (!self.json) backend.phase("Prefetching LuaRocks metadata...", .{});
+                try metadata_prefetch.execute(jobs);
+
+                // The solver commonly selects the newest direct candidate
+                // within each declared range. Prefetch that rockspec now; if
+                // PubGrub later selects an older version, it retains the
+                // existing synchronous fallback and therefore its semantics.
+                for (targets.items) |target| {
+                    if (target.resolver != .rocks) continue;
+                    const base = provider_impl.luarocksMetadataBaseFor(target.registry);
+                    const versions = metadata_prefetch.findVersions(
+                        target.name,
+                        base,
+                        provider_impl.options.target orelse "",
+                        provider_impl.options.runtime orelse "",
+                    ) orelse continue;
+                    const version = exactVersionForMetadataPrefetch(target.range) orelse
+                        preferredVersionForMetadataPrefetch(versions, target.range) orelse continue;
+                    const version_text = try version.toString(allocator);
+                    defer allocator.free(version_text);
+                    try metadata_prefetch.addDependencies(
+                        target.name,
+                        version_text,
+                        base,
+                        provider_impl.options.target orelse "",
+                        provider_impl.options.runtime orelse "",
+                    );
+                }
+                if (metadata_prefetch.hasPendingEntries()) try metadata_prefetch.execute(jobs);
+                provider_impl.setRocksMetadataPrefetch(&metadata_prefetch);
+                if (!self.json) backend.phaseDone("LuaRocks metadata prepared.", .{});
+            }
+
             profile_span = profiler.now();
             var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
                 .on_event = on_solver_cb,
@@ -3437,6 +3574,67 @@ fn findReplayEntry(entries: []const *const moonstone.domain.lockfile.LockEntry, 
         if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
     }
     return null;
+}
+
+fn lockedRuntimeEntry(
+    lockfile: *const moonstone.domain.lockfile.LockFile,
+    profile: *const moonstone.domain.resolution_profile.ResolutionProfile,
+) ?*const moonstone.domain.lockfile.LockEntry {
+    for (profile.packages) |reference| {
+        const realization = lockfile.findRealization(reference.realization_hash) orelse continue;
+        if (realization.kind != .runtime) continue;
+        if (std.mem.eql(u8, realization.name, profile.runtime)) return realization;
+    }
+    return null;
+}
+
+fn findLockedRuntimeProfile(
+    lockfile: *const moonstone.domain.lockfile.LockFile,
+    target: []const u8,
+    canonical_runtime_name: []const u8,
+    declared_runtime_name: []const u8,
+    lua_abi: []const u8,
+) ?*const moonstone.domain.resolution_profile.ResolutionProfile {
+    return lockfile.findExactProfile(target, canonical_runtime_name, lua_abi) orelse
+        if (!std.mem.eql(u8, canonical_runtime_name, declared_runtime_name))
+            lockfile.findExactProfile(target, declared_runtime_name, lua_abi)
+        else
+            null;
+}
+
+fn lockedRuntimeFromStore(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    index: *moonstone.store.driver.StoreDriver,
+    entry: *const moonstone.domain.lockfile.LockEntry,
+) !?moonstone.resolution.candidate.Candidate {
+    if (!moonstone.resolution.locked_realizer.requiresExactArtifactHash(entry)) return null;
+
+    var stored = try index.get_candidate_by_hash(entry.artifact_hash) orelse return null;
+    defer stored.deinit(allocator);
+
+    if (stored.kind != .runtime or !std.mem.eql(u8, stored.version, entry.version)) return null;
+    std.Io.Dir.cwd().access(io, stored.path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            index.delete_artifact(entry.artifact_hash) catch {};
+            return null;
+        }
+        return err;
+    };
+
+    return .{
+        .name = try allocator.dupe(u8, entry.name),
+        .version = try allocator.dupe(u8, entry.version),
+        .kind = .runtime,
+        .origin = .{ .artifact_hash = try allocator.dupe(u8, entry.artifact_hash) },
+        .location = .local_store,
+        .artifact_hash = try allocator.dupe(u8, entry.artifact_hash),
+        .runtime = if (stored.runtime) |runtime| try allocator.dupe(u8, runtime) else null,
+        .lua_api = if (stored.lua_api) |api| try allocator.dupe(u8, api) else null,
+        .lua_abi = if (stored.lua_abi) |abi| try allocator.dupe(u8, abi) else try allocator.dupe(u8, entry.lua_abi),
+        .runtime_artifact_hash = if (stored.runtime_artifact_hash) |hash| try allocator.dupe(u8, hash) else "",
+        .local_path = try allocator.dupe(u8, stored.path),
+    };
 }
 
 fn lockedEntriesDependenciesMatch(

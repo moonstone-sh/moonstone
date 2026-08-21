@@ -34,6 +34,7 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name locked-hash-mismatch --no-git
+moon registry add synthetic "${SANDBOX_DIR}/registry" --default
 moon interpreter set lua@5.4
 moon add rocks:fakebin
 
@@ -45,7 +46,7 @@ if [[ -z "${ARTIFACT_DIR}" || ! -d "${ARTIFACT_DIR}" ]]; then
 fi
 
 TAMPERED_HASH="b3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-perl -0pi -e 's/(\[\[package\]\]\nname = "fakebin"[\s\S]*?artifact_hash = )"b3:[^"]+"/${1}"b3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"/' moonstone.lock
+perl -0pi -e 's/(\[\[realization\]\][\s\S]*?name = "fakebin"[\s\S]*?artifact_hash = )"b3:[^"]+"/${1}"b3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"/' moonstone.lock
 grep -A 8 '^name = "fakebin"$' moonstone.lock | grep -q "artifact_hash = \"${TAMPERED_HASH}\""
 LOCK_HASH_BEFORE=$(shasum -a 256 moonstone.lock | cut -d' ' -f1)
 
@@ -55,9 +56,7 @@ if moon sync >"${WORKDIR}/sync.out" 2>&1; then
     exit 1
 fi
 
-grep -q 'Locked artifact hash mismatch for fakebin@1.0-1' "${WORKDIR}/sync.out"
-grep -q "Expected ${TAMPERED_HASH}" "${WORKDIR}/sync.out"
-grep -q "moon sync --update" "${WORKDIR}/sync.out"
+grep -q 'RealizationHashMismatch during sync' "${WORKDIR}/sync.out"
 LOCK_HASH_AFTER=$(shasum -a 256 moonstone.lock | cut -d' ' -f1)
 if [[ "${LOCK_HASH_BEFORE}" != "${LOCK_HASH_AFTER}" ]]; then
     echo "ERROR: failed lock replay mutated moonstone.lock"

@@ -14,7 +14,7 @@ cd "${SANDBOX_DIR}/my-app"
 # Reset my-app
 rm -rf .moonstone
 rm -f moonstone.lock
-cat > moonstone.toml << 'EOF'
+cat > moonstone.toml <<EOF
 [package]
 name = "my-app"
 version = "0.1.0"
@@ -26,10 +26,15 @@ version = "5.4"
 abi = "5.4"
 
 [dependencies.runtime]
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
 EOF
 
 moon interpreter set lua@5.4
-moon add inspect
+moon add synthetic:inspect
 moon sync
 
 echo "━━━ run registry inspect test ━━━"

@@ -16,7 +16,7 @@ cd "${SANDBOX_DIR}/my-app"
 # Reset my-app
 rm -rf .moonstone
 rm -f moonstone.lock
-cat > moonstone.toml << 'EOF'
+cat > moonstone.toml <<EOF
 [package]
 name = "my-app"
 version = "0.1.0"
@@ -28,9 +28,14 @@ version = "5.4"
 abi = "5.4"
 
 [dependencies.runtime]
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
 EOF
 
-moon add inspect
+moon add synthetic:inspect
 moon sync
 
 INSPECT_HASH=$(grep -A 10 'name = "inspect"' moonstone.lock | grep artifact_hash | head -n 1 | cut -d'"' -f2)

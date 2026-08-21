@@ -44,6 +44,10 @@ fn ensureCaBundle(client: *std.http.Client) !void {
 
 pub const ProgressCallback = *const fn (ctx: ?*anyopaque, downloaded_bytes: usize, total_bytes: ?usize) void;
 
+fn isCancellationRequested(flag: ?*const std.atomic.Value(bool)) bool {
+    return if (flag) |value| value.load(.acquire) else false;
+}
+
 fn doFetch(
     allocator: std.mem.Allocator,
     client: *std.http.Client,
@@ -52,13 +56,16 @@ fn doFetch(
     timeout_ms: u32,
     on_progress: ?ProgressCallback,
     progress_ctx: ?*anyopaque,
+    cancellation_flag: ?*const std.atomic.Value(bool),
 ) !FetchResponse {
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
     const uri = try std.Uri.parse(url);
     const protocol = std.http.Client.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
 
     if (protocol == .tls) {
         try ensureCaBundle(client);
     }
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     var host_name_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
     const host_name = try uri.getHost(&host_name_buffer);
@@ -76,6 +83,7 @@ fn doFetch(
             .clock = .real,
         } },
     });
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     var req = try client.request(.GET, uri, .{
         .connection = conn,
@@ -84,9 +92,11 @@ fn doFetch(
     defer req.deinit();
 
     try req.sendBodiless();
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     var redirect_buf: [4096]u8 = undefined;
     var resp = try req.receiveHead(&redirect_buf);
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     const decompress_buffer: []u8 = switch (resp.head.content_encoding) {
         .identity => &.{},
@@ -105,6 +115,7 @@ fn doFetch(
 
     var downloaded: usize = 0;
     while (true) {
+        if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
         var chunk_buf: [8192]u8 = undefined;
         const n = try reader.readSliceShort(&chunk_buf);
         if (n == 0) break;
@@ -115,6 +126,7 @@ fn doFetch(
             cb(progress_ctx, downloaded, total);
         }
     }
+    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
     const body = try out_list.toOwnedSlice(allocator);
 
     return .{
@@ -129,20 +141,20 @@ pub fn fetchGet(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra
         .io = io,
     };
     defer client.deinit();
-    return doFetch(allocator, &client, url, extra_headers, timeout_ms, null, null);
+    return doFetch(allocator, &client, url, extra_headers, timeout_ms, null, null, null);
 }
 
-pub fn fetchGetWithProgress(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32, on_progress: ?ProgressCallback, progress_ctx: ?*anyopaque) !FetchResponse {
+pub fn fetchGetWithProgress(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32, on_progress: ?ProgressCallback, progress_ctx: ?*anyopaque, cancellation_flag: ?*const std.atomic.Value(bool)) !FetchResponse {
     var client = std.http.Client{
         .allocator = allocator,
         .io = io,
     };
     defer client.deinit();
-    return doFetch(allocator, &client, url, extra_headers, timeout_ms, on_progress, progress_ctx);
+    return doFetch(allocator, &client, url, extra_headers, timeout_ms, on_progress, progress_ctx, cancellation_flag);
 }
 
 pub fn fetchGetWithClient(allocator: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32) !FetchResponse {
-    return doFetch(allocator, client, url, extra_headers, timeout_ms, null, null);
+    return doFetch(allocator, client, url, extra_headers, timeout_ms, null, null, null);
 }
 
 pub fn fetchGetBody(allocator: std.mem.Allocator, io: std.Io, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32) ![]u8 {
@@ -164,10 +176,18 @@ pub fn fetchGetBodyWithClient(allocator: std.mem.Allocator, client: *std.http.Cl
 }
 
 pub fn fetchGetBodyWithClientAndProgress(allocator: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: ?[]const std.http.Header, timeout_ms: u32, on_progress: ?ProgressCallback, progress_ctx: ?*anyopaque) ![]u8 {
-    const resp = try doFetch(allocator, client, url, extra_headers, timeout_ms, on_progress, progress_ctx);
+    const resp = try doFetch(allocator, client, url, extra_headers, timeout_ms, on_progress, progress_ctx, null);
     if (resp.status != .ok) {
         allocator.free(resp.body);
         return error.HttpError;
     }
     return resp.body;
+}
+
+test "fetch cancellation aborts before connecting" {
+    var cancelled = std.atomic.Value(bool).init(true);
+    try std.testing.expectError(
+        error.Cancelled,
+        fetchGetWithProgress(std.testing.allocator, std.testing.io, "http://127.0.0.1:1/", null, 1, null, null, &cancelled),
+    );
 }

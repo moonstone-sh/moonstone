@@ -34,12 +34,22 @@ mkdir -p "${MOCK_DIR}"
 "${PROJECT_ROOT}/tests/run_lua_tool.sh" help >/dev/null
 "${PROJECT_ROOT}/tests/run_lua_tool.sh" generate-mock-rocks "${MOCK_DIR}" "${MOCK_ROCKS_PORT}" &
 ROCKS_PID=$!
-trap "kill $ROCKS_PID 2>/dev/null || true" EXIT
+cleanup() {
+    kill "${ROCKS_PID}" 2>/dev/null || true
+    wait "${ROCKS_PID}" 2>/dev/null || true
+    rm -rf "${MOCK_DIR}" "${WORKDIR}"
+}
+trap cleanup EXIT
 
 export MOONSTONE_LUAROCKS_URL="http://127.0.0.1:${MOCK_ROCKS_PORT}"
 
-# Wait for server
-sleep 1
+for _ in {1..60}; do
+    curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
+
+moon registry add synthetic "${SANDBOX_DIR}/registry" --default
 
 moon add "rocks:fakebin"
 

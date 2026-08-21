@@ -291,6 +291,7 @@ pub const ProgressUi = struct {
     task_rows: std.ArrayList(TaskRow),
     task_slots: [max_visible_tasks]?usize = .{ null, null, null, null, null },
     completed_tasks: usize = 0,
+    frame_writer: std.Io.Writer.Allocating,
 
     // accumulated warnings to print at the end
     warnings: std.ArrayList([]const u8),
@@ -308,12 +309,14 @@ pub const ProgressUi = struct {
             .io = io,
             .warnings = .empty,
             .task_rows = .empty,
+            .frame_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator),
         };
     }
 
     pub fn deinit(self: *ProgressUi) void {
         self.warnings.deinit(std.heap.page_allocator);
         self.task_rows.deinit(std.heap.page_allocator);
+        self.frame_writer.deinit();
     }
 
     /// Write directly to stderr, bypassing the buffered Threaded I/O writer.
@@ -349,8 +352,8 @@ pub const ProgressUi = struct {
                 self.dl_total = null;
 
                 if (self.is_tty) {
-                    self.rawWrite("\x1b[2K\r");
-                    self.writer.print("⠿ {s}\n", .{msg}) catch {};
+                    self.clearRenderedRows();
+                    self.renderFrameLine("\x1b[2K\r⠿ {s}\n", .{msg});
                 } else {
                     self.writer.print("{s}\n", .{msg}) catch {};
                 }
@@ -497,6 +500,11 @@ pub const ProgressUi = struct {
     }
 
     pub fn render(self: *ProgressUi) void {
+        // Multiline task rows rely on terminal cursor controls. Never emit
+        // them into a redirected stream: each repaint would become a new log
+        // line instead of replacing the previous frame.
+        if (!self.is_tty) return;
+
         if (self.visibleTaskCount() > 0) {
             self.renderTaskRows();
             return;
@@ -556,44 +564,70 @@ pub const ProgressUi = struct {
             self.rawWrite(up);
         }
         self.rawWrite("\r");
-        for (0..self.rendered_lines) |_| self.rawWrite("\x1b[2K\r\n");
-        const back = std.fmt.bufPrint(&buffer, "\x1b[{d}A", .{self.rendered_lines}) catch return;
-        self.rawWrite(back);
+        for (0..self.rendered_lines) |index| {
+            self.rawWrite("\x1b[2K");
+            if (index + 1 < self.rendered_lines) self.rawWrite("\x1b[1B\r");
+        }
+        if (self.rendered_lines > 1) {
+            const back = std.fmt.bufPrint(&buffer, "\x1b[{d}A", .{self.rendered_lines - 1}) catch return;
+            self.rawWrite(back);
+        }
         self.rawWrite("\r");
         self.rendered_lines = 0;
+    }
+
+    fn renderFrameLine(self: *ProgressUi, comptime fmt: []const u8, args: anytype) void {
+        self.frame_writer.clearRetainingCapacity();
+        self.frame_writer.writer.print(fmt, args) catch return;
+        self.rawWrite(self.frame_writer.writer.buffered());
+    }
+
+    fn renderTaskLine(self: *ProgressUi, is_last: bool, comptime fmt: []const u8, args: anytype) void {
+        self.frame_writer.clearRetainingCapacity();
+        self.frame_writer.writer.writeAll("\x1b[2K\r") catch return;
+        self.frame_writer.writer.print(fmt, args) catch return;
+        if (!is_last) self.frame_writer.writer.writeAll("\n") catch return;
+        self.rawWrite(self.frame_writer.writer.buffered());
     }
 
     fn renderTaskRows(self: *ProgressUi) void {
         self.clearRenderedRows();
 
-        var lines: usize = 0;
+        const phase_lines: usize = if (self.current_phase.len > 0) 1 else 0;
+        const task_lines = self.visibleTaskCount();
+
+        const overflow = self.activeOverflowTaskCount();
+        const overflow_lines: usize = if (overflow > 0) 1 else 0;
+        const completed_lines: usize = if (self.completed_tasks > 0) 1 else 0;
+        const lines = phase_lines + task_lines + overflow_lines + completed_lines;
+        if (lines == 0) return;
+
+        var written: usize = 0;
         if (self.current_phase.len > 0) {
-            self.writer.print("\x1b[2K\r{s}\n", .{self.current_phase}) catch {};
-            lines += 1;
+            written += 1;
+            self.renderTaskLine(written == lines, "{s}", .{self.current_phase});
         }
 
         for (self.task_slots) |maybe_row_index| {
             const row_index = maybe_row_index orelse continue;
             const row = self.task_rows.items[row_index];
+            written += 1;
             if (row.terminal) {
                 const mark: []const u8 = if (std.mem.eql(u8, row.state, "completed")) "✓" else "✗";
-                self.writer.print("\x1b[2K\r{s} {s}: {s}\n", .{ mark, row.state, row.message }) catch {};
+                self.renderTaskLine(written == lines, "{s} {s}: {s}", .{ mark, row.state, row.message });
             } else {
                 const frame = spinner_frames[self.spinner_frame % spinner_frames.len];
-                self.writer.print("\x1b[2K\r{s} {s}: {s}\n", .{ frame, row.state, row.message }) catch {};
+                self.renderTaskLine(written == lines, "{s} {s}: {s}", .{ frame, row.state, row.message });
             }
-            lines += 1;
         }
-        const overflow = self.activeOverflowTaskCount();
         if (overflow > 0) {
-            self.writer.print("\x1b[2K\r… {d} more tasks queued\n", .{overflow}) catch {};
-            lines += 1;
+            written += 1;
+            self.renderTaskLine(written == lines, "… {d} more tasks queued", .{overflow});
         }
         if (self.completed_tasks > 0) {
-            self.writer.print("\x1b[2K\r✓ {d} task{s} completed\n", .{ self.completed_tasks, if (self.completed_tasks == 1) "" else "s" }) catch {};
-            lines += 1;
+            written += 1;
+            self.renderTaskLine(written == lines, "✓ {d} task{s} completed", .{ self.completed_tasks, if (self.completed_tasks == 1) "" else "s" });
         }
-        self.writer.flush() catch {};
         self.rendered_lines = lines;
         self.spinner_frame +%= 1;
         self.releaseRenderedTerminalTaskRows();
@@ -732,7 +766,7 @@ pub fn runWithProgress(
             // Paint each transition before draining the next one so a fast
             // worker cannot collapse `preparing → materializing → completed`
             // into one invisible final row.
-            if (event == .task_state) {
+            if (is_tty and event == .task_state) {
                 ui.last_render_ns = ui.nowNs();
                 ui.render();
             }

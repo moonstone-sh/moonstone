@@ -18,7 +18,57 @@ const cmake_mat = @import("../../materialization/materializers/cmake.zig");
 const profiler = @import("../../diagnostics/profiler.zig");
 
 var manifest_cache: std.StringHashMapUnmanaged([]u8) = .empty;
+var manifest_cache_mutex: std.Io.Mutex = .init;
 var materialization_workspace_counter: std.atomic.Value(u64) = .init(0);
+
+fn getCachedManifest(io: std.Io, url: []const u8) ?[]u8 {
+    manifest_cache_mutex.lockUncancelable(io);
+    defer manifest_cache_mutex.unlock(io);
+    return manifest_cache.get(url);
+}
+
+fn adoptCachedManifest(allocator: std.mem.Allocator, io: std.Io, url: []const u8, body: []u8) ![]u8 {
+    manifest_cache_mutex.lockUncancelable(io);
+    defer manifest_cache_mutex.unlock(io);
+
+    if (manifest_cache.get(url)) |cached| {
+        allocator.free(body);
+        return cached;
+    }
+
+    const owned_url = try allocator.dupe(u8, url);
+    errdefer allocator.free(owned_url);
+    try manifest_cache.put(allocator, owned_url, body);
+    return body;
+}
+
+test "LuaRocks manifest cache serializes concurrent inserts" {
+    const Worker = struct {
+        const Context = struct {
+            url: []const u8,
+            completed: *std.atomic.Value(usize),
+        };
+
+        fn run(context: *Context) void {
+            const body = std.heap.page_allocator.dupe(u8, "concurrent manifest body") catch @panic("out of memory");
+            _ = adoptCachedManifest(std.heap.page_allocator, std.testing.io, context.url, body) catch @panic("manifest cache insert failed");
+            _ = context.completed.fetchAdd(1, .monotonic);
+        }
+    };
+
+    const url = "https://moonstone.invalid/tests/manifest-cache-concurrent-insert";
+    var completed = std.atomic.Value(usize).init(0);
+    var context = Worker.Context{ .url = url, .completed = &completed };
+    var threads: [16]std.Thread = undefined;
+
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{&context});
+    }
+    for (threads) |thread| thread.join();
+
+    try std.testing.expectEqual(@as(usize, threads.len), completed.load(.monotonic));
+    try std.testing.expectEqualStrings("concurrent manifest body", getCachedManifest(std.testing.io, url).?);
+}
 
 fn get_luarocks_base(env_map: *std.process.Environ.Map) []const u8 {
     return env_map.get("MOONSTONE_LUAROCKS_URL") orelse "https://luarocks.org";
@@ -53,6 +103,7 @@ fn http_get_single(
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
     progress_label: ?[]const u8,
+    cancellation_flag: ?*const std.atomic.Value(bool),
 ) ![]u8 {
     var pctx: ?ProgressAdapterCtx = null;
     var pcb: ?http.ProgressCallback = null;
@@ -66,7 +117,7 @@ fn http_get_single(
         pcb = progress_adapter;
     }
 
-    const resp = try http.fetchGetWithProgress(allocator, io, url, null, timeout_ms, pcb, if (pctx) |*p| p else null);
+    const resp = try http.fetchGetWithProgress(allocator, io, url, null, timeout_ms, pcb, if (pctx) |*p| p else null, cancellation_flag);
     if (resp.status == .not_found) {
         allocator.free(resp.body);
         return error.FileNotFound;
@@ -86,6 +137,7 @@ fn http_get(
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
     progress_label: ?[]const u8,
+    cancellation_flag: ?*const std.atomic.Value(bool),
 ) ![]u8 {
     const net_cfg = fs.get_network_config(allocator, env_map, io);
     const http_cfg = http.get_http_config(allocator, env_map, io);
@@ -95,9 +147,11 @@ fn http_get(
 
     var attempt: u32 = 0;
     while (true) {
-        if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context, progress_label)) |data| {
+        if (if (cancellation_flag) |flag| flag.load(.acquire) else false) return error.Cancelled;
+        if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context, progress_label, cancellation_flag)) |data| {
             return data;
         } else |err| {
+            if (err == error.Cancelled) return err;
             if (err == error.FileNotFound) return err;
 
             attempt += 1;
@@ -118,6 +172,7 @@ fn http_get(
             }
 
             std.Io.sleep(io, std.Io.Duration.fromSeconds(delay_seconds), .awake) catch {};
+            if (if (cancellation_flag) |flag| flag.load(.acquire) else false) return error.Cancelled;
         }
     }
 }
@@ -170,7 +225,7 @@ pub fn query_dependencies(
     if (options.offline) return error.PackageNotFound;
 
     const base = base_override orelse get_luarocks_base(env_map);
-    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context);
+    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context, options.cancellation_flag);
     defer fetched_rockspec.deinit(allocator);
 
     const lua_exe = blk: {
@@ -323,23 +378,24 @@ fn fetch_manifest(
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
     allow_stale_cache: bool,
+    cancellation_flag: ?*const std.atomic.Value(bool),
 ) !std.json.Parsed(std.json.Value) {
     const url = try runtime_to_manifest_url(allocator, base, runtime);
     defer allocator.free(url);
     const body = blk: {
-        if (manifest_cache.get(url)) |cached| {
+        if (getCachedManifest(io, url)) |cached| {
             profiler.mark("luarocks.manifest.cache_hit");
             break :blk cached;
         }
         if (try read_persistent_manifest_cache(allocator, io, env_map, url, allow_stale_cache)) |cached| {
             profiler.mark("luarocks.manifest.disk_cache_hit");
             errdefer allocator.free(cached);
-            try manifest_cache.put(allocator, try allocator.dupe(u8, url), cached);
-            break :blk cached;
+            break :blk try adoptCachedManifest(allocator, io, url, cached);
         }
         const span = profiler.now();
         if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_started = "Syncing LuaRocks manifest" });
-        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest") catch |err| {
+        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest", cancellation_flag) catch |err| {
+            if (err == error.Cancelled) return err;
             // TODO: handle err
             std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
             return error.RocksVersionDiscoveryFailed;
@@ -348,8 +404,7 @@ fn fetch_manifest(
         profiler.span("luarocks.manifest.fetch", span);
         errdefer allocator.free(fetched);
         write_persistent_manifest_cache(allocator, io, env_map, url, fetched);
-        try manifest_cache.put(allocator, try allocator.dupe(u8, url), fetched);
-        break :blk fetched;
+        break :blk try adoptCachedManifest(allocator, io, url, fetched);
     };
     return std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
         // TODO: handle err
@@ -609,6 +664,7 @@ fn translateCommandBuild(
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "BINDIR"), .value = try allocator.dupe(u8, "${out}/bin") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_INCDIR"), .value = try allocator.dupe(u8, "${runtime.include}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_LIBDIR"), .value = try allocator.dupe(u8, "${runtime.lib}") });
+        try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUALIB"), .value = try allocator.dupe(u8, "${runtime.lualib}") });
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "LUA_BINDIR"), .value = try allocator.dupe(u8, "${runtime.bin_dir}") });
 
         try env_pairs.append(allocator, .{ .key = try allocator.dupe(u8, "PREFIX"), .value = try allocator.dupe(u8, "${out}") });
@@ -737,6 +793,7 @@ fn expand_luarocks_command_value(
         .{ .key = "LUA_BINDIR", .value = "${runtime.bin_dir}" },
         .{ .key = "LUA_INCDIR", .value = "${runtime.include}" },
         .{ .key = "LUA_LIBDIR", .value = "${runtime.lib}" },
+        .{ .key = "LUALIB", .value = "${runtime.lualib}" },
         .{ .key = "LUADIR", .value = "${out}/share/lua/${lua_abi}" },
         .{ .key = "OBJ_EXTENSION", .value = "o" },
         .{ .key = "PREFIX", .value = "${out}" },
@@ -806,6 +863,7 @@ fn expand_luarocks_make_value(
         .{ .key = "LUA_BINDIR", .value = "${runtime.bin_dir}" },
         .{ .key = "LUA_INCDIR", .value = "${runtime.include}" },
         .{ .key = "LUA_LIBDIR", .value = "${runtime.lib}" },
+        .{ .key = "LUALIB", .value = "${runtime.lualib}" },
         .{ .key = "PREFIX", .value = "${out}" },
     };
     for (substitutions) |substitution| {
@@ -1101,7 +1159,7 @@ pub fn prepare_source_rock(
     env_map: *std.process.Environ.Map,
     base: []const u8,
 ) !PreparedRock {
-    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context);
+    const fetched_rockspec = try fetch_rockspec(allocator, io, base, pkg_name, version, env_map, options.on_event, options.on_event_context, options.cancellation_flag);
     errdefer fetched_rockspec.deinit(allocator);
 
     const lua_exe = blk: {
@@ -1557,7 +1615,7 @@ pub fn discoverVersions(
 ) ![]@import("../../domain/semver.zig").Version {
     const semver = @import("../../domain/semver.zig");
     const base = base_override orelse get_luarocks_base(env_map);
-    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
+    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline, options.cancellation_flag);
     defer manifest_parsed.deinit();
     const repository = manifest_parsed.value.object.get("repository") orelse return error.RocksVersionDiscoveryFailed;
     const pkg_entry = find_manifest_package(repository, pkg_name) orelse return error.PackageNotFound;
@@ -1600,7 +1658,7 @@ pub fn refreshManifest(
     on_event_context: ?*anyopaque,
 ) !void {
     const base = get_luarocks_base(env_map);
-    const parsed = try fetch_manifest(allocator, io, base, runtime, env_map, on_event, on_event_context, false);
+    const parsed = try fetch_manifest(allocator, io, base, runtime, env_map, on_event, on_event_context, false, null);
     parsed.deinit();
 }
 
@@ -1685,7 +1743,7 @@ fn resolve_binary_rock(
     const url = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.{s}.rock", .{ base, pkg_name, version, arch_str });
     defer allocator.free(url);
 
-    const rock_data = try http_get(allocator, io, url, env_map, on_event, on_event_context, null);
+    const rock_data = try http_get(allocator, io, url, env_map, on_event, on_event_context, null, null);
     defer allocator.free(rock_data);
     const source_hash = try blake3_prefixed(allocator, rock_data);
     defer allocator.free(source_hash);
@@ -1774,6 +1832,7 @@ fn fetch_rockspec(
     env_map: *std.process.Environ.Map,
     on_event: ?options_mod.ResolveCallback,
     on_event_context: ?*anyopaque,
+    cancellation_flag: ?*const std.atomic.Value(bool),
 ) !FetchedRockspec {
     // If version already includes a LuaRocks revision (e.g. "3.1.3-1"), try exact rockspec first.
     if (has_luarocks_revision(version)) {
@@ -1781,7 +1840,7 @@ fn fetch_rockspec(
             base, pkg_name, version,
         });
         defer allocator.free(url);
-        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null) catch |err| blk: {
+        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null, cancellation_flag) catch |err| blk: {
             if (err == error.HttpError or err == error.FileNotFound) break :blk null;
             return err;
         };
@@ -1804,7 +1863,7 @@ fn fetch_rockspec(
             base, pkg_name, version, rev,
         });
         defer allocator.free(url);
-        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null) catch |err| {
+        const content = http_get(allocator, io, url, env_map, on_event, on_event_context, null, cancellation_flag) catch |err| {
             if (err == error.HttpError or err == error.FileNotFound) continue;
             return err;
         };
@@ -2251,13 +2310,13 @@ fn fetch_and_unpack_source(
     defer allocator.free(guessed_src_rock);
 
     const source_fetch: SourceFetch = blk: {
-        const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null) catch |err| {
+        const src_rock_data = http_get(allocator, io, guessed_src_rock, env_map, on_event, on_event_context, null, null) catch |err| {
             if (err != error.HttpError and err != error.FileNotFound and err != error.UnsupportedUriScheme) return err;
             const src_url = rock_source_url(rock);
             if (src_url.len == 0) return error.SourceRockNotFound;
             const fallback_url = try source_fallback_url(allocator, src_url, rock.source.tag, rock.source.branch);
             errdefer allocator.free(fallback_url);
-            const fallback_data = http_get(allocator, io, fallback_url, env_map, on_event, on_event_context, null) catch |fallback_err| {
+            const fallback_data = http_get(allocator, io, fallback_url, env_map, on_event, on_event_context, null, null) catch |fallback_err| {
                 @import("../../diagnostics/error_context.zig").setFmt(
                     allocator,
                     "failed to fetch declared LuaRocks source for {s}@{s}\nsource: {s}\nreason: {s}",
@@ -3863,7 +3922,7 @@ pub fn prepare(
     const base = base_override orelse get_luarocks_base(env_map);
 
     // Phase 1: Candidate discovery
-    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline);
+    const manifest_parsed = try fetch_manifest(allocator, io, base, options.runtime, env_map, options.on_event, options.on_event_context, options.offline, options.cancellation_flag);
     defer manifest_parsed.deinit();
     const manifest_json = manifest_parsed.value;
 

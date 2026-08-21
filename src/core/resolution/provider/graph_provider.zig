@@ -13,6 +13,7 @@ const path_resolver = @import("../sources/path.zig");
 const links_mod = @import("../../store/links.zig");
 const platform_target = @import("../../platform/target.zig");
 const package_spec = @import("../../domain/package_spec.zig");
+const metadata_prefetch = @import("../metadata_prefetch.zig");
 const DependencyRole = @import("../../domain/dependency_role.zig").DependencyRole;
 
 pub const StoreDependencyOrigin = struct {
@@ -64,6 +65,7 @@ pub const RegistryProvider = struct {
     lua_exe: ?[]const u8 = null,
     lua_metadata_interpreter_provider: ?LuaMetadataInterpreterProvider = null,
     lua_metadata_interpreter_context: ?*anyopaque = null,
+    rocks_metadata_prefetch: ?*const metadata_prefetch.RocksMetadataPrefetch = null,
     targets: []const term_mod.Term = &.{},
 
     // Arena for all package metadata (versions, strings, descriptors, artifacts)
@@ -138,7 +140,10 @@ pub const RegistryProvider = struct {
         self.arena.deinit();
     }
 
-    fn luaMetadataInterpreter(self: *RegistryProvider) !?[]const u8 {
+    /// Resolves the host interpreter used to parse LuaRocks metadata once.
+    /// Prefetch workers receive this resolved value so they never mutate the
+    /// provider while PubGrub is reading from it.
+    pub fn luaMetadataInterpreter(self: *RegistryProvider) !?[]const u8 {
         if (self.lua_exe) |lua_exe| return lua_exe;
         const provider = self.lua_metadata_interpreter_provider orelse return null;
         const lua_exe = try provider(self.lua_metadata_interpreter_context);
@@ -152,6 +157,18 @@ pub const RegistryProvider = struct {
             if (std.mem.eql(u8, reg.name, wanted) and std.mem.eql(u8, reg.resolver, resolver_name)) return reg.url;
         }
         return null;
+    }
+
+    /// The concrete endpoint used by LuaRocks metadata requests. Keeping this
+    /// normalization shared makes prefetch keys equal synchronous fallback
+    /// lookups, including an explicit MOONSTONE_LUAROCKS_URL override.
+    pub fn luarocksMetadataBaseFor(self: *const RegistryProvider, identity: ?[]const u8) []const u8 {
+        return self.registryUrlFor(identity, "rocks") orelse
+            if (self.env) |env| env.get("MOONSTONE_LUAROCKS_URL") orelse "https://luarocks.org" else "https://luarocks.org";
+    }
+
+    pub fn setRocksMetadataPrefetch(self: *RegistryProvider, prefetch: ?*const metadata_prefetch.RocksMetadataPrefetch) void {
+        self.rocks_metadata_prefetch = prefetch;
     }
 
     pub fn get_artifact(self: *RegistryProvider, request: package_provider.ArtifactRequest) anyerror!?candidate_mod.Candidate {
@@ -666,20 +683,32 @@ pub const RegistryProvider = struct {
         // 3. Resolve LuaRocks packages online
         if (!self.options.offline and res_constraint != null and res_constraint.? == .rocks and self.env != null) {
             if (versions.items.len == 0) {
-                var opts = self.options;
-                opts.lua_exe = try self.luaMetadataInterpreter();
-                const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, self.registryUrlFor(reg_constraint, "rocks")) catch |err| blk: {
-                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
-                        break :blk @as([]semver.Version, &.{});
+                const base = self.luarocksMetadataBaseFor(reg_constraint);
+                const prefetched_versions = if (self.rocks_metadata_prefetch) |prefetch|
+                    prefetch.findVersions(name, base, self.options.target orelse "", self.options.runtime orelse "")
+                else
+                    null;
+
+                if (prefetched_versions) |cached| {
+                    for (cached) |version| {
+                        try versions.append(self.allocator, try version.clone(self.allocator));
                     }
-                    return err;
-                };
-                defer {
-                    for (discovered_versions) |version| version.deinit(self.allocator);
-                    self.allocator.free(discovered_versions);
-                }
-                for (discovered_versions) |version| {
-                    try versions.append(self.allocator, try version.clone(self.allocator));
+                } else {
+                    var opts = self.options;
+                    opts.lua_exe = try self.luaMetadataInterpreter();
+                    const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, base) catch |err| blk: {
+                        if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
+                            break :blk @as([]semver.Version, &.{});
+                        }
+                        return err;
+                    };
+                    defer {
+                        for (discovered_versions) |version| version.deinit(self.allocator);
+                        self.allocator.free(discovered_versions);
+                    }
+                    for (discovered_versions) |version| {
+                        try versions.append(self.allocator, try version.clone(self.allocator));
+                    }
                 }
             }
         }
@@ -906,26 +935,35 @@ pub const RegistryProvider = struct {
             const v_str = try version.toString(self.allocator);
             defer self.allocator.free(v_str);
 
-            var opts = self.options;
-            opts.lua_exe = try self.luaMetadataInterpreter();
+            const base = self.luarocksMetadataBaseFor(rocks_dependency_registry);
+            const prefetched_dependencies = if (self.rocks_metadata_prefetch) |prefetch|
+                prefetch.findDependencies(name, v_str, base, self.options.target orelse "", self.options.runtime orelse "")
+            else
+                null;
+            var loaded_dependencies: ?rocks_resolver.RockspecDependencies = null;
+            defer if (loaded_dependencies) |*dependencies| dependencies.deinit(self.allocator);
 
-            var dependencies = rocks_resolver.query_dependencies(
-                self.allocator,
-                self.io,
-                name,
-                v_str,
-                opts,
-                self.env.?,
-                self.registryUrlFor(rocks_dependency_registry, "rocks"),
-            ) catch |err| {
-                if (err == error.PackageNotFound or err == error.RockspecNotFound or
-                    err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed)
-                {
-                    return try terms.toOwnedSlice(self.allocator);
-                }
-                return err;
+            const dependencies = prefetched_dependencies orelse blk: {
+                var opts = self.options;
+                opts.lua_exe = try self.luaMetadataInterpreter();
+                loaded_dependencies = rocks_resolver.query_dependencies(
+                    self.allocator,
+                    self.io,
+                    name,
+                    v_str,
+                    opts,
+                    self.env.?,
+                    base,
+                ) catch |err| {
+                    if (err == error.PackageNotFound or err == error.RockspecNotFound or
+                        err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed)
+                    {
+                        return try terms.toOwnedSlice(self.allocator);
+                    }
+                    return err;
+                };
+                break :blk &loaded_dependencies.?;
             };
-            defer dependencies.deinit(self.allocator);
 
             const dependency_sets = [_]struct {
                 values: []const []const u8,

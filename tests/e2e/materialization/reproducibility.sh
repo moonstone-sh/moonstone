@@ -15,7 +15,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 # Reset and create a fresh project
-cat > moonstone.toml << 'EOF'
+cat > moonstone.toml <<EOF
 [package]
 name = "repro-test"
 version = "0.1.0"
@@ -25,12 +25,17 @@ kind = "script"
 name = "lua"
 version = "5.4"
 abi = "5.4"
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
 EOF
 
 moon interpreter set lua@5.4 --no-sync
 
 echo "━━━ add dependency ━━━"
-moon add inspect@3.1.3 --no-sync
+moon add synthetic:inspect@3.1.3 --no-sync
 
 echo "━━━ initial install ━━━"
 moon sync
@@ -38,9 +43,12 @@ moon sync
 echo "━━━ locked install (success) ━━━"
 moon sync --locked
 
+echo "━━━ locked install (offline cache replay) ━━━"
+moon sync --locked --offline
+
 echo "━━━ locked install (missing entry error) ━━━"
 # Add a dependency that is NOT in the lockfile, using [[dependencies]] format
-printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nrole = "runtime"\n' >> moonstone.toml
+printf '\n[[dependencies]]\nname = "luassert"\nconstraint = "^1.9.0"\nregistry = "synthetic"\nrole = "runtime"\n' >> moonstone.toml
 ! moon sync --locked
 
 echo "━━━ sync lockfile ━━━"

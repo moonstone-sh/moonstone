@@ -561,13 +561,15 @@ int luaopen_synthetic_make_module(lua_State *L) { lua_newtable(L); lua_pushcfunc
   local makefile = [[
 CC ?= cc
 LUA_INCDIR ?= .
+LUALIB ?=
 CFLAGS = -shared -fPIC -I$(LUA_INCDIR)
 ifeq ($(shell uname), Darwin)
   CFLAGS = -shared -fPIC -I$(LUA_INCDIR) -undefined dynamic_lookup
 endif
 all: synthetic_make_module.so
 synthetic_make_module.so: synthetic_make_module.c
-	$(CC) $(CFLAGS) -o $@ $<
+	@test -n "$(LUALIB)"
+	$(CC) $(CFLAGS) -o $@ $< $(if $(filter Darwin,$(shell uname -s)),,$(LUALIB))
 install: synthetic_make_module.so
 	mkdir -p $(PREFIX)
 	cp $< $(PREFIX)/

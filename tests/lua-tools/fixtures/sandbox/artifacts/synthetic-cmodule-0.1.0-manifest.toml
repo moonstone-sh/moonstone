@@ -2,9 +2,9 @@
 name = "synthetic-cmodule"
 version = "0.1.0"
 kind = "lib"
-source_hash = "b3:4bab58d89ff4214f629ee9c7195e07d30d3f2b8702fe2b20ed2e742635f4f594"
-recipe_hash = "b3:3dbd818a125efda7e53639fc6c1ceb744e3cf36a069a885cdcc29e67500dc107"
-artifact_hash = "b3:4bab58d89ff4214f629ee9c7195e07d30d3f2b8702fe2b20ed2e742635f4f594"
+source_hash = "b3:8439ec54b135be37c9178a6e469161268b475deccd46c9b912d980bc0c591ff2"
+recipe_hash = "b3:a0f28fa99ae95de840066ffee514613df2c93f0288125bfbfb983591222980e2"
+artifact_hash = "b3:8439ec54b135be37c9178a6e469161268b475deccd46c9b912d980bc0c591ff2"
 target = "source"
 
 [compat]

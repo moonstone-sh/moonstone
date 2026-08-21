@@ -2,9 +2,9 @@
 name = "synthetic-cmake-module"
 version = "0.1.0"
 kind = "lib"
-source_hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
-recipe_hash = "b3:1084014e280c5b8aebd844094bf0b097d0cd94e30f67edf7738b90e8dec2ce8f"
-artifact_hash = "b3:5cc3e1bcb6c85d455e7fd0fc6bc80655acebdcbf4d10a0caa80b99adb8ec82a6"
+source_hash = "b3:3bc300b4aecd773eec779d0d0314148c27662856193650e00d2abcbd3449db84"
+recipe_hash = "b3:a073c42f4d51d0a7a008cb1601f9fc5263dd7195dd188f70d98e831c8816a470"
+artifact_hash = "b3:3bc300b4aecd773eec779d0d0314148c27662856193650e00d2abcbd3449db84"
 target = "source"
 
 [compat]

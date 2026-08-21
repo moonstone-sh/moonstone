@@ -4,33 +4,24 @@ version = "3.1.2"
 kind = "lib"
 description = "Human-readable representation of Lua tables"
 
-[compat]
-runtimes = ["lua@5.4.7"]
-
-[source]
-kind = "archive"
-format = "tar.gz"
-hash = "b3:0b10b81e7a799384343fa550223c06c4469bcc43ecf2c7a2874c8117c33d07ea"
-
-[[artifact]]
+[[artifacts]]
+id = "lua_module-any-lua-5.4"
+kind = "lua_module"
 target = "any"
 lua_api = "lua-5.4"
 lua_abi = "lua-5.4"
 runtime = "lua@5.4.7"
-runtime_artifact_hash = ""
 format = "tar.gz"
-url = "../../../blobs/b3/67/22/67225264da730319da9281b3d8da531bece84209e9fba9d56e0e4cb44266c442.tar.gz"
-hash = "b3:67225264da730319da9281b3d8da531bece84209e9fba9d56e0e4cb44266c442"
-recipe_hash = "b3:8ee5123359d015432e3560350c437d947cf6a29c52e51151b38775cfd98c6549"
+url = "blobs/b3/66/bd/66bd77b2e727b7d75fd0e37017334ac35f23366fdcafcf6636a2f9d9248924f9.tar.gz"
+hash = "b3:66bd77b2e727b7d75fd0e37017334ac35f23366fdcafcf6636a2f9d9248924f9"
+recipe_hash = "b3:318e9eec287210984ff9ebd3361f822bcfcad1d3ae6f5c1f7289fb15c5c604c1"
 bytes = 3599
 
-[artifact.layout]
+[artifacts.materialize]
+type = "archive"
 strip_components = 0
 
-[artifact.provides]
-runtime = []
-bin = []
-headers = []
-native_lib = []
-lua_module = [{ name = "inspect", path = "lua/inspect.lua" }]
-lua_cmodule = []
+[[artifacts.provides]]
+kind = "lua_module"
+name = "inspect"
+path = "lua/inspect.lua"

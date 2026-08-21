@@ -3,8 +3,8 @@ name = "inspect"
 version = "3.1.2"
 kind = "lib"
 source_hash = "b3:0b10b81e7a799384343fa550223c06c4469bcc43ecf2c7a2874c8117c33d07ea"
-recipe_hash = "b3:8ee5123359d015432e3560350c437d947cf6a29c52e51151b38775cfd98c6549"
-artifact_hash = "b3:67225264da730319da9281b3d8da531bece84209e9fba9d56e0e4cb44266c442"
+recipe_hash = "b3:318e9eec287210984ff9ebd3361f822bcfcad1d3ae6f5c1f7289fb15c5c604c1"
+artifact_hash = "b3:66bd77b2e727b7d75fd0e37017334ac35f23366fdcafcf6636a2f9d9248924f9"
 target = "any"
 
 [compat]

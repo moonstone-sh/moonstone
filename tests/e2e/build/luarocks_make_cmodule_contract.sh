@@ -59,6 +59,7 @@ EOF
 
 cat > "${SOURCE_DIR}/Makefile" <<'EOF'
 CC ?= cc
+LUALIB ?=
 CFLAGS = -shared -fPIC -I$(LUA_INCDIR)
 
 ifeq ($(shell uname),Darwin)
@@ -77,7 +78,8 @@ endif
 all: make_cmodule.so make-tool $(SHARED_LIBRARY) generated-assets/README.txt config/generated.conf
 
 make_cmodule.so: make_cmodule.c
-	$(CC) $(CFLAGS) -o $@ $<
+	@test -n "$(LUALIB)"
+	$(CC) $(CFLAGS) -o $@ $< $(if $(filter Darwin,$(UNAME_S)),,$(LUALIB))
 
 make-tool:
 	printf '#!/bin/sh\necho make declared binary\n' > $@

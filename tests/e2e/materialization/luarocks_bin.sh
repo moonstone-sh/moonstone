@@ -19,15 +19,22 @@ mkdir -p "${MOCK_DIR}"
 
 # Pre-install the Moonstone-managed Lua tools before launching the long-running mock server.
 "${PROJECT_ROOT}/tests/run_lua_tool.sh" help >/dev/null
-# 2. Mock luarocks upstream
+# 2. Generate and serve a mock LuaRocks upstream.
 "${PROJECT_ROOT}/tests/run_lua_tool.sh" generate-mock-rocks "${MOCK_DIR}" "${RANDOM_PORT}" &
 MOCK_PID=$!
-trap "kill $MOCK_PID 2>/dev/null || true" EXIT
-
-# Give it a second to start
-sleep 2
+cleanup() {
+    kill "${MOCK_PID}" 2>/dev/null || true
+    wait "${MOCK_PID}" 2>/dev/null || true
+    rm -rf "${MOCK_DIR}"
+}
+trap cleanup EXIT
 
 export MOONSTONE_LUAROCKS_URL="http://localhost:${RANDOM_PORT}"
+for _ in {1..60}; do
+    curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 
 cd "${SANDBOX_DIR}/my-app"
 rm -rf .moonstone
@@ -35,6 +42,7 @@ rm -f moonstone.lock moonstone.toml
 
 echo "━━━ moon init ━━━"
 moon init . --name my-app --no-git
+moon registry add synthetic "${SANDBOX_DIR}/registry" --default
 
 echo "━━━ add rocks:fakebin ━━━"
 moon interpreter set lua@5.4

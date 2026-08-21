@@ -16,7 +16,7 @@ cd "$TEST_APP"
 MOON_BIN="${PROJECT_ROOT}/zig-out/bin/moon"
 
 echo "=== 1. Initialize project ==="
-cat <<'EOF' > moonstone.toml
+cat <<EOF > moonstone.toml
 [package]
 name = "purge-app"
 version = "1.0.0"
@@ -28,15 +28,20 @@ version = "5.4"
 abi = "5.4"
 
 [dependencies.runtime]
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
 EOF
 
 echo "=== 2. Add dependency inspect and sync ==="
-"$MOON_BIN" add inspect
+"$MOON_BIN" add synthetic:inspect
 "$MOON_BIN" sync
 
-echo "=== 3. Verify lockfile_version = 2 header ==="
+echo "=== 3. Verify lockfile_version = 3 header ==="
 cat moonstone.lock
-grep -q "lockfile_version = 2" moonstone.lock
+grep -q "lockfile_version = 3" moonstone.lock
 LOCK_HASH_INITIAL=$(shasum -a 256 moonstone.lock | cut -d' ' -f1)
 
 STORE_DIR="$MOONSTONE_DATA/store"

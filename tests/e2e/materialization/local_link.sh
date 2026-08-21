@@ -22,7 +22,7 @@ cd "${SANDBOX_DIR}/my-app"
 # Reset my-app
 rm -rf .moonstone
 rm -f moonstone.lock
-cat > moonstone.toml << 'EOF'
+cat > moonstone.toml <<EOF
 [package]
 name = "my-app"
 version = "0.1.0"
@@ -34,6 +34,11 @@ version = "5.4"
 abi = "5.4"
 
 [dependencies.runtime]
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
 EOF
 
 moon add link:my-lib --no-sync
@@ -41,8 +46,11 @@ moon interpreter set lua@5.4
 moon sync
 
 echo "━━━ verify project linking and method call ━━━"
-# The current my-app/src/main.lua already calls my_lib.greet("synthetic")
-moon exec -- lua src/main.lua | grep "Hello, synthetic!"
+cat > link_test.lua <<'EOF_LUA'
+local my_lib = require("my_lib")
+print(my_lib.greet("synthetic"))
+EOF_LUA
+moon exec -- lua link_test.lua | grep "Hello, synthetic!"
 
 echo "━━━ test moon exec with inline code ━━━"
 moon exec -- lua -e 'local m = require("my_lib"); print("Result: " .. m.greet("modular-tests"))' | grep "Result: Hello, modular-tests!"
