@@ -84,11 +84,8 @@ pub const RunCommand = struct {
         defer mt.deinit(allocator);
 
         if (mt.findScript(s_name) == null) {
-            if (emitter) |e| {
-                try e.fail(io, s_name, "error.ScriptNotFound", .{});
-            } else {
-                try stdout.print("Error: script '{s}' not found in moonstone.toml\n", .{s_name});
-            }
+            if (ctx.error_detail) |*old| old.deinit(allocator);
+            ctx.error_detail = .{ .script_not_found = .{ .name = try allocator.dupe(u8, s_name) } };
             return error.ScriptNotFound;
         }
 

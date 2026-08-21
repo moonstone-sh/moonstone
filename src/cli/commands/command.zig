@@ -169,6 +169,9 @@ pub const CliErrorDetail = union(enum) {
         resolver: ?[]const u8,
         artifact_hash: []const u8,
     },
+    script_not_found: struct {
+        name: []const u8,
+    },
     orbit_not_found: struct {
         orbit: []const u8,
     },
@@ -199,6 +202,7 @@ pub const CliErrorDetail = union(enum) {
                 if (lam.resolver) |r| allocator.free(r);
                 allocator.free(lam.artifact_hash);
             },
+            .script_not_found => |snf| allocator.free(snf.name),
             .orbit_not_found => |onf| allocator.free(onf.orbit),
         }
     }
@@ -229,6 +233,20 @@ fn manifestErrorDetail(err: anyerror) ?[]const u8 {
     };
 }
 
+fn recoveryHint(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.ScriptNotFound => "List the project entrypoints with `moon manifest script list`, then run one with `moon run <name>`.",
+        error.LockFileRequired, error.MissingFromLockfile, error.LockfileHashMismatch => "Synchronize the project with `moon sync`; use `moon sync --update` only when you intend to change the locked closure.",
+        error.MaterializerFailed => "Run `moon doctor`, verify the package's native build prerequisites, then retry `moon sync`.",
+        error.OfflineTransitiveArtifactMissing => "Retry online to stage the missing artifact, or add the exact artifact to a declared local registry before using `--offline`.",
+        error.RockspecNotFound => "Pin a published rock release, check the configured LuaRocks registry, or choose a package version with an available rockspec.",
+        error.PackageNotFound => "Check the package name and registry prefix. LuaRocks packages use `rocks:<name>`; inspect configured registries with `moon registry list`.",
+        error.DanglingSymlink => "Run `moon sync` to rebuild the projected environment. Do not repair files inside `.moonstone/env` by hand.",
+        error.InvalidLinkPathMode => "Use `moon link` for a registered live link or `moon add path:<directory>` for a project-local dependency.",
+        else => null,
+    };
+}
+
 pub fn reportError(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -251,7 +269,7 @@ pub fn reportError(
         if (detail) |d| {
             switch (d) {
                 .hash_mismatch => |hm| try emitter.fail(io, about, value, .{ .expected = hm.expected, .got = hm.got }),
-                .materializer_failed => |mf| try emitter.fail(io, about, value, .{ .exit_code = mf.exit_code, .error_detail = mf.stderr }),
+                .materializer_failed => |mf| try emitter.fail(io, about, value, .{ .exit_code = mf.exit_code, .error_detail = mf.stderr, .recovery = recoveryHint(err) }),
                 .missing_argument => |ma| try emitter.fail(io, about, value, .{ .flag = ma.flag }),
                 .unknown_flag => |uf| try emitter.fail(io, about, value, .{ .flag = uf.flag, .command = uf.command }),
                 .unknown_command => |uc| try emitter.fail(io, about, value, .{ .command = uc.command }),
@@ -266,6 +284,7 @@ pub fn reportError(
                     .parent_version = otm.parent_version,
                     .parent_resolver = otm.parent_resolver,
                     .parent_manifest_path = otm.parent_manifest_path,
+                    .recovery = recoveryHint(err),
                 }),
                 .locked_artifact_missing => |lam| try emitter.fail(io, about, value, .{
                     .kind = "locked_artifact_missing",
@@ -275,7 +294,8 @@ pub fn reportError(
                     .resolver = lam.resolver,
                     .artifact_hash = lam.artifact_hash,
                 }),
-                .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit }),
+                .script_not_found => |snf| try emitter.fail(io, about, value, .{ .script = snf.name, .recovery = recoveryHint(err) }),
+                .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit, .recovery = recoveryHint(err) }),
             }
         } else if (contextual_detail) |msg| {
             try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = msg });
@@ -283,7 +303,7 @@ pub fn reportError(
             if (err == error.RocksVersionDiscoveryFailed) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks registry is unreachable or returned an invalid manifest" });
             } else if (err == error.RockspecNotFound) {
-                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks package metadata was found, but no usable rockspec was available" });
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "LuaRocks package metadata was found, but no usable rockspec was available", .recovery = recoveryHint(err) });
             } else if (err == error.CompilerNotFound) {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = "Building native LuaRocks modules requires `zig` on PATH" });
             } else if (err == error.SQLiteCantOpen) {
@@ -299,7 +319,7 @@ pub fn reportError(
             } else if (manifestErrorDetail(err)) |error_detail| {
                 try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = error_detail });
             } else {
-                try emitter.fail(io, about, value, .{ .error_name = err_name });
+                try emitter.fail(io, about, value, .{ .error_name = err_name, .recovery = recoveryHint(err) });
             }
         }
     } else {
@@ -307,7 +327,10 @@ pub fn reportError(
         if (detail) |d| {
             switch (d) {
                 .hash_mismatch => |hm| try stdout.print("Error: hash mismatch for {s}. Expected {s}, got {s}\n", .{ about, hm.expected, hm.got }),
-                .materializer_failed => |mf| try stdout.print("Error: materializer failed for {s} with exit code {d}. Stderr: {s}\n", .{ about, mf.exit_code, mf.stderr }),
+                .materializer_failed => |mf| {
+                    try stdout.print("Error: Moonstone could not materialize {s} (exit code {d}).\n", .{ about, mf.exit_code });
+                    try stdout.print("Details:\n{s}\n", .{mf.stderr});
+                },
                 .missing_argument => |ma| try stdout.print("Error: missing argument for flag --{s}\n", .{ma.flag}),
                 .unknown_flag => |uf| try stdout.print("Error: unknown flag --{s} for command '{s}'\n", .{ uf.flag, uf.command }),
                 .unknown_command => |uc| try stdout.print("Error: unknown command '{s}'\n", .{uc.command}),
@@ -335,6 +358,9 @@ pub fn reportError(
                     try stdout.print("and configured registries, but could not restore this exact artifact.\n", .{});
                     try stdout.print("Run 'moon sync --update'\n", .{});
                     try stdout.print("to create a new lockfile, or restore/publish the locked artifact.\n", .{});
+                },
+                .script_not_found => |snf| {
+                    try stdout.print("Error: script '{s}' is not declared in moonstone.toml.\n", .{snf.name});
                 },
                 .orbit_not_found => |onf| {
                     try stdout.print("Error: orbit '{s}' not found.\n", .{onf.orbit});
@@ -373,7 +399,23 @@ pub fn reportError(
                 try stdout.print("Error: {s} during {s}\n", .{ @errorName(err), about });
             }
         }
+
+        if (recoveryHint(err)) |hint| {
+            try stdout.print("Next: {s}\n", .{hint});
+        }
     }
+}
+
+test "recovery hints stay actionable and deterministic" {
+    try std.testing.expectEqualStrings(
+        "List the project entrypoints with `moon manifest script list`, then run one with `moon run <name>`.",
+        recoveryHint(error.ScriptNotFound).?,
+    );
+    try std.testing.expectEqualStrings(
+        "Run `moon doctor`, verify the package's native build prerequisites, then retry `moon sync`.",
+        recoveryHint(error.MaterializerFailed).?,
+    );
+    try std.testing.expect(recoveryHint(error.UnknownCommand) == null);
 }
 
 pub const ResolveCallbackContext = struct {
