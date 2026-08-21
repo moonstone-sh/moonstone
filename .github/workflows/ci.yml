@@ -29,10 +29,12 @@ jobs:
         # We ensure that changes don't break the cross-compilation matrix
         run: zig build
 
-      - name: Cross-compile Windows GNU target
+      - name: Cross-compile Windows GNU targets
         # Keep platform-specific type and API assumptions compile-time checked
-        # even when native Windows execution remains exploratory.
-        run: zig build -Dtarget=x86_64-windows-gnu
+        # even when native Windows ARM execution remains exploratory.
+        run: |
+          zig build -Dtarget=x86_64-windows-gnu
+          zig build -Dtarget=aarch64-windows-gnu
 
       - name: Run Native Tests
         # We run the internal test suite

@@ -179,14 +179,18 @@ artifacts the same honest native-library contract.
 
 Moonstone uses three deliberately distinct checks for Windows behavior:
 
-1. `zig build -Dtarget=x86_64-windows-gnu` runs on the non-Windows CI host and
-   compile-checks Windows-specific Zig branches against the GNU target.
+1. `zig build -Dtarget=x86_64-windows-gnu` and
+   `zig build -Dtarget=aarch64-windows-gnu` run on the non-Windows CI host and
+   compile-check Windows-specific Zig branches for both published GNU targets.
 2. `.github/workflows/ci.yml` runs `tests/windows/core.ps1` on
    `windows-latest`. That runner builds Moonstone with its native Windows MSVC
    toolchain, compiles a real DLL and `LoadLibraryA` probe, and verifies actual
    `PATH`-based loader projection. Its isolated project, registry, and PowerShell
    transcript are uploaded as `windows-core-harness-state` even on failure.
-3. Wine may be used only as an optional PE-process smoke test. It does not
+3. Windows ARM64 currently has compile and release-matrix coverage only; a
+   native Windows-on-ARM runner is required before it can certify projection
+   and process behavior.
+4. Wine may be used only as an optional PE-process smoke test. It does not
    certify Windows filesystem, executable-discovery, PowerShell/cmd, DLL-loader,
    or MSVC-runtime behavior and must not be presented as Windows compatibility.
 

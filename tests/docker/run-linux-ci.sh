@@ -47,7 +47,8 @@ checkout_luarocks_reference() {
 if [[ "${scope}" != "all" ]]; then
     run "Check formatting" zig fmt --check --exclude src/core/assets/templates src/ build.zig
     run "Build Linux Moonstone" zig build
-    run "Compile Windows GNU target" zig build -Dtarget=x86_64-windows-gnu
+    run "Compile Windows x86_64 GNU target" zig build -Dtarget=x86_64-windows-gnu
+    run "Compile Windows ARM64 GNU target" zig build -Dtarget=aarch64-windows-gnu
     run "Run Zig tests" zig build test
 fi
 

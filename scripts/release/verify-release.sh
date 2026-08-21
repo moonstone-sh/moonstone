@@ -42,7 +42,8 @@ cd "${ROOT_DIR}"
 
 run "Check formatting" zig fmt --check --exclude src/core/assets/templates src/ build.zig
 run "Build native target" zig build
-run "Compile Windows GNU target" zig build -Dtarget=x86_64-windows-gnu
+run "Compile Windows x86_64 GNU target" zig build -Dtarget=x86_64-windows-gnu
+run "Compile Windows ARM64 GNU target" zig build -Dtarget=aarch64-windows-gnu
 run "Run Zig tests" zig build test
 
 if [[ "${WITH_UPSTREAM}" == true ]]; then

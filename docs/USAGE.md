@@ -39,6 +39,7 @@ Provide artifacts for common triples:
 - `x86_64-linux-gnu`
 - `aarch64-macos`
 - `x86_64-windows-msvc`
+- `aarch64-windows-gnu`
 
 ### Strategy 2: Source Fallback (Recommended)
 Always provide a `target = "source"` artifact to ensure the package works everywhere.

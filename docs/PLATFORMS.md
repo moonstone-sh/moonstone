@@ -15,11 +15,17 @@ These targets are automatically tested and released as pre-compiled binaries via
 | FreeBSD | x86_64 | `x86_64-freebsd` | GitHub |
 | FreeBSD | ARM64 | `aarch64-freebsd` | GitHub |
 
-## Tier 2 (Compiles from Source)
+## Tier 2 (Experimental / Partial Native Certification)
 
-These targets are not officially distributed in binary form, but can be compiled from source using the Zig toolchain (`zig build`). 
+These targets have a bounded support contract. They compile through the release
+matrix and are published as GitHub Release artifacts, but native execution
+coverage is still incomplete for the architectures noted below.
 
-- Windows (`x86_64-windows`) - *Currently experimental due to symlink and filesystem atomic rename constraints.*
+- Windows GNU (`x86_64-windows-gnu`) - *Native `windows-latest` projection and
+  process smoke coverage; still experimental due to symlink and filesystem
+  atomic rename constraints.*
+- Windows GNU ARM64 (`aarch64-windows-gnu`) - *Compile-time and release-matrix
+  coverage. Native Windows-on-ARM execution coverage remains to be added.*
 - Linux / Musl (`x86_64-linux-musl`, `aarch64-linux-musl`) - *Fully supported by Zig, ideal for ultra-minimalist distros.*
 
 ## Native Ecosystem Packages

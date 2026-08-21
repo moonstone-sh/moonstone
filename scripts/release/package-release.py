@@ -70,7 +70,7 @@ def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: b
     sha_lines = []
     b3_lines = []
     for binary in binaries:
-        target = binary.name[len(prefix):]
+        target = binary.stem[len(prefix):]
         archive_name = f"moon-v{version}-{target}.tar.gz"
         archive = release_dir / archive_name
         write_archive(binary, archive)

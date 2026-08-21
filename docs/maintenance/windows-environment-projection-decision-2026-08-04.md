@@ -47,8 +47,11 @@ environment model:
 | Script execution | Uses `cmd /d /s /c` on Windows. |
 | Environment links | Require real symbolic links. |
 
-The corresponding native smoke is `tests/windows/core.ps1`; the
-`x86_64-windows-gnu` cross-build remains a required compile-time boundary.
+The corresponding native smoke is `tests/windows/core.ps1`; both
+`x86_64-windows-gnu` and `aarch64-windows-gnu` cross-builds remain required
+compile-time boundaries. The x86_64 target also has native GitHub Windows
+execution coverage; Windows ARM64 currently has compile and release-matrix
+coverage until an ARM runner is added.
 
 ## Alternatives deliberately deferred
 

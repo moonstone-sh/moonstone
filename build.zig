@@ -234,4 +234,6 @@ const official_release_targets: []const ReleaseTarget = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl },
     .{ .cpu_arch = .arm, .os_tag = .linux, .abi = .gnueabihf },
     .{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .gnu },
+    .{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu },
+    .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
 };
