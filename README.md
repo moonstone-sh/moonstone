@@ -178,6 +178,13 @@ scripts/ci/run-linux.sh native-rocks
 scripts/ci/run-linux.sh all
 ```
 
-The wrapper defaults to `linux/amd64`, matching GitHub's Ubuntu runner ABI even
-on Apple Silicon Docker Desktop. For a faster local diagnostic run that does not
-claim GitHub architecture parity, set `MOONSTONE_LINUX_CI_PLATFORM=linux/arm64`.
+The wrapper defaults to a host-native Linux architecture so local Docker runs
+remain reliable. To exercise GitHub's `linux/amd64` runner ABI explicitly, use:
+
+```bash
+MOONSTONE_LINUX_CI_PLATFORM=linux/amd64 scripts/ci/run-linux.sh luv
+```
+
+On Apple Silicon, this requires a working x86_64 Docker emulation setup; the
+host-native `linux/arm64` run still validates the Linux toolchain and loader
+boundaries.
