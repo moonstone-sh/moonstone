@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const manifest = @import("../../domain/manifest.zig");
 const command = @import("command.zig");
 
@@ -43,6 +44,13 @@ pub fn build(
 
     const lua_include = try std.fs.path.join(allocator, &.{ runtime_path, "files", "include" });
     defer allocator.free(lua_include);
+    const lua_lib = try std.fs.path.join(allocator, &.{ runtime_path, "files", "lib" });
+    defer allocator.free(lua_lib);
+    const lua_link_library = try command.findLuaLinkLibrary(allocator, io, lua_lib) orelse return error.RuntimeLuaLibraryNotFound;
+    defer allocator.free(lua_link_library);
+    const lua_bin = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin", "lua" });
+    defer allocator.free(lua_bin);
+    const lua_libfile = std.fs.path.basename(lua_link_library);
 
     // CMake's generated build tree contains host- and run-specific metadata.
     // Keep it in the disposable source workspace. Its install tree is staged
@@ -55,6 +63,10 @@ pub fn build(
     const install_dir = try std.fs.path.join(allocator, &.{ out_dir_path, install_staging_dir_name });
     defer allocator.free(install_dir);
     try std.Io.Dir.cwd().createDirPath(io, install_dir);
+    const lua_share_dir = try std.fs.path.join(allocator, &.{ install_dir, "share", "lua", lua_abi });
+    defer allocator.free(lua_share_dir);
+    const lua_cmodule_dir = try std.fs.path.join(allocator, &.{ install_dir, "lib", "lua", lua_abi });
+    defer allocator.free(lua_cmodule_dir);
 
     var steps = std.ArrayList(manifest.CommandStep).empty;
     defer {
@@ -81,11 +93,6 @@ pub fn build(
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DCMAKE_INSTALL_PREFIX={s}", .{install_dir}));
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_ABI={s}", .{lua_abi}));
 
-    // Explicitly pass Lua include paths to prevent system discovery
-    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIR={s}", .{lua_include}));
-    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIRS={s}", .{lua_include}));
-    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_INCLUDE_DIR={s}", .{lua_include}));
-
     // LuaRocks CMake definitions use this marker for install destinations.
     // It is resolved here, where the disposable staging root exists, rather
     // than letting a rock write directly into Moonstone's final artifact tree.
@@ -93,6 +100,42 @@ pub fn build(
     for (config.ldflags) |arg| {
         const expanded = try std.mem.replaceOwned(u8, allocator, arg, "${cmake.install}", install_dir);
         try conf_args.append(allocator, expanded);
+    }
+
+    // Present the selected runtime using LuaRocks' CMake variable contract.
+    // Append these after source-rock definitions so Moonstone's projected
+    // runtime cannot be replaced by a literal `${runtime.*}` placeholder or a
+    // host-system Lua discovery result.
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA={s}", .{lua_bin}));
+    try conf_args.append(allocator, try allocator.dupe(u8, "-DLUA_BUILD_TYPE=System"));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCDIR={s}", .{lua_include}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_LIBDIR={s}", .{lua_lib}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_LIBFILE={s}", .{lua_libfile}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUADIR={s}", .{lua_share_dir}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLIBDIR={s}", .{lua_cmodule_dir}));
+
+    // Keep common FindLua variable spellings aligned with the same runtime.
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIR={s}", .{lua_include}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_INCLUDE_DIRS={s}", .{lua_include}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_INCLUDE_DIR={s}", .{lua_include}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_LIBRARY={s}", .{lua_link_library}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLUA_LIBRARIES={s}", .{lua_link_library}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_LIBRARY={s}", .{lua_link_library}));
+    try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_LIBRARIES={s}", .{lua_link_library}));
+
+    if (comptime builtin.os.tag == .linux) {
+        // Linux CMake modules such as luv intentionally leave Lua symbols for
+        // the interpreter to provide. Moonstone's runtime executable does not
+        // promise those symbols through its dynamic export table, so link the
+        // selected runtime archive into the module closure explicitly. CMake
+        // inserts this variable before target objects; use a bounded whole
+        // archive group so static Lua objects are retained regardless of that
+        // ordering.
+        try conf_args.append(allocator, try std.fmt.allocPrint(
+            allocator,
+            "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,--whole-archive,{s},--no-whole-archive",
+            .{lua_link_library},
+        ));
     }
 
     try steps.append(allocator, .{

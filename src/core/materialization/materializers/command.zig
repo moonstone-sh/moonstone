@@ -152,7 +152,7 @@ pub fn build_internal(
     try collectOutputs(allocator, io, src_abs, out_abs, bdir, config.collect, lua_abi, lua_include, lua_lib, lua_link_library, lua_bin_dir);
 }
 
-fn findLuaLinkLibrary(allocator: std.mem.Allocator, io: std.Io, lua_lib_dir: []const u8) !?[]const u8 {
+pub fn findLuaLinkLibrary(allocator: std.mem.Allocator, io: std.Io, lua_lib_dir: []const u8) !?[]const u8 {
     const candidates = [_][]const u8{
         "liblua.a",
         "libluajit-5.1.a",
