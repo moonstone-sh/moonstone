@@ -185,6 +185,9 @@ remain reliable. To exercise GitHub's `linux/amd64` runner ABI explicitly, use:
 MOONSTONE_LINUX_CI_PLATFORM=linux/amd64 scripts/ci/run-linux.sh luv
 ```
 
-On Apple Silicon, this requires a working x86_64 Docker emulation setup; the
-host-native `linux/arm64` run still validates the Linux toolchain and loader
-boundaries.
+On Apple Silicon, this is a best-effort Rosetta-emulated check. Zig's x86_64
+`translate-c` helper can currently fail in Rosetta with `bss_size overflow`,
+even when Docker has sufficient memory. Use the host-native `linux/arm64` run
+for the supported local contract; CI's native GitHub Ubuntu runner is the
+authoritative `linux/amd64` gate. The ARM run still validates the Linux
+toolchain and loader boundaries.

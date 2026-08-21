@@ -12,6 +12,17 @@ else
     esac
 fi
 
+if [[ "${PLATFORM}" == "linux/amd64" ]] && [[ "$(uname -s)" == "Darwin" ]] && [[ "$(uname -m)" == "arm64" ]]; then
+    cat >&2 <<'WARNING'
+warning: running linux/amd64 through Docker emulation on Apple Silicon
+
+This is a best-effort local check. Some Zig workloads can fail in Rosetta with
+"bss_size overflow" before Moonstone runs. The host-native linux/arm64 mode is
+the supported local contract; GitHub's native Ubuntu job remains authoritative
+for linux/amd64 validation.
+WARNING
+fi
+
 usage() {
     cat <<'USAGE'
 Usage: scripts/ci/run-linux.sh [luv|native-rocks|all]
