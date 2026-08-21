@@ -161,3 +161,23 @@ Apache 2.0
 ## 🌌 About
 
 Moonstone is an experimental Lua ecosystem manager aiming to bring deterministic builds, version pinning, and global-store efficiency to Lua and LuaJIT — powered entirely by Zig.
+
+### Local Linux CI contracts
+
+Run the Linux-native contract suite before pushing changes that touch runtime
+projection, lock replay, or LuaRocks materialization:
+
+```bash
+# Fast reproduction of the pinned luv CMake ABI contract.
+scripts/ci/run-linux.sh luv
+
+# All pinned upstream native LuaRocks contracts.
+scripts/ci/run-linux.sh native-rocks
+
+# Linux release-certification matrix and LuaRocks compatibility corpus.
+scripts/ci/run-linux.sh all
+```
+
+The wrapper defaults to `linux/amd64`, matching GitHub's Ubuntu runner ABI even
+on Apple Silicon Docker Desktop. For a faster local diagnostic run that does not
+claim GitHub architecture parity, set `MOONSTONE_LINUX_CI_PLATFORM=linux/arm64`.

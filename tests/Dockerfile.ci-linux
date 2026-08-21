@@ -1,0 +1,43 @@
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ZIG_VERSION=0.16.0
+
+# Match the Linux package/toolchain surface exercised by the Build & Test job.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    b3sum \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    file \
+    git \
+    jq \
+    libsqlite3-dev \
+    libssl-dev \
+    lua5.4 \
+    pkg-config \
+    python3 \
+    tar \
+    unzip \
+    xz-utils \
+    zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) zig_target=x86_64-linux ;; \
+        arm64) zig_target=aarch64-linux ;; \
+        *) echo "unsupported Docker architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && zig_url="$(curl --fail --silent --show-error https://ziglang.org/download/index.json | jq -r --arg version "$ZIG_VERSION" --arg target "$zig_target" '.[$version][$target].tarball')" \
+    && test -n "$zig_url" && test "$zig_url" != "null" \
+    && zig_tar="$(basename "$zig_url")" \
+    && zig_dir="${zig_tar%.tar.xz}" \
+    && curl --fail --location --silent --show-error "$zig_url" | tar -xJ -C /usr/local \
+    && ln -s "/usr/local/$zig_dir/zig" /usr/local/bin/zig
+
+WORKDIR /workspace
+COPY . .
+
+ENTRYPOINT ["bash", "tests/docker/run-linux-ci.sh"]
