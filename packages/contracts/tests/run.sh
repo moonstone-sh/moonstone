@@ -7,6 +7,14 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${DIR}/.." && pwd)"
 
+echo "=== Installing locked TypeScript dependencies ==="
+(
+    cd "${ROOT_DIR}"
+    bun install --frozen-lockfile
+)
+echo "TypeScript dependencies: READY"
+echo ""
+
 echo "=== Running TypeScript verification ==="
 (
     cd "${ROOT_DIR}"
