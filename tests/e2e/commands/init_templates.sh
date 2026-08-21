@@ -22,6 +22,7 @@ for T in "${TEMPLATES[@]}"; do
         script)
             [[ -f "${WORKDIR}/src/main.lua" ]]
             [[ -f "${WORKDIR}/.luarc.json" ]]
+            grep -Fq '.moonstone/env/libexec' "${WORKDIR}/.luarc.json"
             ;;
         lib)
             [[ -f "${WORKDIR}/src/my-lib.lua" ]]
@@ -81,6 +82,18 @@ for T in "${TEMPLATES[@]}"; do
     
     rm -rf "${WORKDIR}"
 done
+
+echo "━━━ testing LuaLS runtime-library refresh ━━━"
+LSP_WORKDIR="$(mktemp -d /tmp/moon-test-luarc-runtime.XXXXXX)"
+trap 'rm -rf "${LSP_WORKDIR}"' EXIT
+moon init "${LSP_WORKDIR}" --name "tmp-luarc-runtime-$(date +%s)" --interpreter lua@5.4 --no-sync --no-git
+grep -Fq '.moonstone/env/share/lua/5.4' "${LSP_WORKDIR}/.luarc.json"
+moon -C "${LSP_WORKDIR}" interpreter set luajit@2.1
+grep -Fq '.moonstone/env/share/lua/5.1' "${LSP_WORKDIR}/.luarc.json"
+! grep -Fq '.moonstone/env/share/lua/5.4' "${LSP_WORKDIR}/.luarc.json"
+grep -Fq '.moonstone/env/libexec' "${LSP_WORKDIR}/.luarc.json"
+rm -rf "${LSP_WORKDIR}"
+trap - EXIT
 
 echo "━━━ testing empty project ━━━"
 EMPTY_WORKDIR="/tmp/moon-test-template-empty"

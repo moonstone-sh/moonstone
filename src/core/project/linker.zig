@@ -1675,21 +1675,63 @@ pub fn link_project_env_at(
     try deps_aw.writer.flush();
     try deps_toml_file.writeStreamingAll(io, deps_aw.writer.buffer[0..deps_aw.writer.end]);
 
-    refreshLspConfig(allocator, io, project_root);
+    refreshLspConfig(allocator, io, project_root, lua_ver_dot);
 }
 
-fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.Io.Dir) void {
+fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.Io.Dir, lua_ver_dot: []const u8) void {
     const content = project_root.readFileAlloc(io, ".luarc.json", allocator, std.Io.Limit.limited(1024 * 1024)) catch return;
     defer allocator.free(content);
 
-    const legacy_path = ".moonstone/env/lua/";
-    if (std.mem.indexOf(u8, content, legacy_path) != null) {
-        const migrated = std.mem.replaceOwned(u8, allocator, content, legacy_path, ".moonstone/env/share/lua/") catch return;
-        defer allocator.free(migrated);
+    var updated = allocator.dupe(u8, content) catch return;
+    defer allocator.free(updated);
+    var changed = false;
 
+    const legacy_path = ".moonstone/env/lua/";
+    if (std.mem.indexOf(u8, updated, legacy_path) != null) {
+        const migrated = std.mem.replaceOwned(u8, allocator, updated, legacy_path, ".moonstone/env/share/lua/") catch return;
+        allocator.free(updated);
+        updated = migrated;
+        changed = true;
+    }
+
+    const libexec_ignore_entry = "\".moonstone/env/libexec\"";
+    if (std.mem.indexOf(u8, updated, libexec_ignore_entry) == null) {
+        const include_ignore_entry = "\".moonstone/env/include\",";
+        if (std.mem.indexOf(u8, updated, include_ignore_entry) != null) {
+            const with_libexec_ignored = std.mem.replaceOwned(
+                u8,
+                allocator,
+                updated,
+                include_ignore_entry,
+                "\".moonstone/env/include\",\n      \".moonstone/env/libexec\",",
+            ) catch return;
+            allocator.free(updated);
+            updated = with_libexec_ignored;
+            changed = true;
+        }
+    }
+
+    const managed_path_prefix = ".moonstone/env/share/lua/";
+    const known_lua_versions = [_][]const u8{ "5.1", "5.2", "5.3", "5.4", "5.5" };
+    for (known_lua_versions) |known_version| {
+        if (std.mem.eql(u8, known_version, lua_ver_dot)) continue;
+
+        const old_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ managed_path_prefix, known_version }) catch return;
+        defer allocator.free(old_path);
+        if (std.mem.indexOf(u8, updated, old_path) == null) continue;
+
+        const new_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ managed_path_prefix, lua_ver_dot }) catch return;
+        defer allocator.free(new_path);
+        const migrated = std.mem.replaceOwned(u8, allocator, updated, old_path, new_path) catch return;
+        allocator.free(updated);
+        updated = migrated;
+        changed = true;
+    }
+
+    if (changed) {
         const file = project_root.createFile(io, ".luarc.json", .{}) catch return;
         defer file.close(io);
-        file.writeStreamingAll(io, migrated) catch return;
+        file.writeStreamingAll(io, updated) catch return;
         return;
     }
 

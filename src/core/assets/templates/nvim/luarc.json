@@ -10,6 +10,7 @@
       ".moonstone/env/bin",
       ".moonstone/env/lib",
       ".moonstone/env/include",
+      ".moonstone/env/libexec",
       ".ballad",
       "dist",
       "zig-cache",
