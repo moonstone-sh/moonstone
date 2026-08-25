@@ -29,7 +29,7 @@ RUN zig build -Dtarget=x86_64-windows-gnu -Doptimize=Debug && \
     zig cc -target x86_64-windows-gnu -shared tests/windows/native_probe.c -o /opt/wine-probes/nativeprobe.dll && \
     zig cc -target x86_64-windows-gnu tests/windows/native_probe_main.c -o /opt/wine-probes/native-loader-probe.exe
 
-FROM --platform=linux/amd64 ubuntu:24.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
@@ -40,6 +40,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /moonstone/zig-out/bin/moon.exe /moonstone/zig-out/bin/moon.exe
+COPY --from=build /moonstone/zig-out/bin/moon.pdb /moonstone/zig-out/bin/moon.pdb
 COPY --from=build /moonstone/tests/windows/run-wine.sh /moonstone/tests/windows/run-wine.sh
 COPY --from=build /opt/wine-probes /opt/wine-probes
 

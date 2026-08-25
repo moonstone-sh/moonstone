@@ -46,6 +46,15 @@ wine_run() {
     xvfb-run -a "${WINE_BIN}" "$@"
 }
 
+# Initialize the 64-bit prefix once. Minimal Wine installations can emit a
+# harmless syswow64/rundll32 warning while still creating a valid win64 prefix;
+# retain the log only when initialization genuinely fails.
+wine_boot_log="${prefix_root}/wineboot.log"
+if ! xvfb-run -a wineboot -u >"${wine_boot_log}" 2>&1; then
+    cat "${wine_boot_log}" >&2
+    exit 1
+fi
+
 windows_path() {
     winepath -w "$1"
 }

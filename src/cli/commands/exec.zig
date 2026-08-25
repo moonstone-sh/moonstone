@@ -235,10 +235,13 @@ pub const ExecCommand = struct {
             }
         }
 
+        var prepared_argv = try moonstone.platform.process.prepareArgv(allocator, argv);
+        defer prepared_argv.deinit(allocator);
+
         try stdout.flush();
 
         if (emitter) |e| {
-            try e.emit(io, .STATUS, "exec", "starting", .{ .resolved_argv = argv });
+            try e.emit(io, .STATUS, "exec", "starting", .{ .resolved_argv = prepared_argv.argv });
             try e.terminate(io, name, "executing", .{});
             try stdout.flush();
         }
@@ -248,7 +251,7 @@ pub const ExecCommand = struct {
             // etc.) are delivered directly to the child, avoiding orphaned
             // process trees when the user presses Ctrl+C.
             const err = std.process.replace(io, .{
-                .argv = argv,
+                .argv = prepared_argv.argv,
                 .environ_map = &run_env.env_map,
                 .expand_arg0 = .expand,
             });
@@ -261,7 +264,7 @@ pub const ExecCommand = struct {
         }
 
         var child = std.process.spawn(io, .{
-            .argv = argv,
+            .argv = prepared_argv.argv,
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
         }) catch |err| {

@@ -33,6 +33,7 @@ pub const cache = struct {
 
 pub const platform = struct {
     pub const executable = @import("platform/executable.zig");
+    pub const process = @import("platform/process.zig");
     pub const fs = @import("platform/fs.zig");
     pub const env = @import("platform/env.zig");
     pub const target = @import("platform/target.zig");

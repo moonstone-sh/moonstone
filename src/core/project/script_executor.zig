@@ -9,7 +9,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, manifest: *const manifest_m
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
     if (comptime @import("builtin").os.tag == .windows) {
-        try argv.appendSlice(allocator, &.{ "cmd", "/d", "/s", "/c", script.command });
+        // Use an explicit executable extension so std.process does not search
+        // for command scripts and enter its implicit .cmd/.bat wrapper.
+        try argv.appendSlice(allocator, &.{ "cmd.exe", "/d", "/s", "/c", script.command });
     } else {
         try argv.appendSlice(allocator, &.{ "sh", "-c", script.command, script.name });
     }
