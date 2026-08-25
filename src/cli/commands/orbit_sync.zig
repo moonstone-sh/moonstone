@@ -214,12 +214,14 @@ fn formatChildSyncFailure(
     nested_detail: ?[]const u8,
 ) ![]u8 {
     if (nested_detail) |detail| {
-        return std.fmt.allocPrint(allocator,
+        return std.fmt.allocPrint(
+            allocator,
             "Orbit '{s}' at '{s}' failed to synchronize: {s}",
             .{ orbit_name, orbit_path, detail },
         );
     }
-    return std.fmt.allocPrint(allocator,
+    return std.fmt.allocPrint(
+        allocator,
         "Orbit '{s}' at '{s}' failed to synchronize ({s}).",
         .{ orbit_name, orbit_path, @errorName(err) },
     );
