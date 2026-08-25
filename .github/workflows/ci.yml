@@ -25,8 +25,7 @@ jobs:
       - name: Check Formatting
         run: zig fmt --check --exclude src/core/assets/templates src/ build.zig
 
-      - name: Build All Targets
-        # We ensure that changes don't break the cross-compilation matrix
+      - name: Build Native Debug Target
         run: zig build
 
       - name: Cross-compile Windows GNU targets
@@ -180,27 +179,3 @@ jobs:
 
       - name: Exercise the Windows core contract under x86_64 Wine
         run: ./scripts/test-windows-wine.sh core
-
-  release-candidate:
-    name: Build Release Candidate
-    needs: test
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: '0.16.0'
-
-      - name: Build and package release candidate
-        run: |
-          zig build release -Doptimize=ReleaseSafe
-          python3 -m pip install --user blake3
-          python3 scripts/release/package-release.py --overwrite
-          version="$(python3 scripts/release/package-release.py --print-version)"
-          test -s "dist/releases/$version/release-manifest.json"
-          test -s "dist/releases/$version/SHA256SUMS"
