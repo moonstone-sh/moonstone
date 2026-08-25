@@ -8,7 +8,6 @@ local nvim_runtime = "nvim@" .. nvim_version
 return ballad.partiture(function(p)
   local moonstone = p:use(ballad.plugins.moonstone)
   local nvim = p:use(ballad.plugins.nvim)
-  local registry = p:use(ballad.plugins.registry)
 
   local project = moonstone.project({ root = "." })
 
@@ -25,7 +24,7 @@ return ballad.partiture(function(p)
     }),
   })
 
-  local registry_artifact = registry.package(plugin, {
+  local registry_artifact = moonstone.registry.package(plugin, {
     name = project.registry_name or project.name,
     version = project.version,
     target = "any",

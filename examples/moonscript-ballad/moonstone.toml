@@ -37,7 +37,7 @@ role = "runtime"
 
 [[dependencies]]
 name = "moonstone/ballad"
-constraint = "^0.2.19"
+constraint = "^0.3.5"
 role = "tool"
 
 [[dependencies]]

@@ -68,7 +68,7 @@ moon run export
 Or run Ballad directly via `moon exec`:
 
 ```bash
-moon exec ballad play partiture.lua
+moon exec ballad -- play partiture.lua
 ```
 
 ### 5. Run the Exported Executable

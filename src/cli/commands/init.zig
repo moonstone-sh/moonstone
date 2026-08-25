@@ -509,7 +509,7 @@ pub const init_command = struct {
         } else if (std.mem.eql(u8, template, "nvim")) {
             const module_name = try moduleNameFromProjectName(allocator, final_name);
             defer allocator.free(module_name);
-            try pkg.add_dependency(allocator, "moonstone/ballad", "^0.2", .tool, false);
+            try pkg.add_dependency(allocator, "moonstone/ballad", "^0.3.5", .tool, false);
             const smoke_command = try std.fmt.allocPrint(allocator, "lua require(\"{s}\").setup({{}})", .{module_name});
             defer allocator.free(smoke_command);
             try setScript(&pkg, allocator, "export", "moon exec ballad -- play partiture.lua");

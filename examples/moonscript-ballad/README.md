@@ -20,7 +20,7 @@ moon exec moon src/main.moon
 moon exec moonc -t build src/
 
 # Run Ballad export pipeline
-moon exec ballad play partiture.lua
+moon exec ballad -- play partiture.lua
 ```
 
-For a complete explanation of isolated resolution and command forwarding, see the [MoonScript Coexistence Guide](https://moonstone.sh/docs/guides/moonscript).
+For a complete explanation of isolated resolution and command forwarding, see the [MoonScript Coexistence Guide](https://moonstone.sh/docs/guide/moonscript).

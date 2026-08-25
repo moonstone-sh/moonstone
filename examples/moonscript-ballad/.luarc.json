@@ -9,6 +9,7 @@
       ".moonstone/env/bin",
       ".moonstone/env/lib",
       ".moonstone/env/include",
+      ".moonstone/env/libexec",
       "zig-cache",
       "zig-out",
       ".git"

@@ -424,7 +424,7 @@ Project-local tool:
 
 ```bash
 moon add --tool moonstone/ballad
-moon exec ballad --help
+moon exec ballad -- --help
 ```
 
 Global tool:
@@ -516,7 +516,7 @@ role = "runtime"
 
 [scripts]
 dev = "love ."
-export = "ballad play partiture.lua"
+export = "moon exec ballad -- play partiture.lua"
 ```
 
 Sync and run the normal LÖVE dev loop:
@@ -566,19 +566,28 @@ moon run export
 The generated `partiture.lua` uses Ballad's LÖVE plugin:
 
 ```lua
-local app = love.layout(project, {
-  main = "main.lua",
-  conf = "conf.lua",
-  include = {
-    "main.lua",
-    "conf.lua",
-    "src/**",
-    "assets/**",
-  },
-})
+local ballad = require("ballad")
 
-emit.directory(app, { out = "dist/love-root" })
-love.pack(app, { out = "dist/" .. project.name .. ".love" })
+return ballad.partiture(function(p)
+  local moonstone = p:use(ballad.plugins.moonstone)
+  local love = p:use(ballad.plugins.love)
+  local project = moonstone.project({ root = "." })
+  local app = love.layout(project, {
+    main = "main.lua",
+    conf = "conf.lua",
+    include = {
+      "main.lua",
+      "conf.lua",
+      "src/**",
+      "assets/**",
+    },
+  })
+
+  p.sink.directory(app, { out = "dist/love-root", file_graph = true })
+  p.sink.artifact(love.pack(app, { name = project.name }), {
+    out = "dist/" .. project.name .. ".love",
+  })
+end)
 ```
 
 Development remains `moon run dev`; release packaging is Ballad's job.
