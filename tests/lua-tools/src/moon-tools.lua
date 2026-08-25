@@ -426,6 +426,11 @@ end
 
 local function recipe_hash(info)
   local provides = info.provides
+  local materialize = info.materialize or {}
+  local external_paths = {}
+  for _, path in ipairs(materialize.external_paths or {}) do
+    external_paths[#external_paths + 1] = table.concat({ path.dependency, path.variable, path.kind }, ":")
+  end
   local canonical = table.concat({
     "schema=moonstone.recipe.v0",
     "kind=prebuilt-artifact",
@@ -440,6 +445,8 @@ local function recipe_hash(info)
     "runtime=" .. (info.runtime or ""),
     "runtime_artifact_hash=" .. (info.runtime_artifact_hash or ""),
     "strip_components=" .. tostring(info.strip_components),
+    "external_paths=" .. table.concat(external_paths, ","),
+    "ldflags=" .. table.concat(materialize.ldflags or {}, ","),
     "provides=" .. inline_array(provides.runtime) .. inline_array(provides.bin) .. inline_array(provides.headers) .. inline_array(provides.native_lib) .. inline_array(provides.lua_module) .. inline_array(provides.lua_cmodule),
   }, "\n")
   return b3_data(canonical)
@@ -548,7 +555,7 @@ int luaopen_synthetic_cmodule(lua_State *L) { lua_newtable(L); lua_pushcfunction
   local path = join(output_dir, artifact_name)
   create_tar_gz({ ["synthetic_cmodule.c"] = src }, path)
   local hash = b3_file(path)
-  return { name = "synthetic-cmodule", version = "0.1.0", kind = "lib", description = "Synthetic C module for testing materialization", source_hash = hash, artifact_hash = hash, artifact_path = path, artifact_name = artifact_name, artifact_bytes = filesize(path), runtimes = { "lua@5.4.7" }, lua_api = "lua-5.4", lua_abi = "lua-5.4", runtime = "lua@5.4.7", runtime_artifact_hash = "", target = "source", strip_components = 0, materialize = { kind = "native-cmodule" }, provides = { runtime = {}, bin = {}, headers = {}, native_lib = {}, lua_module = {}, lua_cmodule = { { name = "synthetic_cmodule.so", path = "synthetic_cmodule.so" } } } }
+  return { name = "synthetic-cmodule", version = "0.1.0", kind = "lib", description = "Synthetic C module for testing materialization", source_hash = hash, artifact_hash = hash, artifact_path = path, artifact_name = artifact_name, artifact_bytes = filesize(path), runtimes = { "lua@5.4.7" }, lua_api = "lua-5.4", lua_abi = "lua-5.4", runtime = "lua@5.4.7", runtime_artifact_hash = "", target = "source", strip_components = 0, materialize = { kind = "native-cmodule", external_paths = { { dependency = "SYNTHETIC_SDK", variable = "SYNTHETIC_SDK_INCDIR", kind = "include" } }, ldflags = { "-I$(SYNTHETIC_SDK_INCDIR)" } }, provides = { runtime = {}, bin = {}, headers = {}, native_lib = {}, lua_module = {}, lua_cmodule = { { name = "synthetic_cmodule.so", path = "synthetic_cmodule.so" } } } }
 end
 
 local function build_synthetic_make(output_dir)
@@ -616,16 +623,26 @@ local function write_descriptor(path, info)
   }
   if info.runtime_artifact_hash ~= "" then lines[#lines + 1] = 'runtime_artifact_hash = "' .. info.runtime_artifact_hash .. '"'; lines[#lines + 1] = "" end
   if info.materialize then
+    local function append_external_materialize_fields()
+      if info.materialize.external_paths then
+        local paths = {}
+        for _, external_path in ipairs(info.materialize.external_paths) do
+          paths[#paths + 1] = string.format('{ dependency = "%s", variable = "%s", kind = "%s" }', external_path.dependency, external_path.variable, external_path.kind)
+        end
+        lines[#lines + 1] = "external_paths = [" .. table.concat(paths, ", ") .. "]"
+      end
+      if info.materialize.ldflags then lines[#lines + 1] = "ldflags = " .. toml_array(info.materialize.ldflags) end
+    end
     if info.materialize.lua_runtime then
-      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "command"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = ""
+      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "command"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; append_external_materialize_fields(); lines[#lines + 1] = ""
       lines[#lines + 1] = "[[artifacts.materialize.steps]]"; lines[#lines + 1] = 'command = "make"'; lines[#lines + 1] = 'args = ["generic", "CC=zig cc", "MYCFLAGS=-fPIC -DLUA_USE_POSIX -DLUA_USE_DLOPEN", "MYLDFLAGS=-Wl,-E", "MYLIBS=-lm -ldl"]'; lines[#lines + 1] = ""
       lines[#lines + 1] = "[artifacts.materialize.collect]"; lines[#lines + 1] = 'bins = [{ name = "bin/lua", path = "${source}/src/lua" }, { name = "bin/luac", path = "${source}/src/luac" }]'; lines[#lines + 1] = 'headers = [{ name = "include/lua.h", path = "${source}/src/lua.h" }, { name = "include/luaconf.h", path = "${source}/src/luaconf.h" }, { name = "include/lualib.h", path = "${source}/src/lualib.h" }, { name = "include/lauxlib.h", path = "${source}/src/lauxlib.h" }, { name = "include/lua.hpp", path = "${source}/src/lua.hpp" }]'; lines[#lines + 1] = 'native_lib = [{ name = "lib/liblua.a", path = "${source}/src/liblua.a" }]'; lines[#lines + 1] = ""
     elseif info.materialize.kind == "native-cmodule" then
-      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "native_cmodule"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = 'strategy = "zig-cc"'; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.input]"; lines[#lines + 1] = 'sources = ["synthetic_cmodule.c"]'; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.output]"; lines[#lines + 1] = 'module = "synthetic_cmodule"'; lines[#lines + 1] = 'path = "synthetic_cmodule.so"'; lines[#lines + 1] = ""
+      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "native_cmodule"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = 'strategy = "zig-cc"'; append_external_materialize_fields(); lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.input]"; lines[#lines + 1] = 'sources = ["synthetic_cmodule.c"]'; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.output]"; lines[#lines + 1] = 'module = "synthetic_cmodule"'; lines[#lines + 1] = 'path = "synthetic_cmodule.so"'; lines[#lines + 1] = ""
     elseif info.materialize.make then
-      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "command"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = 'command = "make"'; lines[#lines + 1] = 'args = ["install", "PREFIX=${out}"]'; lines[#lines + 1] = "[artifacts.materialize.env]"; lines[#lines + 1] = 'LUA_INCDIR = "${runtime.include}"'; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.collect]"; lines[#lines + 1] = 'lua_cmodules = [{ name = "synthetic_make_module.so", path = "${out}/synthetic_make_module.so" }]'; lines[#lines + 1] = ""
+      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "command"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = 'command = "make"'; lines[#lines + 1] = 'args = ["install", "PREFIX=${out}"]'; append_external_materialize_fields(); lines[#lines + 1] = "[artifacts.materialize.env]"; lines[#lines + 1] = 'LUA_INCDIR = "${runtime.include}"'; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.collect]"; lines[#lines + 1] = 'lua_cmodules = [{ name = "synthetic_make_module.so", path = "${out}/synthetic_make_module.so" }]'; lines[#lines + 1] = ""
     elseif info.materialize.kind == "cmake" then
-      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "cmake"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.collect]"; lines[#lines + 1] = 'lua_cmodules = [{ name = "synthetic_cmake_module.so", path = "${build}/synthetic_cmake_module.so" }]'; lines[#lines + 1] = ""
+      lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "cmake"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; append_external_materialize_fields(); lines[#lines + 1] = ""; lines[#lines + 1] = "[artifacts.materialize.collect]"; lines[#lines + 1] = 'lua_cmodules = [{ name = "synthetic_cmake_module.so", path = "${build}/synthetic_cmake_module.so" }]'; lines[#lines + 1] = ""
     end
   else
     lines[#lines + 1] = "[artifacts.materialize]"; lines[#lines + 1] = 'type = "archive"'; lines[#lines + 1] = "strip_components = " .. info.strip_components; lines[#lines + 1] = ""

@@ -73,6 +73,18 @@ It reports a skip rather than pretending cross-compilation is native Windows
 execution. Add macOS or Linux platform runners only when they own an actual
 platform-specific contract.
 
+For a local Windows smoke test on macOS or Linux, Docker can run the x86_64
+Windows executable under Wine:
+
+```bash
+scripts/test-windows-wine.sh core
+```
+
+The harness uses a native build stage and an emulated `linux/amd64` Wine stage,
+so it also works on Apple Silicon. It covers the Windows command-line,
+environment projection, extensionless launcher resolution, and DLL loader
+boundary; native Windows CI remains the authority for Windows itself.
+
 ## Local-only experiments
 
 `tests/local/` contains templates and documentation for personal machine

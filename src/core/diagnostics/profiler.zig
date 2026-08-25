@@ -35,12 +35,27 @@ fn timestampNs() i64 {
         var frequency: std.os.windows.LARGE_INTEGER = 0;
         if (!std.os.windows.ntdll.RtlQueryPerformanceCounter(&counter).toBool()) return 0;
         if (!std.os.windows.ntdll.RtlQueryPerformanceFrequency(&frequency).toBool() or frequency == 0) return 0;
-        return @divTrunc(counter * 1_000_000_000, frequency);
+        return scalePerformanceCounterNs(counter, frequency);
     } else {
         var ts: std.c.timespec = undefined;
         if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
         return (@as(i64, ts.sec) * 1_000_000_000) + @as(i64, ts.nsec);
     }
+}
+
+/// QueryPerformanceCounter values can be large enough that multiplying by one
+/// billion overflows i64 before the frequency division. Perform the conversion
+/// in i128 so profiling initialization is safe on long-running Windows hosts.
+fn scalePerformanceCounterNs(counter: i64, frequency: i64) i64 {
+    const nanoseconds: i128 = @divTrunc(@as(i128, counter) * std.time.ns_per_s, @as(i128, frequency));
+    return std.math.cast(i64, nanoseconds) orelse std.math.maxInt(i64);
+}
+
+test "performance counter scaling avoids intermediate overflow" {
+    try std.testing.expectEqual(
+        @as(i64, 10 * std.time.ns_per_s),
+        scalePerformanceCounterNs(10 * std.time.ns_per_s, std.time.ns_per_s),
+    );
 }
 
 pub fn mark(comptime label: []const u8) void {

@@ -55,7 +55,8 @@ pub const RunCommand = struct {
         const stdout = ctx.stdout;
         const env = ctx.env;
 
-        const project_root = try moonstone.project.discovery.enterRoot(allocator, io, ".");
+        const start_path = ctx.working_directory orelse ".";
+        const project_root = try moonstone.project.discovery.enterRoot(allocator, io, start_path);
         defer project_root.deinit(allocator);
 
         var emitter_obj = if (self.json) ndjson.Emitter.init(allocator, stdout, name) else null;
@@ -93,7 +94,10 @@ pub const RunCommand = struct {
             try stdout.print("> {s}\n\n", .{s_name});
         }
 
-        var run_env = try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
+        var run_env = if (ctx.working_directory != null)
+            try moonstone.project.run_env.get_run_env_at_root(allocator, io, project_root.path, env)
+        else
+            try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
         defer run_env.deinit();
 
         const result = moonstone.project.script_executor.run(allocator, io, &mt, s_name, script_args, .{

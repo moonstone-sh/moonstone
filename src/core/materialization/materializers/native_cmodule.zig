@@ -108,8 +108,8 @@ fn append_external_path_flag(
     }
 
     const variable_name = value_reference[2 .. value_reference.len - 1];
-    const value = env_map.get(variable_name) orelse return error.LuaRocksExternalDependencyPathRequired;
-    if (value.len == 0) return error.LuaRocksExternalDependencyPathRequired;
+    const value = env_map.get(variable_name) orelse return error.ExternalDependencyPathRequired;
+    if (value.len == 0) return error.ExternalDependencyPathRequired;
 
     const expanded = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, value });
     errdefer allocator.free(expanded);
@@ -131,7 +131,7 @@ test "native C modules require declared external path variables" {
     }
 
     try std.testing.expectError(
-        error.LuaRocksExternalDependencyPathRequired,
+        error.ExternalDependencyPathRequired,
         append_external_path_flag(allocator, &env, &argv, &owned_flags, "-I$(SQLITE_INCDIR)"),
     );
 

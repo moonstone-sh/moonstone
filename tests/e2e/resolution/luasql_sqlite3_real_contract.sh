@@ -111,10 +111,31 @@ done
 curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 
 cd "${TEST_APP}"
-printf '━━━ materialize pinned LuaSQL SQLite3 native module ━━━\n'
+printf '━━━ report missing external SQLite paths before materialization ━━━\n'
 moon init . --name real-luasql-sqlite3-contract --no-git
 moon interpreter set lua@5.4
-moon add "rocks:${PACKAGE}@${VERSION}"
+MISSING_PATHS_LOG="${WORKDIR}/missing-external-paths.log"
+if env -u SQLITE_INCDIR -u SQLITE_LIBDIR moon add "rocks:${PACKAGE}@${VERSION}" >"${MISSING_PATHS_LOG}" 2>&1; then
+    echo "ERROR: LuaSQL SQLite3 unexpectedly materialized without its declared external paths"
+    exit 1
+fi
+grep -Fq 'Package luasql-sqlite3@2.8.0-1 requires external development files.' "${MISSING_PATHS_LOG}"
+grep -Fq 'SQLITE_INCDIR — include directory (headers)' "${MISSING_PATHS_LOG}"
+grep -Fq 'SQLITE_LIBDIR — library directory' "${MISSING_PATHS_LOG}"
+
+MISSING_PATHS_JSON_LOG="${WORKDIR}/missing-external-paths.ndjson"
+if env -u SQLITE_INCDIR -u SQLITE_LIBDIR moon sync --json >"${MISSING_PATHS_JSON_LOG}" 2>&1; then
+    echo "ERROR: JSON sync unexpectedly materialized LuaSQL SQLite3 without its declared external paths"
+    exit 1
+fi
+grep -Eq '"kind"[[:space:]]*:[[:space:]]*"external_dependency_paths"' "${MISSING_PATHS_JSON_LOG}"
+grep -Eq '"package"[[:space:]]*:[[:space:]]*"luasql-sqlite3"' "${MISSING_PATHS_JSON_LOG}"
+grep -Eq '"variable"[[:space:]]*:[[:space:]]*"SQLITE_INCDIR"' "${MISSING_PATHS_JSON_LOG}"
+grep -Eq '"variable"[[:space:]]*:[[:space:]]*"SQLITE_LIBDIR"' "${MISSING_PATHS_JSON_LOG}"
+
+printf '━━━ materialize pinned LuaSQL SQLite3 native module ━━━\n'
+export SQLITE_INCDIR SQLITE_LIBDIR
+moon sync
 
 # Lock replay must use the exact mirror URLs rather than reconstructing a
 # rockspec name from LuaRocks' display casing.

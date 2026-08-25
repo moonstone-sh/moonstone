@@ -32,6 +32,28 @@ pub fn get_run_env(
     start_path: []const u8,
     base_env: *std.process.Environ.Map,
 ) !RunEnv {
+    return getRunEnv(allocator, io, start_path, base_env, false);
+}
+
+/// Like `get_run_env`, but `start_path` has already been resolved by the
+/// caller and must not be reinterpreted relative to the process cwd. Project
+/// root discovery still walks upward, so `-C` may name a nested directory.
+pub fn get_run_env_at_root(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    start_path: []const u8,
+    base_env: *std.process.Environ.Map,
+) !RunEnv {
+    return getRunEnv(allocator, io, start_path, base_env, true);
+}
+
+fn getRunEnv(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    start_path: []const u8,
+    base_env: *std.process.Environ.Map,
+    start_path_is_resolved: bool,
+) !RunEnv {
     const platform_fs = @import("../platform/fs.zig");
     const paths = try platform_fs.resolve_moonstone(allocator, base_env, io);
     defer {
@@ -40,45 +62,34 @@ pub fn get_run_env(
     }
 
     // 1. Search for project root (upwards)
-    const search_path = try std.Io.Dir.cwd().realPathFileAlloc(io, start_path, allocator);
+    const search_path = if (start_path_is_resolved or std.fs.path.isAbsolute(start_path))
+        try allocator.dupe(u8, start_path)
+    else
+        try std.Io.Dir.cwd().realPathFileAlloc(io, start_path, allocator);
     defer allocator.free(search_path);
 
     var project_root: ?[]const u8 = null;
     var current_path = try allocator.dupe(u8, search_path);
     defer allocator.free(current_path);
 
-    while (true) {
-        var dir = std.Io.Dir.openDirAbsolute(io, current_path, .{ .iterate = true }) catch break;
-
-        var is_project = false;
-        if (dir.access(io, ".moonstone", .{})) |_| {
-            // Further verify it's a valid project environment
-            const env_toml_path = try std.fs.path.join(allocator, &.{ current_path, ".moonstone", "env", "env.toml" });
-            defer allocator.free(env_toml_path);
-            if (std.Io.Dir.cwd().access(io, env_toml_path, .{})) |_| {
-                is_project = true;
-            } else |_| {}
-        } else |_| {}
-
-        if (is_project) {
-            dir.close(io);
+    while (project_root == null) {
+        const candidate = try std.fs.path.join(allocator, &.{ current_path, ".moonstone", "env", "env.toml" });
+        defer allocator.free(candidate);
+        if (try platform_fs.fileExistsAbsolute(io, candidate)) {
             project_root = try allocator.dupe(u8, current_path);
             break;
         }
 
         const parent = std.fs.path.dirname(current_path) orelse {
-            dir.close(io);
             break;
         };
         if (std.mem.eql(u8, parent, current_path)) {
-            dir.close(io);
             break;
         }
 
         const next = try allocator.dupe(u8, parent);
         allocator.free(current_path);
         current_path = next;
-        dir.close(io);
     }
     defer if (project_root) |pr| allocator.free(pr);
 
@@ -87,7 +98,7 @@ pub fn get_run_env(
         const env_toml_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "env.toml" });
         defer allocator.free(env_toml_path);
 
-        const content = std.Io.Dir.cwd().readFileAlloc(io, env_toml_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| blk: {
+        const content = platform_fs.readFileAbsolute(allocator, io, env_toml_path, 1024 * 1024) catch |err| blk: {
             if (err == error.FileNotFound) break :blk null;
             return err;
         };

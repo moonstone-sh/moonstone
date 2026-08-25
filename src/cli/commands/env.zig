@@ -66,7 +66,10 @@ pub const EnvCommand = struct {
         const stdout = ctx.stdout;
         const env = ctx.env;
 
-        var run_env = try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
+        var run_env = if (ctx.working_directory) |project_root|
+            try moonstone.project.run_env.get_run_env_at_root(allocator, io, project_root, env)
+        else
+            try moonstone.project.run_env.get_run_env(allocator, io, ".", env);
         defer run_env.deinit();
 
         if (self.json) {

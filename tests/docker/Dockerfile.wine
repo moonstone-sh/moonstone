@@ -1,0 +1,46 @@
+ARG BUILDPLATFORM
+
+FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS build
+
+ARG ZIG_VERSION=0.16.0
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl jq tar xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN arch="$(dpkg --print-architecture)" && \
+    case "${arch}" in \
+        amd64) zig_arch="x86_64" ;; \
+        arm64) zig_arch="aarch64" ;; \
+        *) echo "unsupported builder architecture: ${arch}" >&2; exit 1 ;; \
+    esac && \
+    zig_url="$(curl -fsSL https://ziglang.org/download/index.json | jq -r --arg version "${ZIG_VERSION}" --arg target "${zig_arch}-linux" '.[$version][$target].tarball')" && \
+    zig_tar="$(basename "${zig_url}")" && \
+    zig_dir="${zig_tar%.tar.xz}" && \
+    curl -fsSL "${zig_url}" | tar -xJ -C /usr/local && \
+    mv "/usr/local/${zig_dir}" /opt/zig && \
+    ln -s /opt/zig/zig /usr/local/bin/zig
+
+WORKDIR /moonstone
+COPY . /moonstone
+RUN zig build -Dtarget=x86_64-windows-gnu -Doptimize=Debug && \
+    mkdir -p /opt/wine-probes && \
+    zig cc -target x86_64-windows-gnu -shared tests/windows/native_probe.c -o /opt/wine-probes/nativeprobe.dll && \
+    zig cc -target x86_64-windows-gnu tests/windows/native_probe_main.c -o /opt/wine-probes/native-loader-probe.exe
+
+FROM --platform=linux/amd64 ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WINEDEBUG=-all
+ENV WINEDLLOVERRIDES="mscoree,mshtml="
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wine wine64 xvfb && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /moonstone/zig-out/bin/moon.exe /moonstone/zig-out/bin/moon.exe
+COPY --from=build /moonstone/tests/windows/run-wine.sh /moonstone/tests/windows/run-wine.sh
+COPY --from=build /opt/wine-probes /opt/wine-probes
+
+ENTRYPOINT ["/moonstone/tests/windows/run-wine.sh"]

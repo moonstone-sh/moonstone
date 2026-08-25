@@ -146,6 +146,7 @@ fn createMoonExecutable(
         .file = b.path("src/core/platform/sqlite_helper.c"),
         .flags = &.{},
     });
+    if (target.result.os.tag == .windows) exe.root_module.addCSourceFile(.{ .file = b.path("src/core/platform/windows_file.c"), .flags = &.{} });
 
     return exe;
 }
@@ -193,6 +194,7 @@ fn createMoonTest(
             "-DSQLITE_ENABLE_JSON1",
         },
     });
+    if (target.result.os.tag == .windows) t.root_module.addCSourceFile(.{ .file = b.path("src/core/platform/windows_file.c"), .flags = &.{} });
     t.root_module.addIncludePath(b.path("vendor/sqlite"));
     t.root_module.addCSourceFile(.{
         .file = b.path("src/core/platform/sqlite_helper.c"),

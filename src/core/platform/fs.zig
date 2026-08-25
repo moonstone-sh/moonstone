@@ -1,7 +1,70 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const toml = @import("toml");
 const env_utils = @import("env.zig");
 const build_options = @import("build_options");
+
+extern "kernel32" fn SetCurrentDirectoryW(path: [*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
+extern fn moonstone_file_exists_w(path: [*:0]const u16, out_error: *u32) c_int;
+extern fn moonstone_read_file_w(path: [*:0]const u16, out_bytes: *?[*]u8, out_len: *usize, limit: usize, out_error: *u32) c_int;
+extern fn moonstone_free_file_w(bytes: [*]u8) void;
+
+/// Changes the process directory using Kernel32 on Windows. Zig 0.16's
+/// RtlSetCurrentDirectory path is rejected by Wine, while this public Win32
+/// API has the same native Windows semantics.
+pub fn setCurrentPath(io: std.Io, path: []const u8) !void {
+    if (comptime builtin.os.tag != .windows) return std.process.setCurrentPath(io, path);
+
+    var path_w: [std.os.windows.PATH_MAX_WIDE:0]u16 = undefined;
+    const len = try std.unicode.wtf8ToWtf16Le(&path_w, path);
+    path_w[len] = 0;
+    if (!SetCurrentDirectoryW(&path_w).toBool()) return error.FileNotFound;
+}
+
+/// Checks an absolute file path through Win32 only in Windows binaries.
+pub fn fileExistsAbsolute(io: std.Io, path: []const u8) !bool {
+    if (comptime builtin.os.tag != .windows) {
+        std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        return true;
+    }
+
+    var path_w: [std.os.windows.PATH_MAX_WIDE:0]u16 = undefined;
+    const path_len = try std.unicode.wtf8ToWtf16Le(&path_w, path);
+    path_w[path_len] = 0;
+    var win_error: u32 = 0;
+    if (moonstone_file_exists_w(&path_w, &win_error) != 0) return true;
+    return switch (win_error) {
+        2, 3 => false,
+        5 => error.AccessDenied,
+        else => error.Unexpected,
+    };
+}
+
+/// Reads an absolute file through Win32 only in Windows binaries. This avoids
+/// the Wine-incompatible Io.Dir absolute-path path while other targets retain
+/// the normal Zig implementation.
+pub fn readFileAbsolute(allocator: std.mem.Allocator, io: std.Io, path: []const u8, limit: usize) ![]u8 {
+    if (comptime builtin.os.tag != .windows)
+        return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(limit));
+
+    var path_w: [std.os.windows.PATH_MAX_WIDE:0]u16 = undefined;
+    const path_len = try std.unicode.wtf8ToWtf16Le(&path_w, path);
+    path_w[path_len] = 0;
+    var bytes: ?[*]u8 = null;
+    var bytes_len: usize = 0;
+    var win_error: u32 = 0;
+    if (moonstone_read_file_w(&path_w, &bytes, &bytes_len, limit, &win_error) == 0) switch (win_error) {
+        2, 3 => return error.FileNotFound,
+        5 => return error.AccessDenied,
+        223 => return error.FileTooBig,
+        else => return error.Unexpected,
+    };
+    defer moonstone_free_file_w(bytes.?);
+    return try allocator.dupe(u8, bytes.?[0..bytes_len]);
+}
 
 pub fn copyTreeAbsolute(
     allocator: std.mem.Allocator,
@@ -128,7 +191,10 @@ pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ
     } else null;
     defer if (res) |r| r.deinit();
 
-    const HOME = env.get("HOME") orelse return error.EnvNoHome;
+    const HOME = env.get("HOME") orelse if (comptime builtin.os.tag == .windows)
+        (env.get("USERPROFILE") orelse return error.EnvNoHome)
+    else
+        return error.EnvNoHome;
 
     const VERSION = build_options.version;
     const MAJOR = VERSION[0];

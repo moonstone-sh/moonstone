@@ -39,6 +39,6 @@ pub fn findRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8
 pub fn enterRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8) !ProjectRoot {
     const root = try findRoot(allocator, io, start_path);
     errdefer root.deinit(allocator);
-    try std.process.setCurrentPath(io, root.path);
+    try @import("../platform/fs.zig").setCurrentPath(io, root.path);
     return root;
 }

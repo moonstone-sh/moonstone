@@ -8,6 +8,7 @@ const store = @import("../../store.zig");
 const driver_mod = @import("../../store/driver.zig");
 const hash = @import("../../identity/hash.zig");
 const luarocks = @import("../../luarocks/rockspec.zig");
+const external_dependency = @import("../../materialization/external_input.zig");
 const luarocks_compat = @import("../../luarocks/compat.zig");
 const luarocks_patch = @import("../../luarocks/patch.zig");
 const manifest_cache_mod = @import("../../cache/manifest_cache.zig");
@@ -744,7 +745,7 @@ fn translateCommandBuild(
     }
 
     const cmake_definitions = if (is_cmake)
-        try translate_cmake_variables(allocator, rock.build.variables, env_map)
+        try translate_cmake_variables(allocator, rock, rock.build.variables, env_map)
     else
         &.{};
 
@@ -898,11 +899,146 @@ fn declared_external_path_value(
     const dependency_name = variable[0 .. variable.len - suffix.len];
     const dependencies = rock.external_dependencies orelse return error.UnsupportedLuaRocksMakeVariable;
     if (dependencies != .object or dependencies.object.get(dependency_name) == null) return error.UnsupportedLuaRocksMakeVariable;
-    return env_map.get(variable) orelse return error.LuaRocksExternalDependencyPathRequired;
+    return env_map.get(variable) orelse return error.ExternalDependencyPathRequired;
+}
+
+fn external_path_requirement(rock: *const luarocks.RockspecIntent, variable: []const u8) ?struct { dependency: []const u8, kind: external_dependency.PathKind } {
+    const suffix, const kind: external_dependency.PathKind = if (std.mem.endsWith(u8, variable, "_INCDIR"))
+        .{ "_INCDIR", .include }
+    else if (std.mem.endsWith(u8, variable, "_LIBDIR"))
+        .{ "_LIBDIR", .library }
+    else
+        return null;
+    const dependencies = rock.external_dependencies orelse return null;
+    if (dependencies != .object) return null;
+    const dependency = variable[0 .. variable.len - suffix.len];
+    if (dependencies.object.get(dependency) == null) return null;
+    return .{ .dependency = dependency, .kind = kind };
+}
+
+fn append_external_path_requirement(
+    allocator: std.mem.Allocator,
+    rock: *const luarocks.RockspecIntent,
+    variable: []const u8,
+    requirements: *std.ArrayList(external_dependency.Requirement),
+) !void {
+    const parsed = external_path_requirement(rock, variable) orelse return;
+    for (requirements.items) |existing| {
+        if (std.mem.eql(u8, existing.variable, variable)) return;
+    }
+    const dependency = try allocator.dupe(u8, parsed.dependency);
+    errdefer allocator.free(dependency);
+    const owned_variable = try allocator.dupe(u8, variable);
+    errdefer allocator.free(owned_variable);
+    try requirements.append(allocator, .{
+        .dependency = dependency,
+        .variable = owned_variable,
+        .kind = parsed.kind,
+    });
+}
+
+fn append_external_path_requirements_from_string(
+    allocator: std.mem.Allocator,
+    rock: *const luarocks.RockspecIntent,
+    text: []const u8,
+    requirements: *std.ArrayList(external_dependency.Requirement),
+) !void {
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, text, offset, "$(")) |start| {
+        const suffix = text[start + 2 ..];
+        const close_offset = std.mem.indexOfScalar(u8, suffix, ')') orelse break;
+        const variable = suffix[0..close_offset];
+        offset = start + 3 + close_offset;
+        try append_external_path_requirement(allocator, rock, variable, requirements);
+    }
+}
+
+fn append_external_path_requirements_from_map(
+    allocator: std.mem.Allocator,
+    rock: *const luarocks.RockspecIntent,
+    value: ?std.json.Value,
+    requirements: *std.ArrayList(external_dependency.Requirement),
+) !void {
+    const variables = value orelse return;
+    if (variables != .object) return;
+    var iterator = variables.object.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.* == .string) {
+            try append_external_path_requirements_from_string(allocator, rock, entry.value_ptr.*.string, requirements);
+        }
+    }
+}
+
+fn collect_external_path_requirements(
+    allocator: std.mem.Allocator,
+    rock: *const luarocks.RockspecIntent,
+    class: RockClass,
+    translated: []const TranslatedModule,
+) ![]const external_dependency.Requirement {
+    var requirements = std.ArrayList(external_dependency.Requirement).empty;
+    errdefer {
+        for (requirements.items) |requirement| requirement.deinit(allocator);
+        requirements.deinit(allocator);
+    }
+
+    if (class == .builtin_cmodule) {
+        for (translated) |module| {
+            const config = module.config orelse continue;
+            for (config.args) |flag| if (external_path_variable(flag)) |variable| try append_external_path_requirement(allocator, rock, variable, &requirements);
+            for (config.ldflags) |flag| if (external_path_variable(flag)) |variable| try append_external_path_requirement(allocator, rock, variable, &requirements);
+        }
+    } else if (class == .command_build) {
+        const build_type = rock_build_type(rock);
+        if (std.mem.eql(u8, build_type, "make")) {
+            try append_external_path_requirements_from_map(allocator, rock, rock.build.build_variables, &requirements);
+            try append_external_path_requirements_from_map(allocator, rock, rock.build.install_variables, &requirements);
+        } else if (std.mem.eql(u8, build_type, "cmake")) {
+            try append_external_path_requirements_from_map(allocator, rock, rock.build.variables, &requirements);
+        }
+    }
+
+    std.mem.sort(external_dependency.Requirement, requirements.items, {}, struct {
+        fn lessThan(_: void, left: external_dependency.Requirement, right: external_dependency.Requirement) bool {
+            return std.mem.lessThan(u8, left.variable, right.variable);
+        }
+    }.lessThan);
+    return requirements.toOwnedSlice(allocator);
+}
+
+test "external path requirements follow supported Make fields only" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(luarocks.RockspecIntent, allocator,
+        \\{
+        \\  "schema": "moonstone:luarocks-intent:v1",
+        \\  "platform": "unix",
+        \\  "rockspec_format": "3.0",
+        \\  "source": {},
+        \\  "external_dependencies": { "FROB": {}, "BOGUS": {} },
+        \\  "build": {
+        \\    "type": "make",
+        \\    "build_variables": { "CFLAGS": "-I$(FROB_INCDIR)" },
+        \\    "install_variables": { "LDFLAGS": "-L$(FROB_LIBDIR)" }
+        \\  },
+        \\  "build_declaration": {
+        \\    "ignored_field": "$(BOGUS_INCDIR)",
+        \\    "another_ignored_field": "$(FROB_OTHERDIR)"
+        \\  }
+        \\}
+    , .{});
+    defer parsed.deinit();
+
+    const requirements = try collect_external_path_requirements(allocator, &parsed.value, .command_build, &.{});
+    defer external_dependency.deinitRequirements(allocator, requirements);
+    try std.testing.expectEqual(@as(usize, 2), requirements.len);
+    try std.testing.expectEqualStrings("FROB_INCDIR", requirements[0].variable);
+    try std.testing.expectEqual(external_dependency.PathKind.include, requirements[0].kind);
+    try std.testing.expectEqualStrings("FROB_LIBDIR", requirements[1].variable);
+    try std.testing.expectEqual(external_dependency.PathKind.library, requirements[1].kind);
 }
 
 fn translate_cmake_variables(
     allocator: std.mem.Allocator,
+    rock: ?*const luarocks.RockspecIntent,
     variables: ?std.json.Value,
     env_map: *const std.process.Environ.Map,
 ) ![]const []const u8 {
@@ -929,7 +1065,7 @@ fn translate_cmake_variables(
     }
     for (keys.items) |key| {
         const raw_value = value.object.get(key).?.string;
-        const expanded = try expand_luarocks_cmake_value(allocator, raw_value, env_map);
+        const expanded = try expand_luarocks_cmake_value(allocator, rock, raw_value, env_map);
         defer allocator.free(expanded);
         try definitions.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}={s}", .{ key, expanded }));
     }
@@ -938,6 +1074,7 @@ fn translate_cmake_variables(
 
 fn expand_luarocks_cmake_value(
     allocator: std.mem.Allocator,
+    rock: ?*const luarocks.RockspecIntent,
     raw_value: []const u8,
     env_map: *const std.process.Environ.Map,
 ) ![]const u8 {
@@ -961,7 +1098,19 @@ fn expand_luarocks_cmake_value(
         allocator.free(result);
         result = next;
     }
-    if (std.mem.indexOf(u8, result, "$(") != null) return error.UnsupportedLuaRocksCMakeVariable;
+    while (std.mem.indexOf(u8, result, "$(")) |start| {
+        const suffix = result[start + 2 ..];
+        const close_offset = std.mem.indexOfScalar(u8, suffix, ')') orelse return error.UnsupportedLuaRocksCMakeVariable;
+        const variable = suffix[0..close_offset];
+        const external_value = declared_external_path_value(rock orelse return error.UnsupportedLuaRocksCMakeVariable, variable, env_map) catch |err| switch (err) {
+            error.UnsupportedLuaRocksMakeVariable => return error.UnsupportedLuaRocksCMakeVariable,
+            else => return err,
+        };
+        const placeholder = result[start .. start + 3 + close_offset];
+        const next = try std.mem.replaceOwned(u8, allocator, result, placeholder, external_value);
+        allocator.free(result);
+        result = next;
+    }
     return result;
 }
 
@@ -981,7 +1130,7 @@ test "LuaRocks CMake variables resolve deterministically without shell expansion
     defer env.deinit();
     try env.put("CFLAGS", "-O2 -fPIC");
 
-    const definitions = try translate_cmake_variables(allocator, parsed.value, &env);
+    const definitions = try translate_cmake_variables(allocator, null, parsed.value, &env);
     defer {
         for (definitions) |definition| allocator.free(definition);
         allocator.free(definitions);
@@ -1000,7 +1149,7 @@ test "LuaRocks CMake variables reject unknown placeholders" {
     defer env.deinit();
     try std.testing.expectError(
         error.UnsupportedLuaRocksCMakeVariable,
-        expand_luarocks_cmake_value(allocator, "$(UNDECLARED_TOOLCHAIN_VALUE)", &env),
+        expand_luarocks_cmake_value(allocator, null, "$(UNDECLARED_TOOLCHAIN_VALUE)", &env),
     );
 }
 
@@ -1084,6 +1233,43 @@ const TranslatedModule = struct {
     config: ?manifest.MaterializeConfig = null,
 };
 
+fn append_owned_env_pair(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(manifest.EnvPair),
+    entry: manifest.EnvPair,
+) !void {
+    const key = try allocator.dupe(u8, entry.key);
+    errdefer allocator.free(key);
+    const value = try allocator.dupe(u8, entry.value);
+    errdefer allocator.free(value);
+    try entries.append(allocator, .{ .key = key, .value = value });
+}
+
+fn append_config_environment(
+    allocator: std.mem.Allocator,
+    config: *manifest.MaterializeConfig,
+    entries: []const manifest.EnvPair,
+) !void {
+    if (entries.len == 0) return;
+    var combined = std.ArrayList(manifest.EnvPair).empty;
+    errdefer {
+        for (combined.items) |entry| {
+            allocator.free(entry.key);
+            allocator.free(entry.value);
+        }
+        combined.deinit(allocator);
+    }
+    for (config.env) |entry| try append_owned_env_pair(allocator, &combined, entry);
+    for (entries) |entry| try append_owned_env_pair(allocator, &combined, entry);
+    const owned = try combined.toOwnedSlice(allocator);
+    for (config.env) |entry| {
+        allocator.free(entry.key);
+        allocator.free(entry.value);
+    }
+    allocator.free(config.env);
+    config.env = owned;
+}
+
 fn deinit_translated_modules(allocator: std.mem.Allocator, translated: []const TranslatedModule) void {
     for (translated) |module| {
         allocator.free(module.name);
@@ -1102,6 +1288,17 @@ fn deinit_translated_modules(allocator: std.mem.Allocator, translated: []const T
             allocator.free(config.args);
             for (config.ldflags) |flag| allocator.free(flag);
             allocator.free(config.ldflags);
+            for (config.steps) |step| {
+                allocator.free(step.command);
+                for (step.args) |arg| allocator.free(arg);
+                allocator.free(step.args);
+            }
+            allocator.free(config.steps);
+            for (config.env) |entry| {
+                allocator.free(entry.key);
+                allocator.free(entry.value);
+            }
+            allocator.free(config.env);
         }
     }
     allocator.free(translated);
@@ -1122,6 +1319,7 @@ pub const PreparedRock = struct {
     fetched_rockspec: FetchedRockspec,
     fetched_source: FetchedSource,
     translated: []const TranslatedModule,
+    external_path_requirements: []const external_dependency.Requirement,
     class: RockClass,
     compatibility_recipe: ?luarocks_compat.AppliedRecipe,
     patch_transform_hash: ?[]const u8,
@@ -1138,8 +1336,17 @@ pub const PreparedRock = struct {
         return self.recipe_hash != null;
     }
 
+    pub fn missingExternalPathRequirements(
+        self: *const PreparedRock,
+        allocator: std.mem.Allocator,
+        env_map: *const std.process.Environ.Map,
+    ) ![]const external_dependency.Requirement {
+        return external_dependency.collectMissing(allocator, self.external_path_requirements, env_map);
+    }
+
     pub fn deinit(self: *PreparedRock) void {
         deinit_translated_modules(self.allocator, self.translated);
+        external_dependency.deinitRequirements(self.allocator, self.external_path_requirements);
         if (self.patch_transform_hash) |patch_transform_hash| self.allocator.free(patch_transform_hash);
         if (self.recipe_hash) |recipe_hash| self.allocator.free(recipe_hash);
         self.fetched_source.deinit(self.allocator);
@@ -1258,18 +1465,17 @@ pub fn prepare_source_rock(
     errdefer allocator.free(build_out_path);
     try std.Io.Dir.cwd().createDirPath(io, build_out_path);
 
-    var translated = if (class == .command_build) try translateCommandBuild(allocator, &intent, env_map) else try translateBuiltinBuild(allocator, &intent, runtime_spec);
+    var translated = if (class == .command_build) try allocator.alloc(TranslatedModule, 0) else try translateBuiltinBuild(allocator, &intent, runtime_spec);
     errdefer deinit_translated_modules(allocator, translated);
+    const external_path_requirements = try collect_external_path_requirements(allocator, &intent, class, translated);
+    errdefer external_dependency.deinitRequirements(allocator, external_path_requirements);
     if (options.build_env.len > 0) {
         var updated = std.ArrayList(TranslatedModule).empty;
         errdefer updated.deinit(allocator);
         for (translated) |module| {
             var mutable = module;
             if (mutable.config) |*config| {
-                var env = std.ArrayList(manifest.EnvPair).empty;
-                for (config.env) |entry| try env.append(allocator, .{ .key = try allocator.dupe(u8, entry.key), .value = try allocator.dupe(u8, entry.value) });
-                for (options.build_env) |entry| try env.append(allocator, .{ .key = try allocator.dupe(u8, entry.key), .value = try allocator.dupe(u8, entry.value) });
-                config.env = try env.toOwnedSlice(allocator);
+                try append_config_environment(allocator, config, options.build_env);
             }
             try updated.append(allocator, mutable);
         }
@@ -1345,6 +1551,7 @@ pub fn prepare_source_rock(
         .fetched_rockspec = fetched_rockspec,
         .fetched_source = fetched_source,
         .translated = translated,
+        .external_path_requirements = external_path_requirements,
         .class = class,
         .compatibility_recipe = compatibility_recipe,
         .patch_transform_hash = patch_transform_hash,
@@ -3612,6 +3819,10 @@ pub fn materialize_prepared_rock(
     registry_name: ?[]const u8,
     prepared: *PreparedRock,
 ) !candidate_mod.Candidate {
+    const missing_external_paths = try prepared.missingExternalPathRequirements(allocator, env_map);
+    defer allocator.free(missing_external_paths);
+    if (missing_external_paths.len > 0) return error.ExternalDependencyPathRequired;
+
     const runtime_spec = options.runtime orelse "lua54";
     const rock = prepared.parsed_rockspec.value;
     const intent = rock.intent;
@@ -3687,7 +3898,27 @@ pub fn materialize_prepared_rock(
         std.Io.Dir.cwd().deleteTree(io, path) catch |err| if (err != error.FileNotFound) {};
         allocator.free(path);
     };
-    const translated = prepared.translated;
+    var command_translated: ?[]const TranslatedModule = null;
+    defer if (command_translated) |translated_modules| deinit_translated_modules(allocator, translated_modules);
+    if (rock_class == .command_build) {
+        var translated_modules = try translateCommandBuild(allocator, &intent, env_map);
+        errdefer deinit_translated_modules(allocator, translated_modules);
+        if (options.build_env.len > 0) {
+            var updated = std.ArrayList(TranslatedModule).empty;
+            errdefer updated.deinit(allocator);
+            for (translated_modules) |module| {
+                var mutable = module;
+                if (mutable.config) |*config| {
+                    try append_config_environment(allocator, config, options.build_env);
+                }
+                try updated.append(allocator, mutable);
+            }
+            allocator.free(translated_modules);
+            translated_modules = try updated.toOwnedSlice(allocator);
+        }
+        command_translated = translated_modules;
+    }
+    const translated = command_translated orelse prepared.translated;
     const rockspec_payload_path = prepared.rockspec_payload_path;
 
     const bin_val = if (intent.build.install) |install| install.bin else null;

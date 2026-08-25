@@ -883,13 +883,34 @@ pub const add_command = struct {
             const mat_res = if (resolved.local_path) |p| moonstone.materialization.materializer.MaterializeResult{
                 .path = try allocator.dupe(u8, p),
                 .artifact_hash = try allocator.dupe(u8, resolved.artifact_hash),
-            } else try mat.materialize_remote(
-                resolved.registry_url.?,
-                resolved.registry_token,
-                resolved.descriptor_path.?,
-                resolved.remote_desc.?,
-                resolved.artifact_idx.?,
-            );
+            } else blk: {
+                const descriptor = resolved.remote_desc.?;
+                const artifact_index = resolved.artifact_idx.?;
+                break :blk mat.materialize_remote(
+                    resolved.registry_url.?,
+                    resolved.registry_token,
+                    resolved.descriptor_path.?,
+                    descriptor,
+                    artifact_index,
+                ) catch |err| {
+                    if (err == error.ExternalDependencyPathRequired) {
+                        if (descriptor.artifact[artifact_index].materialize) |config| {
+                            const missing = try moonstone.materialization.external_input.collectMissing(allocator, config.external_paths, env);
+                            defer allocator.free(missing);
+                            if (missing.len > 0) {
+                                if (ctx.error_detail) |*old| old.deinit(allocator);
+                                ctx.error_detail = .{ .external_dependency_paths = try moonstone.materialization.external_input.MissingPaths.init(
+                                    allocator,
+                                    resolved.name,
+                                    resolved.version,
+                                    missing,
+                                ) };
+                            }
+                        }
+                    }
+                    return err;
+                };
+            };
             defer mat_res.deinit(allocator);
 
             // Update manifest for explicit dependencies

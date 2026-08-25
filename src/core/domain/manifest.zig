@@ -1,6 +1,7 @@
 const std = @import("std");
 pub const toml = @import("toml");
 const script_mod = @import("script.zig");
+const external_input = @import("../materialization/external_input.zig");
 
 pub const Kind = enum {
     script,
@@ -258,6 +259,7 @@ pub const MaterializeConfig = struct {
     args: []const []const u8 = &.{},
     steps: []const CommandStep = &.{},
     env: []const EnvPair = &.{},
+    external_paths: []const external_input.PathRequirement = &.{},
     collect: CollectConfig = .{},
     ldflags: []const []const u8 = &.{},
 
@@ -272,6 +274,15 @@ pub const MaterializeConfig = struct {
             var alist = std.ArrayList([]const u8).empty;
             for (a.array.items) |v| try alist.append(allocator, try allocator.dupe(u8, v.string));
             self.args = try alist.toOwnedSlice(allocator);
+        }
+        if (table.get("ldflags")) |flags_value| {
+            if (flags_value != .array) return error.InvalidMaterializeLdflags;
+            var flags = std.ArrayList([]const u8).empty;
+            for (flags_value.array.items) |flag| {
+                if (flag != .string) return error.InvalidMaterializeLdflag;
+                try flags.append(allocator, try allocator.dupe(u8, flag.string));
+            }
+            self.ldflags = try flags.toOwnedSlice(allocator);
         }
 
         if (table.get("steps")) |s_arr| {
@@ -298,6 +309,24 @@ pub const MaterializeConfig = struct {
                 });
             }
             self.env = try elist.toOwnedSlice(allocator);
+        }
+
+        if (table.get("external_paths")) |paths_value| {
+            if (paths_value != .array) return error.InvalidMaterializeExternalPaths;
+            var paths = std.ArrayList(external_input.PathRequirement).empty;
+            for (paths_value.array.items) |path_value| {
+                if (path_value != .table) return error.InvalidMaterializeExternalPath;
+                const dependency = path_value.table.get("dependency") orelse return error.MissingMaterializeExternalPathDependency;
+                const variable = path_value.table.get("variable") orelse return error.MissingMaterializeExternalPathVariable;
+                const kind = path_value.table.get("kind") orelse return error.MissingMaterializeExternalPathKind;
+                if (dependency != .string or variable != .string or kind != .string) return error.InvalidMaterializeExternalPath;
+                try paths.append(allocator, .{
+                    .dependency = try allocator.dupe(u8, dependency.string),
+                    .variable = try allocator.dupe(u8, variable.string),
+                    .kind = std.meta.stringToEnum(external_input.PathKind, kind.string) orelse return error.InvalidMaterializeExternalPathKind,
+                });
+            }
+            self.external_paths = try paths.toOwnedSlice(allocator);
         }
 
         if (table.get("input")) |i_val| {
@@ -372,6 +401,7 @@ pub const MaterializeConfig = struct {
             .args = &.{},
             .steps = &.{},
             .env = &.{},
+            .external_paths = &.{},
             .collect = try self.collect.clone(allocator),
             .ldflags = &.{},
         };
@@ -401,6 +431,19 @@ pub const MaterializeConfig = struct {
             var elist = std.ArrayList(EnvPair).empty;
             for (self.env) |e| try elist.append(allocator, .{ .key = try allocator.dupe(u8, e.key), .value = try allocator.dupe(u8, e.value) });
             res.env = try elist.toOwnedSlice(allocator);
+        }
+        if (self.external_paths.len > 0) {
+            const paths = try allocator.alloc(external_input.PathRequirement, self.external_paths.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (paths[0..initialized]) |path| path.deinit(allocator);
+                allocator.free(paths);
+            }
+            for (self.external_paths, 0..) |path, index| {
+                paths[index] = try path.clone(allocator);
+                initialized += 1;
+            }
+            res.external_paths = paths;
         }
         if (self.ldflags.len > 0) {
             var ldlist = std.ArrayList([]const u8).empty;
@@ -437,6 +480,8 @@ pub const MaterializeConfig = struct {
             allocator.free(e.value);
         }
         allocator.free(self.env);
+
+        external_input.deinitRequirements(allocator, self.external_paths);
 
         for (self.collect.lua_modules) |p| p.deinit(allocator);
         allocator.free(self.collect.lua_modules);
@@ -2824,4 +2869,41 @@ test "RemotePackageDescriptor parses a transitive rocks dependency" {
     try std.testing.expectEqual(@as(usize, 1), descriptor.dependencies.len);
     try std.testing.expectEqualStrings("foreign-root", descriptor.dependencies[0].name);
     try std.testing.expectEqualStrings("rocks", descriptor.dependencies[0].resolver.?);
+}
+
+test "RemotePackageDescriptor parses typed materialization external paths" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "native-sqlite"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\
+        \\[[artifacts]]
+        \\kind = "source"
+        \\target = "any"
+        \\url = "blobs/b3/example.tar.gz"
+        \\hash = "b3:example"
+        \\format = "tar.gz"
+        \\
+        \\[artifacts.materialize]
+        \\type = "command"
+        \\command = "make"
+        \\ldflags = ["-L$(SQLITE_LIBDIR)"]
+        \\external_paths = [
+        \\  { dependency = "SQLITE", variable = "SQLITE_INCDIR", kind = "include" },
+        \\  { dependency = "SQLITE", variable = "SQLITE_LIBDIR", kind = "library" },
+        \\]
+    ;
+
+    var descriptor = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer descriptor.deinit(allocator);
+
+    const paths = descriptor.artifact[0].materialize.?.external_paths;
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    try std.testing.expectEqualStrings("SQLITE_INCDIR", paths[0].variable);
+    try std.testing.expectEqual(external_input.PathKind.include, paths[0].kind);
+    try std.testing.expectEqualStrings("SQLITE_LIBDIR", paths[1].variable);
+    try std.testing.expectEqual(external_input.PathKind.library, paths[1].kind);
+    try std.testing.expectEqualStrings("-L$(SQLITE_LIBDIR)", descriptor.artifact[0].materialize.?.ldflags[0]);
 }

@@ -36,9 +36,9 @@ def digest(path: Path) -> tuple[str, str]:
     return sha256.hexdigest(), b3.hexdigest()
 
 
-def write_archive(binary: Path, archive: Path) -> None:
+def write_archive(binary: Path, archive: Path, entry_name: str = "moon") -> None:
     payload = binary.read_bytes()
-    info = tarfile.TarInfo("moon")
+    info = tarfile.TarInfo(entry_name)
     info.size = len(payload)
     info.mode = 0o755
     info.uid = 0
@@ -73,6 +73,9 @@ def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: b
         filename = binary.name
         if filename.endswith(".pdb"):
             continue
+        is_windows = "windows" in filename or binary.suffix == ".exe"
+        entry_name = "moon.exe" if is_windows else "moon"
+
         if filename.endswith(".exe"):
             filename = filename[:-4]
         if not filename.startswith(prefix):
@@ -80,7 +83,7 @@ def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: b
         target = filename[len(prefix):]
         archive_name = f"moon-v{version}-{target}.tar.gz"
         archive = release_dir / archive_name
-        write_archive(binary, archive)
+        write_archive(binary, archive, entry_name=entry_name)
         sha256, b3_hash = digest(archive)
         artifacts.append({
             "name": archive_name,

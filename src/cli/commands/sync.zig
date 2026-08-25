@@ -6,6 +6,7 @@ const router = @import("../router.zig");
 const progress_runtime = @import("../progress.zig");
 const task_protocol = @import("../task_protocol.zig");
 const profiler = moonstone.diagnostics.profiler;
+const external_dependency = moonstone.materialization.external_input;
 
 pub const sync_command = SyncCommand;
 
@@ -390,7 +391,12 @@ const BuildArtifactLocation = struct {
 const DownloadJob = struct {
     pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
     result: ?MatResult = null,
+    missing_external_paths: ?external_dependency.MissingPaths = null,
     err: ?anyerror = null,
+
+    fn deinit(self: *DownloadJob, allocator: std.mem.Allocator) void {
+        if (self.missing_external_paths) |paths| paths.deinit(allocator);
+    }
 };
 
 const RocksJob = struct {
@@ -401,6 +407,7 @@ const RocksJob = struct {
     scope_dependency_names: []const []const u8 = &.{},
     materialization_leader: ?usize = null,
     result: ?moonstone.resolution.candidate.ResolvedArtifact = null,
+    missing_external_paths: ?external_dependency.MissingPaths = null,
     err: ?anyerror = null,
 
     fn deinit(self: *RocksJob, allocator: std.mem.Allocator) void {
@@ -410,6 +417,7 @@ const RocksJob = struct {
         for (self.scope_dependency_names) |name| allocator.free(name);
         if (self.scope_dependency_names.len > 0) allocator.free(self.scope_dependency_names);
         if (self.result) |result| result.deinit(allocator);
+        if (self.missing_external_paths) |paths| paths.deinit(allocator);
     }
 };
 
@@ -628,6 +636,34 @@ const DownloadPool = struct {
             .on_event = self.on_resolve_cb,
             .on_event_context = self.on_resolve_ctx,
         };
+
+        const remote_desc = pkg.remote_desc.?;
+        const materialize_config = remote_desc.artifact[pkg.origin.moonstone_registry.artifact_idx].materialize;
+        if (materialize_config) |config| {
+            const missing = external_dependency.collectMissing(self.allocator, config.external_paths, self.env) catch |err| {
+                job.err = err;
+                return;
+            };
+            defer self.allocator.free(missing);
+            if (missing.len > 0) {
+                job.missing_external_paths = external_dependency.MissingPaths.init(
+                    self.allocator,
+                    pkg.name,
+                    pkg.version,
+                    missing,
+                ) catch |err| {
+                    job.err = err;
+                    return;
+                };
+                job.err = error.ExternalDependencyPathRequired;
+                self.reporter.report(self.io, task_id, 2, "failed", @errorName(error.ExternalDependencyPathRequired), .{
+                    .package = pkg.name,
+                    .version = pkg.version,
+                    .error_name = @errorName(error.ExternalDependencyPathRequired),
+                });
+                return;
+            }
+        }
 
         const reg = pkg.origin.moonstone_registry;
         const m_res = mat.materialize_remote(
@@ -944,6 +980,18 @@ const RocksPool = struct {
             scoped_environment = try moonstone.project.build_scope.project(self.allocator, self.io, self.env, roots.items, lua_ver_dot);
             build_env = &scoped_environment.?.env_map;
             options.build_artifacts = build_artifacts.items;
+        }
+
+        const missing_external_paths = try source.missingExternalPathRequirements(self.allocator, build_env);
+        defer self.allocator.free(missing_external_paths);
+        if (missing_external_paths.len > 0) {
+            job.missing_external_paths = try external_dependency.MissingPaths.init(
+                self.allocator,
+                job.pkg.name,
+                source.parsed_rockspec.value.version,
+                missing_external_paths,
+            );
+            return error.ExternalDependencyPathRequired;
         }
 
         return moonstone.resolution.sources.luarocks.materialize_prepared_rock(
@@ -2895,7 +2943,10 @@ pub const SyncCommand = struct {
 
         // ── Phase 1: Parallel download + materialize remote packages ───────
         var download_jobs = std.ArrayList(DownloadJob).empty;
-        defer download_jobs.deinit(allocator);
+        defer {
+            for (download_jobs.items) |*job| job.deinit(allocator);
+            download_jobs.deinit(allocator);
+        }
         var job_map = std.StringHashMap(usize).init(allocator);
         defer job_map.deinit();
         var rocks_jobs = std.ArrayList(RocksJob).empty;
@@ -2969,7 +3020,17 @@ pub const SyncCommand = struct {
                     .on_resolve_cb = on_resolve_cb,
                     .on_resolve_ctx = on_resolve_ctx,
                 };
-                try pool.execute(jobs);
+                pool.execute(jobs) catch |err| {
+                    for (pool.jobs) |*job| {
+                        if (job.missing_external_paths) |missing_paths| {
+                            if (ctx.error_detail) |*old| old.deinit(allocator);
+                            ctx.error_detail = .{ .external_dependency_paths = missing_paths };
+                            job.missing_external_paths = null;
+                            break;
+                        }
+                    }
+                    return err;
+                };
             }
             if (rocks_jobs.items.len > 0) {
                 const rocks_lua_exe = provider_impl.lua_exe orelse host_rockspec_parser orelse if (!target_is_host)
@@ -3006,7 +3067,17 @@ pub const SyncCommand = struct {
                     .request_coordinator = moonstone.realization.request_coordinator.RequestCoordinator.init(safe_allocator),
                 };
                 defer pool.deinit();
-                try pool.execute(jobs);
+                pool.execute(jobs) catch |err| {
+                    for (pool.jobs) |*job| {
+                        if (job.missing_external_paths) |missing_paths| {
+                            if (ctx.error_detail) |*old| old.deinit(allocator);
+                            ctx.error_detail = .{ .external_dependency_paths = missing_paths };
+                            job.missing_external_paths = null;
+                            break;
+                        }
+                    }
+                    return err;
+                };
                 for (pool.jobs) |job| {
                     if (job.build_dependency_names.len == 0) continue;
                     const owned_dependencies = try mergeDependencyNames(allocator, &.{}, job.build_dependency_names);

@@ -1,10 +1,18 @@
+# Only source controlled inputs are needed for the Wine contract image.
 .git
 .zig-cache
-zig-out
+zig-cache
 .zig-global-cache
+zig-out
 dist
 build
+.moonstone
+.ci
 release-tools/.venv
 fixtures/sandbox
 testing-suite/lua-tools/.moonstone
 testing-suite/lua-tools/moonstone.lock
+tests/local
+tests/tools
+tests/lua-tools
+**/.DS_Store

@@ -72,6 +72,7 @@ pub const artifacts = struct {
 };
 
 pub const materialization = struct {
+    pub const external_input = @import("materialization/external_input.zig");
     pub const materializer = @import("materialization/materializer.zig");
     pub const plan = @import("materialization/plan.zig");
     pub const executor = @import("materialization/executor.zig");

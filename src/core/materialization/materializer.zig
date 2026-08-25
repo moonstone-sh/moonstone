@@ -10,6 +10,29 @@ const error_context = @import("../diagnostics/error_context.zig");
 
 var materialization_workspace_counter: std.atomic.Value(u64) = .init(0);
 
+fn setMissingExternalPathContext(
+    allocator: std.mem.Allocator,
+    package: []const u8,
+    version: []const u8,
+    requirements: []const @import("external_input.zig").PathRequirement,
+    env: *const std.process.Environ.Map,
+) void {
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    output.writer.print("Package {s}@{s} requires external development files. Missing environment variables:", .{ package, version }) catch return;
+    for (requirements) |requirement| {
+        const value = env.get(requirement.variable);
+        if (value != null and value.?.len > 0) continue;
+        const kind = switch (requirement.kind) {
+            .include => "include directory (headers)",
+            .library => "library directory",
+        };
+        output.writer.print("\n  {s} — {s} for {s}", .{ requirement.variable, kind, requirement.dependency }) catch return;
+    }
+    output.writer.flush() catch return;
+    error_context.setOwned(allocator, output.writer.buffer[0..output.writer.end]);
+}
+
 fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePackageDescriptor) ![]manifest.StoreDependency {
     var dependencies = std.ArrayList(manifest.StoreDependency).empty;
     errdefer {
@@ -108,6 +131,16 @@ pub const Materializer = struct {
     ) !MaterializeResult {
         const art = desc.artifact[artifact_idx];
         const is_source = std.mem.eql(u8, art.kind, "source");
+
+        if (art.materialize) |config| {
+            for (config.external_paths) |requirement| {
+                const value = self.environ_map.get(requirement.variable);
+                if (value == null or value.?.len == 0) {
+                    setMissingExternalPathContext(self.allocator, desc.package.name, desc.package.version, config.external_paths, self.environ_map);
+                    return error.ExternalDependencyPathRequired;
+                }
+            }
+        }
 
         var client = registry.RegistryClient.init(self.allocator, self.io, registry_url, token, self.environ_map);
         client.on_event = self.on_event;
@@ -253,6 +286,12 @@ pub const Materializer = struct {
                     const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ pair.key, pair.value });
                     try build_env_items.append(self.allocator, env_str);
                 }
+            }
+            for (m.external_paths) |requirement| {
+                const value = self.environ_map.get(requirement.variable) orelse return error.ExternalDependencyPathRequired;
+                if (value.len == 0) return error.ExternalDependencyPathRequired;
+                const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ requirement.variable, value });
+                try build_env_items.append(self.allocator, env_str);
             }
 
             if (std.mem.eql(u8, m.kind, "native_cmodule")) {

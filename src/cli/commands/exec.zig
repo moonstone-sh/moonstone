@@ -75,7 +75,10 @@ pub const ExecCommand = struct {
         const depth = std.fmt.parseInt(u32, depth_str, 10) catch 0;
         if (depth > 10) return error.InfiniteRecursion;
 
-        var run_env = moonstone.project.run_env.get_run_env(allocator, io, ".", env) catch |err| {
+        var run_env = (if (ctx.working_directory) |root|
+            moonstone.project.run_env.get_run_env_at_root(allocator, io, root, env)
+        else
+            moonstone.project.run_env.get_run_env(allocator, io, ".", env)) catch |err| {
             if (self.global and err == error.NoActiveEnvironment) {
                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
                 ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "global tools environment is not synced; install a tool with `moon add --global --tool <pkg>` first") } };

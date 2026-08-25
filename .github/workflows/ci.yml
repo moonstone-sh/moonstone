@@ -167,6 +167,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  windows-wine:
+    name: Windows Core CLI under Wine
+    runs-on: ubuntu-latest
+    # Wine is a compatibility signal, not a replacement for the native
+    # windows-core contract. Keep it non-blocking while it matures.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Exercise the Windows core contract under x86_64 Wine
+        run: ./scripts/test-windows-wine.sh core
+
   release-candidate:
     name: Build Release Candidate
     needs: test

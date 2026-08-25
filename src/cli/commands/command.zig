@@ -1,4 +1,5 @@
 const std = @import("std");
+const external_dependency = @import("moonstone").materialization.external_input;
 
 // Top-level commands
 pub const add = @import("add.zig").add_command;
@@ -169,6 +170,7 @@ pub const CliErrorDetail = union(enum) {
         resolver: ?[]const u8,
         artifact_hash: []const u8,
     },
+    external_dependency_paths: external_dependency.MissingPaths,
     script_not_found: struct {
         name: []const u8,
     },
@@ -202,6 +204,7 @@ pub const CliErrorDetail = union(enum) {
                 if (lam.resolver) |r| allocator.free(r);
                 allocator.free(lam.artifact_hash);
             },
+            .external_dependency_paths => |paths| paths.deinit(allocator),
             .script_not_found => |snf| allocator.free(snf.name),
             .orbit_not_found => |onf| allocator.free(onf.orbit),
         }
@@ -294,6 +297,13 @@ pub fn reportError(
                     .resolver = lam.resolver,
                     .artifact_hash = lam.artifact_hash,
                 }),
+                .external_dependency_paths => |paths| try emitter.fail(io, about, value, .{
+                    .kind = "external_dependency_paths",
+                    .error_name = err_name,
+                    .package = paths.package,
+                    .version = paths.version,
+                    .requirements = paths.requirements,
+                }),
                 .script_not_found => |snf| try emitter.fail(io, about, value, .{ .script = snf.name, .recovery = recoveryHint(err) }),
                 .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit, .recovery = recoveryHint(err) }),
             }
@@ -358,6 +368,30 @@ pub fn reportError(
                     try stdout.print("and configured registries, but could not restore this exact artifact.\n", .{});
                     try stdout.print("Run 'moon sync --update'\n", .{});
                     try stdout.print("to create a new lockfile, or restore/publish the locked artifact.\n", .{});
+                },
+                .external_dependency_paths => |paths| {
+                    try stdout.print("Error: Package {s}@{s} requires external development files.\n\n", .{ paths.package, paths.version });
+                    try stdout.print("Missing environment variables:\n", .{});
+                    for (paths.requirements) |requirement| {
+                        const path_kind = switch (requirement.kind) {
+                            .include => "include directory (headers)",
+                            .library => "library directory",
+                        };
+                        try stdout.print("  {s} — {s} for {s}\n", .{ requirement.variable, path_kind, requirement.dependency });
+                    }
+                    try stdout.print("\nSet each variable to the matching directory supplied by the dependency's development package, then retry:\n  ", .{});
+                    for (paths.requirements, 0..) |requirement, requirement_index| {
+                        const path_hint = switch (requirement.kind) {
+                            .include => "include",
+                            .library => "lib",
+                        };
+                        try stdout.print("{s}=/path/to/{s}", .{ requirement.variable, path_hint });
+                        if (requirement_index + 1 < paths.requirements.len) {
+                            try stdout.print(" \\\n  ", .{});
+                        } else {
+                            try stdout.print(" \\\n  moon sync\n", .{});
+                        }
+                    }
                 },
                 .script_not_found => |snf| {
                     try stdout.print("Error: script '{s}' is not declared in moonstone.toml.\n", .{snf.name});

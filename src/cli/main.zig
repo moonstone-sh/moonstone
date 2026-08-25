@@ -58,7 +58,11 @@ pub fn main(init: std.process.Init) !void {
 
     const raw_args = try init.minimal.args.toSlice(arena);
     const directory_args = try global_options.extractDirectory(arena, raw_args);
-    if (directory_args.directory) |directory| try std.process.setCurrentPath(init.io, directory);
+    const working_directory = if (directory_args.directory) |directory|
+        try std.Io.Dir.cwd().realPathFileAlloc(init.io, directory, arena)
+    else
+        null;
+    if (working_directory) |directory| try moonstone.platform.fs.setCurrentPath(init.io, directory);
     const all_args = try applyGlobalConfigFile(arena, directory_args.args, init.environ_map);
 
     profiler.init(init.environ_map);
@@ -69,6 +73,7 @@ pub fn main(init: std.process.Init) !void {
         .stdout = stdout,
         .stderr = stderr,
         .env = init.environ_map,
+        .working_directory = working_directory,
         .root = null,
         .all_args = all_args,
     };
