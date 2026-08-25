@@ -171,6 +171,7 @@ pub const OrbitSyncCommand = struct {
             };
             child_sync.runImpl(ctx, .silent) catch |err| {
                 std.process.setCurrentPath(ctx.io, root_cwd) catch {};
+                captureChildSyncFailure(ctx, orbit, err);
                 task_reporter.report(ctx.io, task_id, 2, "failed", @errorName(err), .{
                     .orbit = orbit.name,
                     .error_name = @errorName(err),
@@ -195,10 +196,70 @@ const SyncWorkData = struct {
     error_detail: ?command_mod.CliErrorDetail = null,
 };
 
+fn captureChildSyncFailure(ctx: *router.Context, orbit: moonstone.project.orbits.OrbitRef, err: anyerror) void {
+    if (ctx.error_detail != null) return;
+
+    const nested_detail = moonstone.diagnostics.error_context.take(ctx.allocator);
+    defer if (nested_detail) |detail| ctx.allocator.free(detail);
+
+    const message = formatChildSyncFailure(ctx.allocator, orbit.name, orbit.path, err, nested_detail) catch return;
+    ctx.error_detail = .{ .message = .{ .msg = message } };
+}
+
+fn formatChildSyncFailure(
+    allocator: std.mem.Allocator,
+    orbit_name: []const u8,
+    orbit_path: []const u8,
+    err: anyerror,
+    nested_detail: ?[]const u8,
+) ![]u8 {
+    if (nested_detail) |detail| {
+        return std.fmt.allocPrint(allocator,
+            "Orbit '{s}' at '{s}' failed to synchronize: {s}",
+            .{ orbit_name, orbit_path, detail },
+        );
+    }
+    return std.fmt.allocPrint(allocator,
+        "Orbit '{s}' at '{s}' failed to synchronize ({s}).",
+        .{ orbit_name, orbit_path, @errorName(err) },
+    );
+}
+
 fn orbitSyncWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
     const work_data: *SyncWorkData = @ptrCast(@alignCast(wctx.cmd_data orelse return error.WorkerMissingData));
     work_data.cmd.runImpl(work_data.ctx, .{ .queue = wctx }) catch |err| {
-        work_data.error_detail = work_data.ctx.error_detail;
+        if (work_data.ctx.error_detail) |detail| {
+            work_data.error_detail = detail;
+            work_data.ctx.error_detail = null;
+        }
         return err;
     };
+}
+
+test "orbit sync failures retain orbit and nested diagnostic context" {
+    const with_detail = try formatChildSyncFailure(
+        std.testing.allocator,
+        "child",
+        "/workspace/child",
+        error.PackageNotFound,
+        "Local path dependency is unavailable.",
+    );
+    defer std.testing.allocator.free(with_detail);
+    try std.testing.expectEqualStrings(
+        "Orbit 'child' at '/workspace/child' failed to synchronize: Local path dependency is unavailable.",
+        with_detail,
+    );
+
+    const fallback = try formatChildSyncFailure(
+        std.testing.allocator,
+        "child",
+        "/workspace/child",
+        error.UnknownHostName,
+        null,
+    );
+    defer std.testing.allocator.free(fallback);
+    try std.testing.expectEqualStrings(
+        "Orbit 'child' at '/workspace/child' failed to synchronize (UnknownHostName).",
+        fallback,
+    );
 }
