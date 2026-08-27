@@ -1,5 +1,8 @@
 # ⋆⁺₊⋆ ☾⋆⁺₊⋆ moon ⋆⁺₊⋆
 
+> Documentation map: [`docs/README.md`](docs/README.md) · contributor guidance:
+> [`AGENTS.md`](AGENTS.md)
+
 > A modern, cross-platform **Lua runtime and package manager** written in [Zig](https://ziglang.org).  
 > Moonstone creates deterministic Lua project environments from content-addressed artifacts.
 
