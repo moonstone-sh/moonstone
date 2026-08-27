@@ -155,10 +155,9 @@ for case_entry in "${cases[@]}"; do
             echo "ERROR: moon sync accepted explicit unsupported LuaRocks build backend" >&2
             exit 1
         fi
-        # `moon sync` performs source preparation in the materialization
-        # worker, which reports the stable error identifier in its task
-        # failure. `moon add` above exercises the full user-facing diagnostic.
-        assert_error "${output}" "UnsupportedLuaRocksBuildType"
+        # Explicit sync follows the same deterministic source-preparation
+        # path and must retain the actionable backend diagnostic.
+        assert_error "${output}" "${expected_error}"
     fi
     popd >/dev/null
 done
