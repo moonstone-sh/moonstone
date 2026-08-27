@@ -98,8 +98,10 @@ pub fn build(
     // than letting a rock write directly into Moonstone's final artifact tree.
     // Other Moonstone placeholders are expanded later by command.build_internal.
     for (config.ldflags) |arg| {
-        const expanded = try std.mem.replaceOwned(u8, allocator, arg, "${cmake.install}", install_dir);
-        try conf_args.append(allocator, expanded);
+        const expanded_install = try std.mem.replaceOwned(u8, allocator, arg, "${cmake.install}", install_dir);
+        defer allocator.free(expanded_install);
+        const fully_expanded = try command.expandVariables(allocator, expanded_install, out_dir_path, source_dir_path, build_dir, lua_include, lua_lib, lua_link_library, lua_bin, lua_abi);
+        try conf_args.append(allocator, fully_expanded);
     }
 
     // Present the selected runtime using LuaRocks' CMake variable contract.

@@ -50,7 +50,9 @@ fn exactVersionForMetadataPrefetch(range: moonstone.domain.semver.VersionRange) 
     const min = interval.min orelse return null;
     const max = interval.max orelse return null;
     if (!interval.include_min or !interval.include_max) return null;
-    if (min.compare(max) != 0) return null;
+    const comparison = if (range.scheme == .luarocks) min.compareLuaRocks(max) else min.compare(max);
+    if (comparison != 0) return null;
+    if (range.scheme == .luarocks and !min.revision) return null;
     return min;
 }
 
@@ -62,7 +64,8 @@ fn preferredVersionForMetadataPrefetch(
     for (versions) |version| {
         if (!range.contains(version)) continue;
         if (preferred) |current| {
-            if (version.compare(current) <= 0) continue;
+            const comparison = if (range.scheme == .luarocks) version.compareLuaRocks(current) else version.compare(current);
+            if (comparison <= 0) continue;
         }
         preferred = version;
     }
@@ -2076,7 +2079,10 @@ pub const SyncCommand = struct {
 
             try targets.append(allocator, .{
                 .name = try allocator.dupe(u8, if (selected_resolver == .rocks) spec.name else dep.name),
-                .range = try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
+                .range = if (selected_resolver == .rocks)
+                    try moonstone.domain.semver.VersionRange.parseLuaRocks(allocator, spec.constraint orelse "*")
+                else
+                    try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
                 .resolver = selected_resolver,
                 .registry = try registryIdentityForPackageSpec(allocator, spec, selected_resolver),
                 .role = dep.role,

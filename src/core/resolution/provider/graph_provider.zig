@@ -172,6 +172,7 @@ pub const RegistryProvider = struct {
     }
 
     pub fn get_artifact(self: *RegistryProvider, request: package_provider.ArtifactRequest) anyerror!?candidate_mod.Candidate {
+        const request_is_rocks = request.resolver == .rocks;
         // 1. If artifact_hash is provided, do strict exact lookup first.
         if (request.artifact_hash) |hash| {
             var maybe_cand = self.index.get_candidate_by_hash(hash) catch null;
@@ -182,9 +183,9 @@ pub const RegistryProvider = struct {
                 }
                 const matches_request = std.mem.eql(u8, c.name, request.name) or std.mem.eql(u8, request.name, "lua");
                 if (matches_request) {
-                    const v = semver.Version.parse(c.version) catch null;
-                    const req_v = semver.Version.parse(request.version) catch null;
-                    if (v != null and req_v != null and v.?.compare(req_v.?) == 0) {
+                    const v = parseResolverVersion(c.version, request_is_rocks) catch null;
+                    const req_v = parseResolverVersion(request.version, request_is_rocks) catch null;
+                    if (v != null and req_v != null and (compareResolverVersion(v.?, req_v.?, request_is_rocks) == 0 or (request_is_rocks and !req_v.?.revision and v.?.compareLuaRocksUpstream(req_v.?) == 0))) {
                         // Verify the artifact path actually exists on disk
                         std.Io.Dir.cwd().access(self.io, c.path, .{}) catch |err| {
                             if (err == error.FileNotFound) {
@@ -221,11 +222,12 @@ pub const RegistryProvider = struct {
         }
 
         // 2. Check pinned/remote-resolved artifacts
-        const req_version = semver.Version.parse(request.version) catch return null;
+        const req_version = parseResolverVersion(request.version, request_is_rocks) catch return null;
         for (self.artifacts.items) |*art| {
             if (packageNamesMatch(art.name, request.name)) {
-                const v = semver.Version.parse(art.version) catch continue;
-                if (v.compare(req_version) == 0 or luarocksVersionsMatch(art.version, request.version)) {
+                const art_is_rocks = art.origin == .luarocks or request_is_rocks;
+                const v = parseResolverVersion(art.version, art_is_rocks) catch continue;
+                if (compareResolverVersion(v, req_version, art_is_rocks) == 0 or luarocksVersionsMatch(art.version, request.version)) {
                     // Flesh out remote_desc if missing
                     if (art.location == .remote and art.origin == .moonstone_registry and art.remote_desc == null) {
                         const r = art.origin.moonstone_registry;
@@ -313,8 +315,9 @@ pub const RegistryProvider = struct {
                     continue;
                 }
             }
-            const v = semver.Version.parse(c.version) catch continue;
-            if (v.compare(req_version) == 0) {
+            const candidate_is_rocks = if (c.resolver) |resolver_name| std.mem.eql(u8, resolver_name, "rocks") else request_is_rocks;
+            const v = parseResolverVersion(c.version, candidate_is_rocks) catch continue;
+            if (compareResolverVersion(v, req_version, candidate_is_rocks) == 0 or (candidate_is_rocks and !req_version.revision and v.compareLuaRocksUpstream(req_version) == 0)) {
                 if (!storeCandidateCompatible(c, self.options)) continue;
 
                 // Verify the artifact path actually exists on disk
@@ -439,12 +442,12 @@ pub const RegistryProvider = struct {
     }
 
     fn luarocksVersionsMatch(candidate: []const u8, requested: []const u8) bool {
-        const requested_revision = std.mem.lastIndexOfScalar(u8, requested, '+') orelse return false;
-        if (std.mem.lastIndexOfScalar(u8, candidate, '-')) |candidate_revision| {
-            return std.mem.eql(u8, candidate[0..candidate_revision], requested[0..requested_revision]) and
-                std.mem.eql(u8, candidate[candidate_revision + 1 ..], requested[requested_revision + 1 ..]);
+        const cand_v = semver.Version.parseLuaRocks(candidate) catch return false;
+        const req_v = semver.Version.parseLuaRocks(requested) catch return false;
+        if (req_v.revision) {
+            return cand_v.compareLuaRocks(req_v) == 0;
         }
-        return false;
+        return cand_v.compareLuaRocksUpstream(req_v) == 0;
     }
 
     pub fn get_provider(self: *RegistryProvider) package_provider.PackageProvider {
@@ -497,7 +500,10 @@ pub const RegistryProvider = struct {
         // 1. Check already known artifacts
         for (self.artifacts.items) |art| {
             if (packageNamesMatch(art.name, name)) {
-                const v = try semver.Version.parseCloned(arena, art.version);
+                const v = if (art.origin == .luarocks)
+                    try semver.Version.parseLuaRocksCloned(arena, art.version)
+                else
+                    try semver.Version.parseCloned(arena, art.version);
                 try versions.append(self.allocator, v);
             }
         }
@@ -592,8 +598,10 @@ pub const RegistryProvider = struct {
                 if (res_constraint) |_| {
                     var already_present = false;
                     for (versions.items) |v| {
-                        const parsed_v = semver.Version.parse(cand.version) catch continue;
-                        if (v.compare(parsed_v) == 0) {
+                        const candidate_is_rocks = res_constraint == .rocks or
+                            (if (cand.resolver) |resolver_name| std.mem.eql(u8, resolver_name, "rocks") else false);
+                        const parsed_v = parseResolverVersion(cand.version, candidate_is_rocks) catch continue;
+                        if (compareResolverVersion(v, parsed_v, candidate_is_rocks) == 0) {
                             already_present = true;
                             break;
                         }
@@ -624,7 +632,12 @@ pub const RegistryProvider = struct {
                     };
                 }
 
-                const v = try semver.Version.parseCloned(arena, cand.version);
+                const candidate_is_rocks = res_constraint == .rocks or
+                    (if (cand.resolver) |resolver_name| std.mem.eql(u8, resolver_name, "rocks") else false);
+                const v = if (candidate_is_rocks)
+                    try semver.Version.parseLuaRocksCloned(arena, cand.version)
+                else
+                    try semver.Version.parseCloned(arena, cand.version);
                 if (direct_target_range) |range| {
                     local_target_satisfies_constraint = local_target_satisfies_constraint or range.contains(v);
                 }
@@ -662,34 +675,38 @@ pub const RegistryProvider = struct {
 
         // 3. Resolve LuaRocks packages online
         if (!self.options.offline and res_constraint != null and res_constraint.? == .rocks and self.env != null) {
-            if (versions.items.len == 0) {
-                const base = self.luarocksMetadataBaseFor(reg_constraint);
-                const prefetched_versions = if (self.rocks_metadata_prefetch) |prefetch|
-                    prefetch.findVersions(name, base, self.options.target orelse "", self.options.runtime orelse "")
-                else
-                    null;
+            const base = self.luarocksMetadataBaseFor(reg_constraint);
+            const prefetched_versions = if (self.rocks_metadata_prefetch) |prefetch|
+                prefetch.findVersions(name, base, self.options.target orelse "", self.options.runtime orelse "")
+            else
+                null;
 
-                if (prefetched_versions) |cached| {
-                    for (cached) |version| {
-                        try versions.append(self.allocator, try version.clone(self.allocator));
+            const discovered_versions = if (prefetched_versions) |cached|
+                cached
+            else blk: {
+                var opts = self.options;
+                opts.lua_exe = try self.luaMetadataInterpreter();
+                break :blk rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, base) catch |err| {
+                    if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
+                        break :blk @as([]semver.Version, &.{});
                     }
-                } else {
-                    var opts = self.options;
-                    opts.lua_exe = try self.luaMetadataInterpreter();
-                    const discovered_versions = rocks_resolver.discoverVersions(self.allocator, self.io, name, opts, self.env.?, base) catch |err| blk: {
-                        if (err == error.PackageNotFound or err == error.FileNotFound or err == error.RocksVersionDiscoveryFailed) {
-                            break :blk @as([]semver.Version, &.{});
-                        }
-                        return err;
-                    };
-                    defer {
-                        for (discovered_versions) |version| version.deinit(self.allocator);
-                        self.allocator.free(discovered_versions);
-                    }
-                    for (discovered_versions) |version| {
-                        try versions.append(self.allocator, try version.clone(self.allocator));
+                    return err;
+                };
+            };
+            defer if (prefetched_versions == null) {
+                for (discovered_versions) |version| version.deinit(self.allocator);
+                self.allocator.free(discovered_versions);
+            };
+
+            for (discovered_versions) |version| {
+                var already_present = false;
+                for (versions.items) |existing| {
+                    if (existing.compareLuaRocks(version) == 0) {
+                        already_present = true;
+                        break;
                     }
                 }
+                if (!already_present) try versions.append(self.allocator, try version.clone(self.allocator));
             }
         }
 
@@ -859,8 +876,9 @@ pub const RegistryProvider = struct {
         var artifact: ?candidate_mod.Candidate = null;
         for (self.artifacts.items) |*art| {
             if (!packageNamesMatch(art.name, name)) continue;
-            const v = semver.Version.parse(art.version) catch continue;
-            if (version.compare(v) == 0) {
+            const art_is_rocks = art.origin == .luarocks;
+            const v = parseResolverVersion(art.version, art_is_rocks) catch continue;
+            if (compareResolverVersion(version, v, art_is_rocks) == 0 or (art_is_rocks and !version.revision and version.compareLuaRocksUpstream(v) == 0)) {
                 if (art.origin == .moonstone_registry and art.remote_desc == null) {
                     const r = art.origin.moonstone_registry;
                     var client = registry.RegistryClient.init(self.allocator, self.io, r.url, r.token, self.env);
@@ -970,7 +988,7 @@ pub const RegistryProvider = struct {
 
                 try terms.append(self.allocator, .{
                     .name = try arena.dupe(u8, parsed.name),
-                    .range = try semver.VersionRange.parse(arena, parsed.constraint orelse "*"),
+                    .range = try semver.VersionRange.parseLuaRocks(arena, parsed.constraint orelse "*"),
                     .registry = if (rocks_dependency_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                     .resolver = .rocks,
                     .role = set.role,
@@ -1023,7 +1041,10 @@ pub const RegistryProvider = struct {
 
                     try terms.append(self.allocator, .{
                         .name = try arena.dupe(u8, spec.name),
-                        .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                        .range = if (child_resolver == .rocks)
+                            try semver.VersionRange.parseLuaRocks(arena, spec.constraint orelse "*")
+                        else
+                            try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
                         .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                         .resolver = child_resolver,
                         .role = dep.role,
@@ -1118,7 +1139,10 @@ pub const RegistryProvider = struct {
 
                         try terms.append(self.allocator, .{
                             .name = try arena.dupe(u8, child_name),
-                            .range = try semver.VersionRange.parse(arena, child_constraint),
+                            .range = if (child_resolver == .rocks)
+                                try semver.VersionRange.parseLuaRocks(arena, child_constraint)
+                            else
+                                try semver.VersionRange.parse(arena, child_constraint),
                             .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                             .resolver = child_resolver,
                             .role = dep.role,
@@ -1181,7 +1205,10 @@ pub const RegistryProvider = struct {
 
                         try terms.append(self.allocator, .{
                             .name = try arena.dupe(u8, dep.name),
-                            .range = try semver.VersionRange.parse(arena, dep.constraint),
+                            .range = if (dep_resolver == .rocks)
+                                try semver.VersionRange.parseLuaRocks(arena, dep.constraint)
+                            else
+                                try semver.VersionRange.parse(arena, dep.constraint),
                             .resolver = dep_resolver,
                             .role = dep.role,
                         });
@@ -1194,6 +1221,14 @@ pub const RegistryProvider = struct {
         return try terms.toOwnedSlice(self.allocator);
     }
 };
+
+fn parseResolverVersion(text: []const u8, is_rocks: bool) !semver.Version {
+    return if (is_rocks) semver.Version.parseLuaRocks(text) else semver.Version.parse(text);
+}
+
+fn compareResolverVersion(left: semver.Version, right: semver.Version, is_rocks: bool) i8 {
+    return if (is_rocks) left.compareLuaRocks(right) else left.compare(right);
+}
 
 fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(index_name, requested_name)) return true;

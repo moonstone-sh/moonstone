@@ -28,6 +28,15 @@ EOF
     exit 0
 fi
 
+cmd="${1:-}"
+if [[ "${cmd}" != "generate-mock-rocks" ]]; then
+    for lua_candidate in "${LUA_BIN:-}" lua5.4 lua luajit; do
+        if [[ -n "${lua_candidate}" ]] && command -v "${lua_candidate}" >/dev/null 2>&1; then
+            exec "${lua_candidate}" "${TOOLS_DIR}/src/moon-tools.lua" "$@"
+        fi
+    done
+fi
+
 mkdir -p "${TOOLS_HOME}"
 cd "${TOOLS_DIR}"
 export HOME="${TOOLS_HOME}"

@@ -16,6 +16,7 @@ const Assignment = assignment_mod.Assignment;
 const ExpandedPackage = struct {
     name: []const u8,
     version: semver.Version,
+    resolver: ?root.ResolverKind = null,
 };
 
 /// The internal state of the PubGrub solver.
@@ -125,7 +126,7 @@ pub const Solver = struct {
 
                 for (self.solution.assignments.items) |as| {
                     if (as.term.range.intervals.len == 1 and as.term.range.intervals[0].min != null and as.term.range.intervals[0].max != null and
-                        as.term.range.intervals[0].min.?.compare(as.term.range.intervals[0].max.?) == 0)
+                        compareVersions(as.term.range, as.term.range.intervals[0].min.?, as.term.range.intervals[0].max.?) == 0)
                     {
                         const v = as.term.range.intervals[0].min.?;
                         const v_str = try v.toString(self.allocator);
@@ -199,20 +200,22 @@ pub const Solver = struct {
         return null;
     }
 
-    fn hasExpandedPackage(self: *const Solver, name: []const u8, version: semver.Version) bool {
+    fn hasExpandedPackage(self: *const Solver, name: []const u8, version: semver.Version, resolver: ?root.ResolverKind) bool {
         for (self.expanded_packages.items) |expanded| {
-            if (std.mem.eql(u8, expanded.name, name) and expanded.version.compare(version) == 0) return true;
+            if (std.mem.eql(u8, expanded.name, name) and expanded.resolver == resolver and
+                (if (resolver == .rocks) expanded.version.compareLuaRocks(version) else expanded.version.compare(version)) == 0) return true;
         }
         return false;
     }
 
     fn expandDependencies(self: *Solver, assignment: Assignment, version: semver.Version) !void {
-        if (self.hasExpandedPackage(assignment.term.name, version)) return;
+        if (self.hasExpandedPackage(assignment.term.name, version, assignment.term.resolver)) return;
 
         const arena = self.arena.allocator();
         try self.expanded_packages.append(self.allocator, .{
             .name = try arena.dupe(u8, assignment.term.name),
             .version = try version.clone(arena),
+            .resolver = assignment.term.resolver,
         });
 
         const deps = try self.provider.getDependencies(assignment.term.name, version);
@@ -246,8 +249,12 @@ pub const Solver = struct {
         const interval = term.range.intervals[0];
         const min = interval.min orelse return null;
         const max = interval.max orelse return null;
-        if (min.compare(max) != 0) return null;
+        if (compareVersions(term.range, min, max) != 0) return null;
         return min;
+    }
+
+    fn compareVersions(range: semver.VersionRange, left: semver.Version, right: semver.Version) i8 {
+        return if (range.scheme == .luarocks) left.compareLuaRocks(right) else left.compare(right);
     }
 
     fn decide(self: *Solver) !?[]const u8 {
@@ -263,7 +270,7 @@ pub const Solver = struct {
             try seen.put(arena, as.term.name, {});
 
             if (exactVersion(as.term)) |version| {
-                if (!self.hasExpandedPackage(as.term.name, version)) {
+                if (!self.hasExpandedPackage(as.term.name, version, as.term.resolver)) {
                     try self.expandDependencies(as, version);
                     return as.term.name;
                 }
@@ -275,7 +282,7 @@ pub const Solver = struct {
                 var best: ?semver.Version = null;
                 for (versions) |v| {
                     if (as.term.range.contains(v)) {
-                        if (best == null or v.compare(best.?) > 0) best = v;
+                        if (best == null or compareVersions(as.term.range, v, best.?) > 0) best = v;
                     }
                 }
 
@@ -288,7 +295,7 @@ pub const Solver = struct {
                         .include_min = true,
                         .include_max = true,
                     };
-                    const exact_range = semver.VersionRange{ .intervals = exact_intervals };
+                    const exact_range = semver.VersionRange{ .intervals = exact_intervals, .scheme = as.term.range.scheme };
 
                     try self.solution.assignments.append(arena, .{
                         .term = .{
@@ -573,6 +580,38 @@ test "exact root requirements expand transitive dependencies" {
 
     try std.testing.expect(result.contains("A"));
     try std.testing.expect(result.contains("B"));
+}
+
+test "LuaRocks upstream equality selects an exact highest rock revision" {
+    const allocator = std.testing.allocator;
+    var mp = MockProvider.init(allocator);
+    defer mp.deinit();
+
+    const rev0 = try semver.Version.parseLuaRocks("1.52.1-0");
+    const rev1 = try semver.Version.parseLuaRocks("1.52.1-1");
+    try mp.versions.put(allocator, "luv", blk: {
+        var versions = try allocator.alloc(semver.Version, 2);
+        versions[0] = rev0;
+        versions[1] = rev1;
+        break :blk versions;
+    });
+
+    const range = try semver.VersionRange.parseLuaRocks(allocator, "== 1.52.1");
+    defer range.deinit(allocator);
+    var solver = Solver.init(allocator, mp.get_provider(), .{});
+    defer solver.deinit();
+    var result = try solver.solve(&.{.{
+        .name = "luv",
+        .range = range,
+        .resolver = .rocks,
+    }});
+    defer {
+        var iterator = result.iterator();
+        while (iterator.next()) |entry| selfFreeResolveResult(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        result.deinit(allocator);
+    }
+
+    try std.testing.expectEqualStrings("1.52.1-1", result.get("luv").?.version);
 }
 
 fn selfFreeResolveResult(allocator: std.mem.Allocator, key: []const u8, value: root.ResolveResult) void {

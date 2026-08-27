@@ -203,7 +203,7 @@ pub fn resolve_command_from_path(
     return error.CommandNotFound;
 }
 
-fn expandVariables(
+pub fn expandVariables(
     allocator: std.mem.Allocator,
     input: []const u8,
     out_path: []const u8,

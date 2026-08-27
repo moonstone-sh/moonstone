@@ -1065,7 +1065,7 @@ fn translate_cmake_variables(
     }
     for (keys.items) |key| {
         const raw_value = value.object.get(key).?.string;
-        const expanded = try expand_luarocks_cmake_value(allocator, rock, raw_value, env_map);
+        const expanded = try expand_luarocks_cmake_value(allocator, rock, key, raw_value, env_map);
         defer allocator.free(expanded);
         try definitions.append(allocator, try std.fmt.allocPrint(allocator, "-D{s}={s}", .{ key, expanded }));
     }
@@ -1075,6 +1075,7 @@ fn translate_cmake_variables(
 fn expand_luarocks_cmake_value(
     allocator: std.mem.Allocator,
     rock: ?*const luarocks.RockspecIntent,
+    declared_key: ?[]const u8,
     raw_value: []const u8,
     env_map: *const std.process.Environ.Map,
 ) ![]const u8 {
@@ -1102,10 +1103,20 @@ fn expand_luarocks_cmake_value(
         const suffix = result[start + 2 ..];
         const close_offset = std.mem.indexOfScalar(u8, suffix, ')') orelse return error.UnsupportedLuaRocksCMakeVariable;
         const variable = suffix[0..close_offset];
-        const external_value = declared_external_path_value(rock orelse return error.UnsupportedLuaRocksCMakeVariable, variable, env_map) catch |err| switch (err) {
-            error.UnsupportedLuaRocksMakeVariable => return error.UnsupportedLuaRocksCMakeVariable,
-            else => return err,
-        };
+        const external_value = if (declared_key != null and std.mem.eql(u8, variable, declared_key.?))
+            // A CMake variable may explicitly forward its LuaRocks value
+            // (for example WITH_SHARED_LIBUV="$(WITH_SHARED_LIBUV)"). With
+            // no Moonstone override, pass a deterministic empty value and
+            // let the project's declared CMake default apply. Do not read an
+            // ambient host variable.
+            ""
+        else if (rock) |r|
+            declared_external_path_value(r, variable, env_map) catch |err| switch (err) {
+                error.UnsupportedLuaRocksMakeVariable => return error.UnsupportedLuaRocksCMakeVariable,
+                else => return err,
+            }
+        else
+            return error.UnsupportedLuaRocksCMakeVariable;
         const placeholder = result[start .. start + 3 + close_offset];
         const next = try std.mem.replaceOwned(u8, allocator, result, placeholder, external_value);
         allocator.free(result);
@@ -1149,8 +1160,25 @@ test "LuaRocks CMake variables reject unknown placeholders" {
     defer env.deinit();
     try std.testing.expectError(
         error.UnsupportedLuaRocksCMakeVariable,
-        expand_luarocks_cmake_value(allocator, null, "$(UNDECLARED_TOOLCHAIN_VALUE)", &env),
+        expand_luarocks_cmake_value(allocator, null, null, "$(UNDECLARED_TOOLCHAIN_VALUE)", &env),
     );
+}
+
+test "LuaRocks CMake self-forwarded variables use deterministic defaults" {
+    const allocator = std.testing.allocator;
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+    try env.put("WITH_SHARED_LIBUV", "host-specific-value-must-not-leak");
+
+    const expanded = try expand_luarocks_cmake_value(
+        allocator,
+        null,
+        "WITH_SHARED_LIBUV",
+        "$(WITH_SHARED_LIBUV)",
+        &env,
+    );
+    defer allocator.free(expanded);
+    try std.testing.expectEqualStrings("", expanded);
 }
 
 test "LuaRocks command variables become projected command values" {
@@ -1420,7 +1448,14 @@ pub fn prepare_source_rock(
     const class = classify_rock(&intent);
     switch (class) {
         .pure_lua, .builtin_cmodule, .command_build => {},
-        .unsupported => return error.UnsupportedLuaRocksBuildType,
+        .unsupported => {
+            @import("../../diagnostics/error_context.zig").setFmt(
+                allocator,
+                "LuaRocks package {s}@{s} uses custom build backend `{s}`\nThe rockspec is valid, but Moonstone cannot execute LuaRocks plugin backends as opaque host code. A deterministic Moonstone translator for this backend is required.",
+                .{ pkg_name, version, rock_build_type(&intent) },
+            );
+            return error.UnsupportedLuaRocksBuildType;
+        },
         .binary_rock => unreachable,
     }
     const selected_target = options.target orelse platform_target.hostTargetLiteral();
@@ -1865,10 +1900,10 @@ pub fn discoverVersions(
     var it = pkg_entry.object.iterator();
     while (it.next()) |entry| {
         if (!manifest_version_has_installable_entry(entry.value_ptr.*, host_arch)) continue;
-        const version = semver.Version.parseCloned(allocator, entry.key_ptr.*) catch continue;
+        const version = semver.Version.parseLuaRocksCloned(allocator, entry.key_ptr.*) catch continue;
         var already_present = false;
         for (versions.items) |existing| {
-            if (existing.compare(version) == 0 and std.mem.eql(u8, existing.build, version.build)) {
+            if (existing.compareLuaRocks(version) == 0) {
                 already_present = true;
                 break;
             }
@@ -1896,17 +1931,8 @@ pub fn refreshManifest(
     parsed.deinit();
 }
 
-/// Pick the newest version that has an installable rock entry.
+/// Pick the newest version that has an installable rock entry matching the requested version range.
 fn select_version(allocator: std.mem.Allocator, manifest_json: std.json.Value, pkg_name: []const u8, version_range: []const u8) ![]const u8 {
-    // If user gave an exact version (or constraint prefix), strip it and trust it exists.
-    if (!std.mem.eql(u8, version_range, "*") and !std.mem.eql(u8, version_range, "")) {
-        const ver = if (version_range.len > 0 and (version_range[0] == '^' or version_range[0] == '~' or version_range[0] == '='))
-            version_range[1..]
-        else
-            version_range;
-        return try normalize_luarocks_version(allocator, ver);
-    }
-
     const repository = manifest_json.object.get("repository") orelse {
         return error.RocksVersionDiscoveryFailed;
     };
@@ -1916,25 +1942,34 @@ fn select_version(allocator: std.mem.Allocator, manifest_json: std.json.Value, p
     const host_arch = try host_to_luarocks_arch(allocator);
     defer if (host_arch) |arch| allocator.free(arch);
 
-    var best_version: ?[]const u8 = null;
+    const semver = @import("../../domain/semver.zig");
+    var parsed_range = semver.VersionRange.parseLuaRocks(allocator, version_range) catch |err| {
+        return err;
+    };
+    defer parsed_range.deinit(allocator);
+
+    var best_version: ?semver.Version = null;
+    var best_key: ?[]const u8 = null;
+
     var it = pkg_entry.object.iterator();
     while (it.next()) |entry| {
         const version_key = entry.key_ptr.*;
         if (!manifest_version_has_installable_entry(entry.value_ptr.*, host_arch)) continue;
 
-        if (best_version) |bv| {
-            if (std.mem.order(u8, version_key, bv) == .gt) {
-                best_version = version_key;
+        const cand_v = semver.Version.parseLuaRocks(version_key) catch continue;
+        if (parsed_range.contains(cand_v)) {
+            if (best_version == null or cand_v.compareLuaRocks(best_version.?) > 0) {
+                best_version = cand_v;
+                best_key = version_key;
             }
-        } else {
-            best_version = version_key;
         }
     }
 
-    const result = best_version orelse {
-        return error.RocksVersionDiscoveryFailed;
-    };
-    return try allocator.dupe(u8, result);
+    if (best_key) |key| {
+        return try allocator.dupe(u8, key);
+    }
+
+    return error.RocksVersionDiscoveryFailed;
 }
 
 /// Check if a binary rock matching the host arch is available for this version.
@@ -2090,9 +2125,9 @@ fn fetch_rockspec(
         }
     }
 
-    // Probe revisions 1-3.
-    var rev: u32 = 1;
-    while (rev <= 3) : (rev += 1) {
+    // Probe revisions 0-9.
+    var rev: u32 = 0;
+    while (rev <= 9) : (rev += 1) {
         const url = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}-{d}.rockspec", .{
             base, pkg_name, version, rev,
         });

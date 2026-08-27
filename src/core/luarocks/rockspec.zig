@@ -222,19 +222,62 @@ pub fn parse_dependency_string(allocator: std.mem.Allocator, dep_str: []const u8
     const trimmed = std.mem.trim(u8, dep_str, " \t\r\n");
     if (trimmed.len == 0) return error.InvalidDependencyString;
 
-    var it = std.mem.tokenizeAny(u8, trimmed, " \t\r\n");
-    const name = it.next() orelse return error.InvalidDependencyString;
+    var split_idx: usize = 0;
+    while (split_idx < trimmed.len) : (split_idx += 1) {
+        const c = trimmed[split_idx];
+        if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or
+            c == '~' or c == '>' or c == '<' or c == '=' or c == '!')
+        {
+            break;
+        }
+    }
 
-    const rest = std.mem.trim(u8, trimmed[name.len..], " \t\r\n");
-    if (rest.len > 0) {
-        return Dependency{
-            .name = try allocator.dupe(u8, name),
-            .constraint = try allocator.dupe(u8, rest),
-        };
-    } else {
-        return Dependency{
-            .name = try allocator.dupe(u8, name),
-            .constraint = null,
-        };
+    if (split_idx == 0) return error.InvalidDependencyString;
+
+    const name = trimmed[0..split_idx];
+    const rest = std.mem.trim(u8, trimmed[split_idx..], " \t\r\n");
+
+    const owned_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned_name);
+    const owned_constraint = if (rest.len > 0) try allocator.dupe(u8, rest) else null;
+
+    return Dependency{
+        .name = owned_name,
+        .constraint = owned_constraint,
+    };
+}
+
+test "parse_dependency_string parses various LuaRocks dependency strings" {
+    const allocator = std.testing.allocator;
+
+    {
+        const dep = try parse_dependency_string(allocator, "busted~>2");
+        defer dep.deinit(allocator);
+        try std.testing.expectEqualStrings("busted", dep.name);
+        try std.testing.expectEqualStrings("~>2", dep.constraint.?);
+    }
+    {
+        const dep = try parse_dependency_string(allocator, "luv == 1.52.1");
+        defer dep.deinit(allocator);
+        try std.testing.expectEqualStrings("luv", dep.name);
+        try std.testing.expectEqualStrings("== 1.52.1", dep.constraint.?);
+    }
+    {
+        const dep = try parse_dependency_string(allocator, "lusc_luv >= 4.0");
+        defer dep.deinit(allocator);
+        try std.testing.expectEqualStrings("lusc_luv", dep.name);
+        try std.testing.expectEqualStrings(">= 4.0", dep.constraint.?);
+    }
+    {
+        const dep = try parse_dependency_string(allocator, "luafilesystem");
+        defer dep.deinit(allocator);
+        try std.testing.expectEqualStrings("luafilesystem", dep.name);
+        try std.testing.expect(dep.constraint == null);
+    }
+    {
+        const dep = try parse_dependency_string(allocator, "foo>=1.0");
+        defer dep.deinit(allocator);
+        try std.testing.expectEqualStrings("foo", dep.name);
+        try std.testing.expectEqualStrings(">=1.0", dep.constraint.?);
     }
 }

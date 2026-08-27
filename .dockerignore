@@ -10,9 +10,8 @@ build
 .ci
 release-tools/.venv
 fixtures/sandbox
-testing-suite/lua-tools/.moonstone
-testing-suite/lua-tools/moonstone.lock
-tests/local
-tests/tools
-tests/lua-tools
+tests/lua-tools/.moonstone
+tests/lua-tools/moonstone.lock
+tests/tools/.moonstone
+tests/tools/moonstone.lock
 **/.DS_Store

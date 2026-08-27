@@ -537,9 +537,12 @@ pub const add_command = struct {
                 null;
             defer if (path_candidate) |*candidate| candidate.deinit(allocator);
 
-            const range = try moonstone.domain.semver.VersionRange.parse(allocator, parsed.constraint orelse "*");
-            errdefer range.deinit(allocator);
             const selected_resolver = try resolverForPackageSpec(&mt, parsed);
+            const range = if (selected_resolver == .rocks)
+                try moonstone.domain.semver.VersionRange.parseLuaRocks(allocator, parsed.constraint orelse "*")
+            else
+                try moonstone.domain.semver.VersionRange.parse(allocator, parsed.constraint orelse "*");
+            errdefer range.deinit(allocator);
 
             try targets.append(allocator, .{
                 .name = try allocator.dupe(u8, if (path_candidate) |candidate| candidate.name else parsed.name),
@@ -757,6 +760,7 @@ pub const add_command = struct {
             var is_explicit = false;
             var explicit_prefix: ?[]const u8 = null;
             var explicit_spec: ?[]const u8 = null;
+            var explicit_constraint: ?[]const u8 = null;
             for (self.positionals) |pkg_spec| {
                 const parsed = try moonstone.domain.package_spec.parsePackageSpec(allocator, pkg_spec);
                 defer parsed.deinit(allocator);
@@ -769,6 +773,9 @@ pub const add_command = struct {
                 if (packageNamesMatch(parsed_name, pkg_name)) {
                     is_explicit = true;
                     explicit_spec = try allocator.dupe(u8, pkg_spec);
+                    if (parsed.constraint) |c| {
+                        explicit_constraint = try allocator.dupe(u8, c);
+                    }
                     if (parsed.registry) |r| {
                         explicit_prefix = try allocator.dupe(u8, r);
                     } else if (parsed.resolver) |r| {
@@ -779,6 +786,7 @@ pub const add_command = struct {
             }
             defer if (explicit_prefix) |r| allocator.free(r);
             defer if (explicit_spec) |spec| allocator.free(spec);
+            defer if (explicit_constraint) |c| allocator.free(c);
 
             // LuaRocks source materialization has a post-solve build closure:
             // foreign `build_dependencies` must be realized and projected
@@ -793,12 +801,12 @@ pub const add_command = struct {
                     return error.LuaRocksAddRequiresSync;
                 }
 
-                const range_prefix = blk: {
-                    if (self.save_exact) break :blk "";
-                    if (self.save_tilde) break :blk "~";
-                    break :blk "^";
+                const final_ver = if (explicit_constraint) |c|
+                    try allocator.dupe(u8, c)
+                else blk: {
+                    const range_prefix = if (self.save_exact) "" else if (self.save_tilde) "~" else "^";
+                    break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved_art.version });
                 };
-                const final_ver = try std.fmt.allocPrint(allocator, "{s}{s}", .{ range_prefix, resolved_art.version });
                 defer allocator.free(final_ver);
                 try mt.add_dependency_with_registry(allocator, pkg_name, final_ver, target_role, self.optional, explicit_prefix);
                 try added_list.append(allocator, try allocator.dupe(u8, pkg_name));

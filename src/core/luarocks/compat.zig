@@ -27,6 +27,9 @@ const rules = [_]SourcePatchRule{
             .value = "1",
         },
     },
+    .{ .package_name = "lua-cjson", .runtime = .puc_lua_52, .source_file = "lua_cjson.c", .source_guard = "lua_objlen", .replacement = "lua_rawlen", .recipe = .{ .key = "MOONSTONE_COMPAT_LUA_CJSON_LUA_OBJLEN", .value = "1" } },
+    .{ .package_name = "lua-cjson", .runtime = .puc_lua_53, .source_file = "lua_cjson.c", .source_guard = "lua_objlen", .replacement = "lua_rawlen", .recipe = .{ .key = "MOONSTONE_COMPAT_LUA_CJSON_LUA_OBJLEN", .value = "1" } },
+    .{ .package_name = "lua-cjson", .runtime = .puc_lua_54, .source_file = "lua_cjson.c", .source_guard = "lua_objlen", .replacement = "lua_rawlen", .recipe = .{ .key = "MOONSTONE_COMPAT_LUA_CJSON_LUA_OBJLEN", .value = "1" } },
 };
 
 pub fn apply(
@@ -84,4 +87,12 @@ test "legacy lua-cjson recipe disables its duplicate Lua 5.1 auxiliary API shim"
 test "lua-cjson compatibility recipe is limited to LuaJIT 2.1" {
     try std.testing.expect(matching_rule("lua-cjson", .luajit_21) != null);
     try std.testing.expect(matching_rule("lua-cjson", .puc_lua_51) == null);
+}
+
+test "legacy lua-cjson uses the Lua 5.2+ raw length API" {
+    const allocator = std.testing.allocator;
+    const source = "len = lua_objlen(l, -1);";
+    const patched = (try patch_source(allocator, source, rules[1])).?;
+    defer allocator.free(patched);
+    try std.testing.expectEqualStrings("len = lua_rawlen(l, -1);", patched);
 }

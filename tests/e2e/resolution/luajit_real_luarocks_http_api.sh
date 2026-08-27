@@ -99,12 +99,11 @@ moon init . --name luajit-rocks-http-api --interpreter luajit@2.1 --no-git
 # Force the dependency source to the LuaRocks resolver and verify all additions
 # are represented with the explicit `rocks:` prefix in moonstone.toml.
 echo "━━━ add rocks:dkjson ━━━"
-moon add rocks:dkjson --no-sync
+moon add rocks:dkjson
 echo "━━━ add rocks:luafilesystem ━━━"
-moon add rocks:luafilesystem --no-sync
+moon add rocks:luafilesystem
 echo "━━━ add rocks:luasocket ━━━"
-moon add rocks:luasocket --no-sync
-moon sync
+moon add rocks:luasocket
 
 grep 'name = "dkjson"' moonstone.toml
 grep 'name = "luafilesystem"' moonstone.toml
