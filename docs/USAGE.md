@@ -58,6 +58,22 @@ output.module = "mylib"
 output.path = "mylib.so"
 ```
 
+### Pure-Lua libraries
+
+A source-only Lua library should normally publish **one package version** with
+one portable `target = "source"` artifact. Do not publish a separate semantic
+release just for Lua 5.1, 5.2, 5.3, 5.4, 5.5, or LuaJIT. When the source
+artifact omits `lua_abi`, Moonstone treats it as ABI-agnostic and records the
+consumer's selected runtime profile and exact materialization in that project's
+lockfile.
+
+Ballad's `moonstone.registry.source_package` produces this shape by default;
+it is the right publishing path for a library containing only portable `.lua`
+source. Add explicit ABI- and target-scoped artifacts only when a package ships
+native modules, bytecode, or other runtime-specific generated output. A source
+fallback remains the portable recovery path when such a package can be built
+locally.
+
 ## 3. Verification
 
 Before publishing, test your package locally:

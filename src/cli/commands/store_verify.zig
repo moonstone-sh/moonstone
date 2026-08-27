@@ -9,6 +9,7 @@ pub const StoreVerifyCommand = struct {
     all: bool = false,
     repair: bool = false,
     json: bool = false,
+    package: ?[]const u8 = null,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -17,6 +18,7 @@ pub const StoreVerifyCommand = struct {
             \\Verify the integrity of all artifacts in the store.
             \\
             \\Flags:
+            \\  --package <name>  Verify artifacts for one exact package name
             \\  --repair      Delete corrupted artifacts from the store and index
             \\  --json        Output results as JSON
             \\
@@ -46,10 +48,19 @@ pub const StoreVerifyCommand = struct {
         if (sql_c.sqlite3_open(index_db_path_z, &db) != sql_c.SQLITE_OK) return error.SQLiteOpenError;
         defer _ = sql_c.sqlite3_close(db);
 
-        const sql = "SELECT artifact_hash, path, name, version FROM artifacts;";
+        const sql = "SELECT artifact_hash, path, name, version FROM artifacts WHERE (? IS NULL OR name = ?);";
         var stmt: ?*sql_c.sqlite3_stmt = null;
         if (sql_c.sqlite3_prepare_v2(db, sql.ptr, -1, &stmt, null) != sql_c.SQLITE_OK) return error.SQLitePrepareError;
         defer _ = sql_c.sqlite3_finalize(stmt);
+
+        const transient = moonstone.store.driver.moonstone_sqlite_transient_ptr;
+        if (self.package) |package_name| {
+            _ = sql_c.sqlite3_bind_text(stmt, 1, package_name.ptr, @intCast(package_name.len), transient);
+            _ = sql_c.sqlite3_bind_text(stmt, 2, package_name.ptr, @intCast(package_name.len), transient);
+        } else {
+            _ = sql_c.sqlite3_bind_null(stmt, 1);
+            _ = sql_c.sqlite3_bind_null(stmt, 2);
+        }
 
         var total: usize = 0;
         var corrupted: usize = 0;
@@ -65,19 +76,40 @@ pub const StoreVerifyCommand = struct {
                 try stdout.print("Verifying {s}@{s}... ", .{ p_name, version });
             }
 
-            const files_path = try std.fs.path.join(allocator, &.{ art_path, "files" });
-            defer allocator.free(files_path);
+            const actual_hash = blk: {
+                // Registry archive hashes identify their retained source payload, not
+                // the extracted filesystem tree. Comparing the latter would mark
+                // every valid archive-backed package corrupt and make --repair
+                // destructive. Source-materialized artifacts without a payload
+                // continue to use the canonical tree hash.
+                const manifest_path = try std.fs.path.join(allocator, &.{ art_path, "manifest.toml" });
+                defer allocator.free(manifest_path);
+                const manifest_content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch null;
+                if (manifest_content) |content| {
+                    defer allocator.free(content);
+                    var store_manifest = moonstone.domain.manifest.StoreManifest.parse(allocator, content) catch null;
+                    if (store_manifest) |*sm| {
+                        defer sm.deinit(allocator);
+                        if (sm.origin.source_payload.len > 0) {
+                            const payload_path = try std.fs.path.join(allocator, &.{ art_path, sm.origin.source_payload });
+                            defer allocator.free(payload_path);
+                            break :blk try moonstone.identity.hash.blake3_file(allocator, io, payload_path);
+                        }
+                    }
+                }
 
-            var dir = std.Io.Dir.cwd().openDir(io, files_path, .{ .iterate = true }) catch {
-                if (!self.json) try stdout.print("FAILED (missing files)\n", .{});
-                corrupted += 1;
-                continue;
+                const files_path = try std.fs.path.join(allocator, &.{ art_path, "files" });
+                defer allocator.free(files_path);
+                var dir = std.Io.Dir.cwd().openDir(io, files_path, .{ .iterate = true }) catch {
+                    if (!self.json) try stdout.print("FAILED (missing files)\n", .{});
+                    corrupted += 1;
+                    continue;
+                };
+                defer dir.close(io);
+                const actual_hash_raw = try moonstone.identity.hash.artifact_hash(allocator, io, dir);
+                defer allocator.free(actual_hash_raw);
+                break :blk try std.fmt.allocPrint(allocator, "b3:{s}", .{actual_hash_raw});
             };
-            defer dir.close(io);
-
-            const actual_hash_raw = try moonstone.identity.hash.artifact_hash(allocator, io, dir);
-            defer allocator.free(actual_hash_raw);
-            const actual_hash = try std.fmt.allocPrint(allocator, "b3:{s}", .{actual_hash_raw});
             defer allocator.free(actual_hash);
 
             if (!std.mem.eql(u8, expected_hash, actual_hash)) {
