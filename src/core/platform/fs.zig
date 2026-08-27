@@ -191,10 +191,7 @@ pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ
     } else null;
     defer if (res) |r| r.deinit();
 
-    const HOME = env.get("HOME") orelse if (comptime builtin.os.tag == .windows)
-        (env.get("USERPROFILE") orelse return error.EnvNoHome)
-    else
-        return error.EnvNoHome;
+    const HOME = env_utils.get_home_dir(env) catch return error.EnvNoHome;
 
     const VERSION = build_options.version;
     const MAJOR = VERSION[0];

@@ -4,6 +4,10 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $moon = Join-Path $repo 'zig-out/bin/moon.exe'
 $work = Join-Path $env:RUNNER_TEMP 'moonstone-windows-core'
 $project = Join-Path $work 'project'
+$bootstrapProject = Join-Path $work 'bootstrap-project'
+$windowsProfile = Join-Path $work 'windows-profile'
+$windowsAppData = Join-Path $windowsProfile 'AppData/Roaming'
+$windowsLocalAppData = Join-Path $windowsProfile 'AppData/Local'
 $nativeSources = Join-Path $work 'native-sources'
 $nativePackage = 'native-loader-probe'
 $nativeLibraryDirectory = Join-Path $project '.moonstone/env/lib/native'
@@ -15,6 +19,37 @@ $transcript = Join-Path $work 'windows-core-transcript.txt'
 Start-Transcript -Path $transcript -Force | Out-Null
 
 try {
+
+# Start from the environment a normal PowerShell user has: HOME and the
+# Moonstone-specific overrides are absent, while Windows profile variables are
+# available. This protects the default-path contract before the isolated core
+# projection fixture below installs explicit test paths.
+Remove-Item Env:HOME -ErrorAction SilentlyContinue
+Remove-Item Env:MOONSTONE_HOME -ErrorAction SilentlyContinue
+Remove-Item Env:MOONSTONE_DATA -ErrorAction SilentlyContinue
+Remove-Item Env:MOONSTONE_CACHE -ErrorAction SilentlyContinue
+Remove-Item Env:MOONSTONE_CONFIG -ErrorAction SilentlyContinue
+Remove-Item Env:MOONSTONE_CONFIG_FILE -ErrorAction SilentlyContinue
+$env:USERPROFILE = $windowsProfile
+$env:APPDATA = $windowsAppData
+$env:LOCALAPPDATA = $windowsLocalAppData
+
+& $moon init $bootstrapProject --name windows-bootstrap --kind script --interpreter lua@5.4 --no-git --no-sync
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $bootstrapProject 'moonstone.toml'))) { throw 'moon init failed without HOME or MOONSTONE_* overrides' }
+
+Push-Location $bootstrapProject
+try {
+    # --no-sync keeps this native smoke focused on remote metadata resolution;
+    # it still resolves the selected runtime and the actual LuaRocks package.
+    & $moon add rocks:inspect --no-sync
+    if ($LASTEXITCODE -ne 0) { throw 'moon add rocks:inspect failed to resolve in the normal Windows environment' }
+} finally {
+    Pop-Location
+}
+
+if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/data/index'))) { throw 'Moonstone did not create its data index below LOCALAPPDATA' }
+if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/cache'))) { throw 'Moonstone did not create its cache below LOCALAPPDATA' }
+if (-not (Select-String -Path (Join-Path $bootstrapProject 'moonstone.toml') -Pattern 'rocks:inspect' -Quiet)) { throw 'moon add did not record the resolved LuaRocks dependency' }
 
 $env:MOONSTONE_HOME = Join-Path $work 'moonstone-home'
 $env:MOONSTONE_DATA = Join-Path $work 'moonstone-data'
