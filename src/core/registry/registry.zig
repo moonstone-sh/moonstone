@@ -10,6 +10,15 @@ const manifest_cache_mod = @import("../cache/manifest_cache.zig");
 var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 var compact_index_staging_counter: std.atomic.Value(u64) = .init(0);
 
+/// Joins a remote registry root and its relative resource path. This is
+/// deliberately separate from std.fs.path.join: URLs always use `/`, including
+/// when the Moonstone executable runs on Windows.
+fn joinRemoteUrl(allocator: std.mem.Allocator, root: []const u8, sub_path: []const u8) ![]u8 {
+    const clean_root = std.mem.trimEnd(u8, root, "/");
+    const clean_sub_path = std.mem.trimStart(u8, sub_path, "/");
+    return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ clean_root, clean_sub_path });
+}
+
 /// Resolved registry entry ready for use by the client.
 pub const ResolvedRegistry = struct {
     name: []const u8,
@@ -191,8 +200,11 @@ pub const RegistryClient = struct {
         defer cache.deinit();
         const key = self.registry_cache_key(sub_path, private) catch return;
         defer self.allocator.free(key.name);
-        const url = if (std.mem.startsWith(u8, sub_path, "http")) sub_path else std.fs.path.join(self.allocator, &.{ self.registry_root, sub_path }) catch sub_path;
-        defer if (url.ptr != sub_path.ptr) self.allocator.free(url);
+        const url = if (std.mem.startsWith(u8, sub_path, "http"))
+            self.allocator.dupe(u8, sub_path) catch return
+        else
+            joinRemoteUrl(self.allocator, self.registry_root, sub_path) catch return;
+        defer self.allocator.free(url);
         cache.write(key, url, content) catch {};
     }
 
@@ -415,7 +427,7 @@ pub const RegistryClient = struct {
                 profiler.span("registry.payload.fetch", span);
                 return content;
             }
-            const url = try std.fs.path.join(self.allocator, &.{ self.registry_root, sub_path });
+            const url = try joinRemoteUrl(self.allocator, self.registry_root, sub_path);
             defer self.allocator.free(url);
             const content = try self.get_url(url);
             errdefer self.allocator.free(content);
@@ -501,3 +513,9 @@ pub const RegistryClient = struct {
         }
     }
 };
+
+test "remote registry URL joining uses URL separators" {
+    const url = try joinRemoteUrl(std.testing.allocator, "https://registry.moonstone.sh/registry/v0/", "/registry.toml");
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/registry.toml", url);
+}
