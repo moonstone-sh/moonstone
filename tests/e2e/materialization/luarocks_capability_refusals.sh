@@ -27,7 +27,9 @@ declare -a cases=(
     'supported_platforms:UnsupportedLuaRocksPlatform'
     'command_missing_build:MissingLuaRocksBuildCommand'
     'command_missing_install:MissingLuaRocksInstallCommand'
-    'build_type:UnsupportedLuaRocksBuildType'
+    # Custom backends are rejected with a deliberately actionable diagnostic,
+    # rather than exposing the implementation-only Zig error name.
+    'build_type:uses custom build backend `custom`'
 )
 
 for case_entry in "${cases[@]}"; do
@@ -153,7 +155,10 @@ for case_entry in "${cases[@]}"; do
             echo "ERROR: moon sync accepted explicit unsupported LuaRocks build backend" >&2
             exit 1
         fi
-        assert_error "${output}" "${expected_error}"
+        # `moon sync` performs source preparation in the materialization
+        # worker, which reports the stable error identifier in its task
+        # failure. `moon add` above exercises the full user-facing diagnostic.
+        assert_error "${output}" "UnsupportedLuaRocksBuildType"
     fi
     popd >/dev/null
 done
