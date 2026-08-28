@@ -100,29 +100,25 @@ pub const InterpreterListCommand = struct {
         if (show_available) {
             const registries = moonstone.registry.resolver.resolve(allocator, io, env) catch &.{};
             defer moonstone.registry.core.deinitResolved(@constCast(registries), allocator);
-            const cache_dir = if (env.get("MOONSTONE_HOME") orelse env.get("HOME")) |h| try std.fs.path.join(allocator, &.{ h, ".cache", "moonstone" }) else null;
-            defer if (cache_dir) |cd| allocator.free(cd);
             if (emitter == null) try stdout.print("\nAvailable interpreters from registries:\n", .{});
             for (registries) |reg| {
                 if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
                 var client = moonstone.registry.core.RegistryClient.init(allocator, io, reg.url, reg.token, env);
                 defer client.deinit();
-                if (cache_dir) |cd| {
-                    const interpreters = client.list_runtimes(cd) catch |err| {
-                        if (emitter == null) try stdout.print("  Error querying registry {s}: {s}\n", .{ reg.url, @errorName(err) });
-                        continue;
-                    };
-                    defer {
-                        for (interpreters) |r| {
-                            allocator.free(r.name);
-                            allocator.free(r.version);
-                        }
-                        allocator.free(interpreters);
-                    }
+                const interpreters = client.list_runtimes(paths.cache) catch |err| {
+                    if (emitter == null) try stdout.print("  Error querying registry {s}: {s}\n", .{ reg.url, @errorName(err) });
+                    continue;
+                };
+                defer {
                     for (interpreters) |r| {
-                        count += 1;
-                        if (emitter) |e| try e.emit(io, .STATUS, r.name, "available", .{ .name = r.name, .version = r.version, .registry = reg.url }) else try stdout.print("  {s}@{s}  ({s})\n", .{ r.name, r.version, reg.url });
+                        allocator.free(r.name);
+                        allocator.free(r.version);
                     }
+                    allocator.free(interpreters);
+                }
+                for (interpreters) |r| {
+                    count += 1;
+                    if (emitter) |e| try e.emit(io, .STATUS, r.name, "available", .{ .name = r.name, .version = r.version, .registry = reg.url }) else try stdout.print("  {s}@{s}  ({s})\n", .{ r.name, r.version, reg.url });
                 }
             }
         }

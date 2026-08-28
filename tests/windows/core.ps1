@@ -39,17 +39,17 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $bootstrapProject 'moonst
 
 Push-Location $bootstrapProject
 try {
-    # --no-sync keeps this native smoke focused on remote metadata resolution;
-    # it still resolves the selected runtime and the actual LuaRocks package.
-    & $moon add rocks:inspect --no-sync
-    if ($LASTEXITCODE -ne 0) { throw 'moon add rocks:inspect failed to resolve in the normal Windows environment' }
+    # Query remote metadata without requiring a published Windows runtime.
+    # This exercises the default registry and cache paths in a normal Windows
+    # environment; runtime installation belongs to the runtime release matrix.
+    $availableInterpreters = & $moon interpreter list --available
+    if ($LASTEXITCODE -ne 0 -or -not ($availableInterpreters -match 'moonstone/lua@')) { throw 'moon interpreter list --available failed in the normal Windows environment' }
 } finally {
     Pop-Location
 }
 
 if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/data/index'))) { throw 'Moonstone did not create its data index below LOCALAPPDATA' }
 if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/cache'))) { throw 'Moonstone did not create its cache below LOCALAPPDATA' }
-if (-not (Select-String -Path (Join-Path $bootstrapProject 'moonstone.toml') -Pattern 'rocks:inspect' -Quiet)) { throw 'moon add did not record the resolved LuaRocks dependency' }
 
 $env:MOONSTONE_HOME = Join-Path $work 'moonstone-home'
 $env:MOONSTONE_DATA = Join-Path $work 'moonstone-data'

@@ -40,7 +40,11 @@ pub fn hostTargetLiteral() []const u8 {
     const os = switch (builtin.os.tag) {
         .linux => "linux-gnu",
         .macos => "macos",
-        .windows => "windows-msvc",
+        .windows => switch (builtin.abi) {
+            .gnu => "windows-gnu",
+            .msvc => "windows-msvc",
+            else => @compileError("Moonstone only supports GNU and MSVC Windows targets"),
+        },
         .freebsd => "freebsd",
         else => @compileError("Moonstone does not support this host operating system"),
     };
