@@ -157,6 +157,14 @@ jobs:
         shell: pwsh
         run: ./tests/windows/core.ps1
 
+      - name: Exercise Windows installer contract (PowerShell 7.x)
+        shell: pwsh
+        run: ./tests/windows/installer.ps1
+
+      - name: Exercise Windows installer contract (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/windows/installer.ps1
+
       - name: Upload Windows core harness state
         if: always()
         uses: actions/upload-artifact@v4

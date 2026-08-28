@@ -44,6 +44,14 @@ Moonstone prioritizes modern DX, eliminating boilerplate and "magic" environment
 Moonstone encapsulates all archive and compression operations under a unified backend-neutral abstraction (`src/core/archive/`):
 - **Native Streaming Backend (`-Darchive-backend=native`, default):** Pure Zig implementation leveraging `std.compress.zstd.Decompress`, `std.compress.flate.Decompress`, `std.tar.Iterator`, `std.tar.Writer`, and `std.zip.Iterator`. Operates with strict streaming to avoid buffering full archives in memory, validates path security against directory traversal, and removes any dependency on host utilities like `tar`, `zstd`, or `unzip`.
 - **OS-Aware System Backend (`-Darchive-backend=system`):** Robust abstraction over platform CLI tools (`tar`, `zstd`, `unzip`) using direct argv execution, environment `PATH`/`PATHEXT` resolution, and automatic temporary path cleanups.
+- **Permission & Security Policy:**
+  - **Sanitization:** Special privilege bits (SUID `04000`, SGID `02000`, sticky `01000`) are strictly stripped from all archive entries.
+  - **Executable & Mode Preservation:** Standard POSIX permission bits (`mode & 0777`) are preserved for files (`0755` executables, `0644` regular files, `0444` read-only files).
+  - **Application Order:** File permissions are applied via open file handles after data has been streamed and flushed to prevent write lockouts.
+  - **Deferred Directory Finalization:** Restrictive directory permissions (`0555`, `0700`) are deferred and restored deepest-first after all children have been extracted.
+  - **ZIP Central Directory Semantics:** ZIP permissions are parsed from Central Directory headers when created by a UNIX host (`version_made_by >> 8 == 3`). DOS/non-UNIX entries safely default to standard file (`0644`) and directory (`0755`) modes.
+  - **Symlinks:** Symlink targets are validated against escape, and permission mutation is intentionally omitted on symlink paths to prevent target-following escapes.
+  - **Fail-Fast Error Handling:** Failures to restore declared POSIX permissions return `ArchivePermissionRestoreFailed` rather than silently degrading.
 - **Supported Formats:** Transparent auto-detection and handling of `.tar.zst`, `.tzst`, `.tar.gz`, `.tgz`, `.tar`, `.zip`, `.rock`, and `.src.rock` across all materialization workflows.
 
 ## 8. The Core Execution Flow

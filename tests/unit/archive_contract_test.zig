@@ -512,3 +512,446 @@ test "Archive contract: unpackArchive auto-detection and extension handling" {
 
     try std.testing.expectError(error.UnsupportedArchiveFormat, archive.unpackArchive(allocator, io_val, p_invalid, d_invalid, .{}));
 }
+
+test "Archive contract: TAR extraction preserves executable bits and exact sanitized modes on POSIX" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "perm_test.tar" });
+    defer allocator.free(tar_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "bin/tool", .content = "#!/bin/sh\necho ok\n", .mode = 0o755 },
+        .{ .name = "mk/luapath", .content = "#!/bin/sh\necho /usr/include\n", .mode = 0o755 },
+        .{ .name = "normal.lua", .content = "return 'normal'\n", .mode = 0o644 },
+        .{ .name = "private.key", .content = "secret", .mode = 0o600 },
+        .{ .name = "admin.sh", .content = "#!/bin/sh\necho admin\n", .mode = 0o700 },
+    };
+
+    try helpers.writeTarFile(allocator, io_val, tar_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_perm" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTar(allocator, io_val, tar_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f_tool = try tmp.dir.openFile(io_val, "out_perm/bin/tool", .{});
+        defer f_tool.close(io_val);
+        const st_tool = try f_tool.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st_tool.permissions.toMode() & 0o777);
+
+        var f_lua = try tmp.dir.openFile(io_val, "out_perm/mk/luapath", .{});
+        defer f_lua.close(io_val);
+        const st_lua = try f_lua.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st_lua.permissions.toMode() & 0o777);
+
+        var f_norm = try tmp.dir.openFile(io_val, "out_perm/normal.lua", .{});
+        defer f_norm.close(io_val);
+        const st_norm = try f_norm.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), st_norm.permissions.toMode() & 0o777);
+
+        var f_priv = try tmp.dir.openFile(io_val, "out_perm/private.key", .{});
+        defer f_priv.close(io_val);
+        const st_priv = try f_priv.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), st_priv.permissions.toMode() & 0o777);
+    }
+}
+
+test "Archive contract: Privilege bits (SUID, SGID, sticky) are strictly stripped" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "privilege.tar" });
+    defer allocator.free(tar_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "suid_bin", .content = "suid", .mode = 0o4755 },
+        .{ .name = "sgid_bin", .content = "sgid", .mode = 0o2755 },
+        .{ .name = "both_bin", .content = "both", .mode = 0o6755 },
+        .{ .name = "sticky_bin", .content = "sticky", .mode = 0o1777 },
+    };
+
+    try helpers.writeTarFile(allocator, io_val, tar_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_priv" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTar(allocator, io_val, tar_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f1 = try tmp.dir.openFile(io_val, "out_priv/suid_bin", .{});
+        defer f1.close(io_val);
+        const st1 = try f1.stat(io_val);
+        // SUID 04000 stripped -> 0755
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st1.permissions.toMode() & 0o7777);
+
+        var f2 = try tmp.dir.openFile(io_val, "out_priv/sgid_bin", .{});
+        defer f2.close(io_val);
+        const st2 = try f2.stat(io_val);
+        // SGID 02000 stripped -> 0755
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st2.permissions.toMode() & 0o7777);
+
+        var f3 = try tmp.dir.openFile(io_val, "out_priv/both_bin", .{});
+        defer f3.close(io_val);
+        const st3 = try f3.stat(io_val);
+        // 06755 stripped -> 0755
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st3.permissions.toMode() & 0o7777);
+
+        var f4 = try tmp.dir.openFile(io_val, "out_priv/sticky_bin", .{});
+        defer f4.close(io_val);
+        const st4 = try f4.stat(io_val);
+        // Sticky 01000 stripped -> 0777
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o777), st4.permissions.toMode() & 0o7777);
+    }
+}
+
+test "Archive contract: Restrictive files (0444, 0400) extract successfully because permissions apply after writing" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "readonly.tar" });
+    defer allocator.free(tar_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "readonly.txt", .content = "Read-only payload content", .mode = 0o444 },
+        .{ .name = "user_readonly.txt", .content = "User read only content", .mode = 0o400 },
+    };
+
+    try helpers.writeTarFile(allocator, io_val, tar_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_ro" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTar(allocator, io_val, tar_path, dest_path, .{});
+
+    const c1 = try tmp.dir.readFileAlloc(io_val, "out_ro/readonly.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(c1);
+    try std.testing.expectEqualStrings("Read-only payload content", c1);
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f1 = try tmp.dir.openFile(io_val, "out_ro/readonly.txt", .{});
+        defer f1.close(io_val);
+        const st1 = try f1.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o444), st1.permissions.toMode() & 0o777);
+    }
+}
+
+test "Archive contract: Restrictive directory permissions (0555) deferred until descendants extracted" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "restrict_dir.tar" });
+    defer allocator.free(tar_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "locked", .kind = .directory, .mode = 0o555 },
+        .{ .name = "locked/child.txt", .content = "Child inside locked directory", .mode = 0o644 },
+        .{ .name = "locked/nested", .kind = .directory, .mode = 0o555 },
+        .{ .name = "locked/nested/deep.txt", .content = "Deep child inside nested locked dir", .mode = 0o644 },
+    };
+
+    try helpers.writeTarFile(allocator, io_val, tar_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_locked" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTar(allocator, io_val, tar_path, dest_path, .{});
+
+    const c1 = try tmp.dir.readFileAlloc(io_val, "out_locked/locked/child.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(c1);
+    try std.testing.expectEqualStrings("Child inside locked directory", c1);
+
+    const c2 = try tmp.dir.readFileAlloc(io_val, "out_locked/locked/nested/deep.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(c2);
+    try std.testing.expectEqualStrings("Deep child inside nested locked dir", c2);
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var d1 = try tmp.dir.openDir(io_val, "out_locked/locked", .{});
+        defer d1.close(io_val);
+        const st1 = try d1.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o555), st1.permissions.toMode() & 0o777);
+
+        // Fix permissions so tmp directory cleanup succeeds on restrictive test folders
+        tmp.dir.setFilePermissions(io_val, "out_locked/locked/nested", std.Io.File.Permissions.fromMode(0o777), .{}) catch {};
+        tmp.dir.setFilePermissions(io_val, "out_locked/locked", std.Io.File.Permissions.fromMode(0o777), .{}) catch {};
+    }
+}
+
+test "Archive contract: Executable script in archive is actually executable on host" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_gz_path = try std.fs.path.join(allocator, &.{ tmp_path, "exec_test.tar.gz" });
+    defer allocator.free(tar_gz_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "run.sh", .content = "#!/bin/sh\nexit 0\n", .mode = 0o755 },
+    };
+
+    try helpers.writeTarGzFile(allocator, io_val, tar_gz_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_exec" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTarGz(allocator, io_val, tar_gz_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        const script_abs = try std.fs.path.join(allocator, &.{ dest_path, "run.sh" });
+        defer allocator.free(script_abs);
+
+        const run_res = try std.process.run(allocator, io_val, .{
+            .argv = &.{script_abs},
+        });
+        defer allocator.free(run_res.stdout);
+        defer allocator.free(run_res.stderr);
+
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, run_res.term);
+    }
+}
+
+test "Archive contract: ZIP extraction preserves UNIX executable bits and falls back on DOS creator" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const zip_path = try std.fs.path.join(allocator, &.{ tmp_path, "zip_perms.zip" });
+    defer allocator.free(zip_path);
+
+    const entries = [_]helpers.ZipEntry{
+        // UNIX-created entry (version_made_by = 3 << 8) with 0755 executable mode
+        .{
+            .name = "bin/unix_tool",
+            .content = "#!/bin/sh\necho unix\n",
+            .version_made_by = (3 << 8) | 20,
+            .external_attributes = (0o755 << 16) | 0o100000,
+        },
+        // DOS-created entry (version_made_by = 20)
+        .{
+            .name = "dos_file.txt",
+            .content = "dos content",
+            .version_made_by = 20,
+            .external_attributes = 0x20, // archive attr
+        },
+    };
+
+    try helpers.writeZipFile(allocator, io_val, zip_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_zipperm" });
+    defer allocator.free(dest_path);
+
+    try archive.extractZip(allocator, io_val, zip_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f_unix = try tmp.dir.openFile(io_val, "out_zipperm/bin/unix_tool", .{});
+        defer f_unix.close(io_val);
+        const st_unix = try f_unix.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st_unix.permissions.toMode() & 0o777);
+
+        var f_dos = try tmp.dir.openFile(io_val, "out_zipperm/dos_file.txt", .{});
+        defer f_dos.close(io_val);
+        const st_dos = try f_dos.stat(io_val);
+        // Fallback default 0o644 (not 0000)
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), st_dos.permissions.toMode() & 0o777);
+    }
+}
+
+test "Archive contract: createTarGz preserves source executable modes in roundtrip" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    try tmp.dir.createDirPath(io_val, "src/bin");
+    try tmp.dir.writeFile(io_val, .{
+        .sub_path = "src/bin/my_tool",
+        .data = "#!/bin/sh\necho roundtrip\n",
+    });
+    try tmp.dir.writeFile(io_val, .{
+        .sub_path = "src/lib.lua",
+        .data = "return { ok = true }\n",
+    });
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f = try tmp.dir.openFile(io_val, "src/bin/my_tool", .{});
+        defer f.close(io_val);
+        try f.setPermissions(io_val, std.Io.File.Permissions.fromMode(0o755));
+    }
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const src_path = try std.fs.path.join(allocator, &.{ tmp_path, "src" });
+    defer allocator.free(src_path);
+
+    const tar_gz_path = try std.fs.path.join(allocator, &.{ tmp_path, "roundtrip.tar.gz" });
+    defer allocator.free(tar_gz_path);
+
+    try archive.createTarGz(allocator, io_val, src_path, tar_gz_path);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "extracted_roundtrip" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTarGz(allocator, io_val, tar_gz_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f_tool = try tmp.dir.openFile(io_val, "extracted_roundtrip/bin/my_tool", .{});
+        defer f_tool.close(io_val);
+        const st_tool = try f_tool.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o755), st_tool.permissions.toMode() & 0o777);
+
+        var f_lib = try tmp.dir.openFile(io_val, "extracted_roundtrip/lib.lua", .{});
+        defer f_lib.close(io_val);
+        const st_lib = try f_lib.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), st_lib.permissions.toMode() & 0o777);
+    }
+}
+
+test "Archive contract: Explicit mode 0000 preserves exact 0000 on file and directory with safe cleanup" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "zero_mode.tar" });
+    defer allocator.free(tar_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "zero_dir", .kind = .directory, .mode = 0o000 },
+        .{ .name = "zero_dir/zero_file.bin", .content = "secret binary data", .mode = 0o000 },
+    };
+
+    try helpers.writeTarFile(allocator, io_val, tar_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_zero" });
+    defer allocator.free(dest_path);
+
+    try archive.extractTar(allocator, io_val, tar_path, dest_path, .{});
+
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        // 1. Verify zero_dir mode is 0o000 via parent directory statFile (fstatat)
+        const st_d = try tmp.dir.statFile(io_val, "out_zero/zero_dir", .{});
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o000), st_d.permissions.toMode() & 0o777);
+
+        // Temporarily allow traversal through zero_dir to inspect child file mode
+        try tmp.dir.setFilePermissions(io_val, "out_zero/zero_dir", std.Io.File.Permissions.fromMode(0o755), .{});
+
+        // 2. Verify zero_file.bin mode is 0o000
+        const st_f = try tmp.dir.statFile(io_val, "out_zero/zero_dir/zero_file.bin", .{});
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o000), st_f.permissions.toMode() & 0o777);
+
+        // Fix file permissions so tmp directory cleanup succeeds
+        tmp.dir.setFilePermissions(io_val, "out_zero/zero_dir/zero_file.bin", std.Io.File.Permissions.fromMode(0o644), .{}) catch {};
+    }
+}
+
+test "Archive contract: ZIP S_IFLNK extracts safely as symlink without permission mutation" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const zip_path = try std.fs.path.join(allocator, &.{ tmp_path, "symlink_test.zip" });
+    defer allocator.free(zip_path);
+
+    const entries = [_]helpers.ZipEntry{
+        .{
+            .name = "real_target.txt",
+            .content = "Original target content\n",
+            .version_made_by = (3 << 8) | 20,
+            .external_attributes = (0o100644 << 16), // S_IFREG + 0644
+        },
+        .{
+            .name = "link_to_target",
+            .content = "real_target.txt",
+            .version_made_by = (3 << 8) | 20,
+            .external_attributes = (0o120777 << 16), // S_IFLNK + 0777
+        },
+    };
+
+    try helpers.writeZipFile(allocator, io_val, zip_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_zlink" });
+    defer allocator.free(dest_path);
+
+    try archive.extractZip(allocator, io_val, zip_path, dest_path, .{});
+
+    // Verify reading symlink resolves to target content
+    const content = try tmp.dir.readFileAlloc(io_val, "out_zlink/link_to_target", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("Original target content\n", content);
+
+    // Verify target file's permissions were not mutated by symlink extraction
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        var f_target = try tmp.dir.openFile(io_val, "out_zlink/real_target.txt", .{});
+        defer f_target.close(io_val);
+        const st = try f_target.stat(io_val);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o644), st.permissions.toMode() & 0o777);
+    }
+}
+
+test "Archive contract: ZIP special device files (FIFO/char dev) are rejected" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const zip_path = try std.fs.path.join(allocator, &.{ tmp_path, "fifo_test.zip" });
+    defer allocator.free(zip_path);
+
+    const entries = [_]helpers.ZipEntry{
+        .{
+            .name = "my_fifo",
+            .content = "",
+            .version_made_by = (3 << 8) | 20,
+            .external_attributes = (0o010644 << 16), // S_IFIFO
+        },
+    };
+
+    try helpers.writeZipFile(allocator, io_val, zip_path, &entries);
+
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "out_fifo" });
+    defer allocator.free(dest_path);
+
+    try std.testing.expectError(error.UnsupportedArchiveFormat, archive.extractZip(allocator, io_val, zip_path, dest_path, .{}));
+}
+
+

@@ -17,6 +17,7 @@ else
 pub const native = @import("native.zig");
 pub const system = @import("system.zig");
 pub const path_validation = @import("path_validation.zig");
+pub const permissions = @import("permissions.zig");
 
 pub const ExtractOptions = native.ExtractOptions;
 pub const ArchiveError = native.ArchiveError;

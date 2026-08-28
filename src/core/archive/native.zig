@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const path_validation = @import("path_validation.zig");
+const permissions = @import("permissions.zig");
 
 pub const ExtractOptions = struct {
     strip_components: u32 = 0,
@@ -27,6 +28,7 @@ pub const ArchiveError = error{
     InvalidZstdMagic,
     CorruptedTarHeader,
     UnsupportedZipStripComponents,
+    ArchivePermissionRestoreFailed,
 } || std.mem.Allocator.Error || std.Io.Dir.OpenError || std.Io.Dir.CreateFileError || std.Io.File.ReadError || std.Io.File.WriteError;
 
 // ============================================================================
@@ -188,6 +190,12 @@ pub fn extractTarStream(
         .link_name_buffer = &link_name_buffer,
     });
 
+    var pending_dirs = std.ArrayList(permissions.PendingDirPermission).empty;
+    defer {
+        for (pending_dirs.items) |p| allocator.free(p.path);
+        pending_dirs.deinit(allocator);
+    }
+
     while (it.next() catch |err| switch (err) {
         error.TarHeader, error.TarHeaderChksum, error.TarNumericValueNegative, error.TarNumericValueTooBig, error.TarUnsupportedHeader, error.TarHeadersTooBig => return error.CorruptedTarHeader,
         error.UnexpectedEndOfStream, error.EndOfStream => return error.UnexpectedEndOfStream,
@@ -228,6 +236,11 @@ pub fn extractTarStream(
         switch (file.kind) {
             .directory => {
                 try dest_dir.createDirPath(io, sanitized_rel_path);
+                const sanitized_mode = permissions.sanitizeArchivedMode(.directory, file.mode);
+                try pending_dirs.append(allocator, .{
+                    .path = try allocator.dupe(u8, sanitized_rel_path),
+                    .mode = sanitized_mode.mode,
+                });
             },
             .file => {
                 if (std.fs.path.dirname(sanitized_rel_path)) |parent| {
@@ -236,9 +249,7 @@ pub fn extractTarStream(
                     }
                 }
 
-                // Strip setuid/setgid/sticky bits for security
-                const safe_mode: u32 = file.mode & 0o777;
-                _ = safe_mode;
+                const sanitized_mode = permissions.sanitizeArchivedMode(.file, file.mode);
 
                 const create_opts: std.Io.Dir.CreateFileOptions = if (options.overwrite)
                     .{ .truncate = true }
@@ -261,6 +272,9 @@ pub fn extractTarStream(
                 var fw = out_file.writer(io, &write_buf);
                 try it.streamRemaining(file, &fw.interface);
                 try fw.interface.flush();
+
+                // Apply sanitized permissions through open file handle
+                try permissions.applyFilePermissions(io, out_file, sanitized_mode.mode);
             },
             .sym_link => {
                 if (!options.allow_symlinks) return error.SymlinkTargetEscapesDestination;
@@ -275,7 +289,16 @@ pub fn extractTarStream(
 
                 dest_dir.deleteFile(io, sanitized_rel_path) catch {};
                 try dest_dir.symLink(io, file.link_name, sanitized_rel_path, .{});
+                // Note: We deliberately do NOT change permissions on symlinks to prevent following targets.
             },
+        }
+    }
+
+    // Deferred/post-order directory permission restoration (deepest-first)
+    if (pending_dirs.items.len > 0) {
+        std.mem.sort(permissions.PendingDirPermission, pending_dirs.items, {}, permissions.comparePendingDirsDeepestFirst);
+        for (pending_dirs.items) |pending| {
+            try permissions.applyDirPermissions(io, dest_dir, pending.path, pending.mode);
         }
     }
 }
@@ -428,9 +451,19 @@ fn writeDirectoryRecursive(
 
         switch (entry.kind) {
             .directory => {
-                try tar_writer.writeDir(rel_path, .{ .mode = 0o755 });
+                var dir_mode: u32 = permissions.DEFAULT_DIR_MODE;
                 var sub_dir = try dir.openDir(io, entry.name, .{ .iterate = true });
                 defer sub_dir.close(io);
+
+                if (comptime permissions.supports_posix_permissions) {
+                    if (sub_dir.stat(io) catch null) |st| {
+                        const raw_mode: u32 = @intCast(st.permissions.toMode());
+                        const sanitized = permissions.sanitizeArchivedMode(.directory, raw_mode);
+                        dir_mode = sanitized.mode;
+                    }
+                }
+
+                try tar_writer.writeDir(rel_path, .{ .mode = dir_mode });
                 try writeDirectoryRecursive(allocator, io, sub_dir, rel_path, tar_writer);
             },
             .file => {
@@ -441,7 +474,16 @@ fn writeDirectoryRecursive(
                 const content = try dir.readFileAlloc(io, entry.name, allocator, std.Io.Limit.limited(size + 1024));
                 defer allocator.free(content);
 
-                try tar_writer.writeFileBytes(rel_path, content, .{ .mode = 0o644 });
+                var file_mode: u32 = permissions.DEFAULT_FILE_MODE;
+                if (comptime permissions.supports_posix_permissions) {
+                    if (f.stat(io) catch null) |st| {
+                        const raw_mode: u32 = @intCast(st.permissions.toMode());
+                        const sanitized = permissions.sanitizeArchivedMode(.file, raw_mode);
+                        file_mode = sanitized.mode;
+                    }
+                }
+
+                try tar_writer.writeFileBytes(rel_path, content, .{ .mode = file_mode });
             },
             .sym_link => {
                 var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -483,6 +525,12 @@ pub fn extractZip(
     };
     var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
 
+    var pending_dirs = std.ArrayList(permissions.PendingDirPermission).empty;
+    defer {
+        for (pending_dirs.items) |p| allocator.free(p.path);
+        pending_dirs.deinit(allocator);
+    }
+
     while (iter.next() catch |err| switch (err) {
         error.ZipBadCdOffset, error.ZipBadExtraFieldSize, error.ZipBadCd64Size, error.ZipInvalid => return error.CorruptArchive,
         error.ZipMultiDiskUnsupported, error.ZipEncryptionUnsupported => return error.UnsupportedArchiveFormat,
@@ -490,10 +538,22 @@ pub fn extractZip(
     }) |entry| {
         if (entry.filename_len > filename_buf.len) return error.ZipExtractionFailed;
 
-        // Read filename from central directory
-        try file_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+        // Read Central Directory header to extract metadata & filename
+        try file_reader.seekTo(entry.header_zip_offset);
+        const cd_header = file_reader.interface.takeStruct(std.zip.CentralDirectoryFileHeader, .little) catch |err| switch (err) {
+            error.ReadFailed => return error.CorruptArchive,
+            error.EndOfStream => return error.UnexpectedEndOfStream,
+        };
+
         const raw_name = filename_buf[0..entry.filename_len];
         try file_reader.interface.readSliceAll(raw_name);
+
+        // Parse POSIX mode from Central Directory header if creator host is UNIX (3)
+        const host_system = cd_header.version_made_by >> 8;
+        const raw_posix_mode: ?u32 = if (host_system == 3)
+            (cd_header.external_file_attributes >> 16)
+        else
+            null;
 
         var eff_name = raw_name;
         if (options.strip_components > 0) {
@@ -520,11 +580,49 @@ pub fn extractZip(
         };
         defer allocator.free(sanitized);
 
-        if (sanitized.len == 0) continue;
+        const file_type = if (raw_posix_mode) |m| (m & 0o170000) else 0;
+        const is_symlink_entry = (file_type == 0o120000);
+        const is_dir_entry = (raw_name[raw_name.len - 1] == '/' or raw_name[raw_name.len - 1] == '\\') or
+            (file_type == 0o040000);
+
+        // Reject dangerous/special files (block/char devices, FIFOs, sockets)
+        if (file_type != 0 and file_type != 0o100000 and file_type != 0o040000 and file_type != 0o120000) {
+            return error.UnsupportedArchiveFormat;
+        }
+
+        // Symlink entry in ZIP (UNIX S_IFLNK)
+        if (is_symlink_entry) {
+            if (!options.allow_symlinks) return error.SymlinkTargetEscapesDestination;
+
+            var target_writer = std.Io.Writer.Allocating.init(allocator);
+            defer target_writer.deinit();
+
+            try extractZipEntry(entry, &file_reader, &target_writer.writer);
+            const target_link = try target_writer.toOwnedSlice();
+            defer allocator.free(target_link);
+
+            try path_validation.validateSymlinkTarget(target_link, sanitized);
+
+            if (std.fs.path.dirname(sanitized)) |parent| {
+                if (parent.len > 0) {
+                    try dest_dir.createDirPath(io, parent);
+                }
+            }
+
+            dest_dir.deleteFile(io, sanitized) catch {};
+            try dest_dir.symLink(io, target_link, sanitized, .{});
+            // Deliberately do NOT mutate permissions on symlinks
+            continue;
+        }
 
         // Directory entry in ZIP
-        if (raw_name[raw_name.len - 1] == '/' or raw_name[raw_name.len - 1] == '\\') {
+        if (is_dir_entry) {
             try dest_dir.createDirPath(io, sanitized);
+            const sanitized_mode = permissions.sanitizeArchivedMode(.directory, raw_posix_mode);
+            try pending_dirs.append(allocator, .{
+                .path = try allocator.dupe(u8, sanitized),
+                .mode = sanitized_mode.mode,
+            });
             continue;
         }
 
@@ -534,6 +632,8 @@ pub fn extractZip(
                 try dest_dir.createDirPath(io, parent);
             }
         }
+
+        const sanitized_mode = permissions.sanitizeArchivedMode(.file, raw_posix_mode);
 
         const create_opts: std.Io.Dir.CreateFileOptions = if (options.overwrite)
             .{ .truncate = true }
@@ -558,6 +658,17 @@ pub fn extractZip(
         // Decompress entry content
         try extractZipEntry(entry, &file_reader, &fw.interface);
         try fw.interface.flush();
+
+        // Apply sanitized permissions through open file handle
+        try permissions.applyFilePermissions(io, out_file, sanitized_mode.mode);
+    }
+
+    // Deferred/post-order directory permission restoration (deepest-first)
+    if (pending_dirs.items.len > 0) {
+        std.mem.sort(permissions.PendingDirPermission, pending_dirs.items, {}, permissions.comparePendingDirsDeepestFirst);
+        for (pending_dirs.items) |pending| {
+            try permissions.applyDirPermissions(io, dest_dir, pending.path, pending.mode);
+        }
     }
 }
 

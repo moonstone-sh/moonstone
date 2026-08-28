@@ -263,3 +263,81 @@ test "Differential: Zstd file compression/decompression native vs system" {
     try std.testing.expectEqualStrings(raw_content, read_system);
     try std.testing.expectEqualStrings(read_native, read_system);
 }
+
+test "Differential: Permission-aware tree comparison native vs system" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tar_exe = try system_tools.findExecutable(allocator, io_val, "tar");
+    if (tar_exe) |exe| {
+        defer allocator.free(exe);
+    } else {
+        return;
+    }
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_gz_path = try std.fs.path.join(allocator, &.{ tmp_path, "perm_diff.tar.gz" });
+    defer allocator.free(tar_gz_path);
+
+    const entries = [_]helpers.TarEntry{
+        .{ .name = "bin/launcher.sh", .content = "#!/bin/sh\necho launch\n", .mode = 0o755 },
+        .{ .name = "scripts/helper", .content = "#!/bin/sh\necho help\n", .mode = 0o755 },
+        .{ .name = "lib/mod.lua", .content = "return {}\n", .mode = 0o644 },
+        .{ .name = "config/settings.json", .content = "{}\n", .mode = 0o644 },
+    };
+
+    try helpers.writeTarGzFile(allocator, io_val, tar_gz_path, &entries);
+
+    // 1. Native extract
+    const dest_native = try std.fs.path.join(allocator, &.{ tmp_path, "dest_perm_native" });
+    defer allocator.free(dest_native);
+    try archive.native.extractTarGz(allocator, io_val, tar_gz_path, dest_native, .{});
+
+    // 2. System extract
+    const dest_system = try std.fs.path.join(allocator, &.{ tmp_path, "dest_perm_system" });
+    defer allocator.free(dest_system);
+    try archive.system.extractTarGz(allocator, io_val, tar_gz_path, dest_system, .{});
+
+    // 3. Compare file contents hash
+    var dir_native = try std.Io.Dir.cwd().openDir(io_val, dest_native, .{ .iterate = true });
+    defer dir_native.close(io_val);
+    const hash_native = try moonstone.identity.hash.artifact_hash(allocator, io_val, dir_native);
+    defer allocator.free(hash_native);
+
+    var dir_system = try std.Io.Dir.cwd().openDir(io_val, dest_system, .{ .iterate = true });
+    defer dir_system.close(io_val);
+    const hash_system = try moonstone.identity.hash.artifact_hash(allocator, io_val, dir_system);
+    defer allocator.free(hash_system);
+
+    try std.testing.expectEqualStrings(hash_native, hash_system);
+
+    // 4. Compare exact permission bits across the tree on POSIX
+    if (comptime @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi) {
+        const test_rel_paths = [_][]const u8{
+            "bin/launcher.sh",
+            "scripts/helper",
+            "lib/mod.lua",
+            "config/settings.json",
+        };
+
+        for (test_rel_paths) |rel| {
+            var f_nat = try dir_native.openFile(io_val, rel, .{});
+            defer f_nat.close(io_val);
+            const st_nat = try f_nat.stat(io_val);
+
+            var f_sys = try dir_system.openFile(io_val, rel, .{});
+            defer f_sys.close(io_val);
+            const st_sys = try f_sys.stat(io_val);
+
+            const mode_nat = st_nat.permissions.toMode() & 0o777;
+            const mode_sys = st_sys.permissions.toMode() & 0o777;
+
+            try std.testing.expectEqual(mode_sys, mode_nat);
+        }
+    }
+}
+

@@ -21,6 +21,8 @@ pub const ZipEntry = struct {
     name: []const u8,
     content: []const u8 = "",
     is_dir: bool = false,
+    version_made_by: u16 = 20,
+    external_attributes: u32 = 0,
 };
 
 /// Create a raw 512-byte TAR header block with precise control over header fields.
@@ -224,7 +226,7 @@ pub fn createZipBuffer(allocator: std.mem.Allocator, entries: []const ZipEntry) 
         // Central directory header: 46 bytes
         var cdh: [46]u8 = undefined;
         @memcpy(cdh[0..4], &std.zip.central_file_header_sig);
-        std.mem.writeInt(u16, cdh[4..6], 20, .little); // version made by
+        std.mem.writeInt(u16, cdh[4..6], entry.version_made_by, .little); // version made by
         std.mem.writeInt(u16, cdh[6..8], 20, .little); // version needed
         std.mem.writeInt(u16, cdh[8..10], 0, .little); // flags
         std.mem.writeInt(u16, cdh[10..12], 0, .little); // compression method (0 = store)
@@ -238,7 +240,7 @@ pub fn createZipBuffer(allocator: std.mem.Allocator, entries: []const ZipEntry) 
         std.mem.writeInt(u16, cdh[32..34], 0, .little); // comment len
         std.mem.writeInt(u16, cdh[34..36], 0, .little); // disk number
         std.mem.writeInt(u16, cdh[36..38], 0, .little); // internal attrs
-        std.mem.writeInt(u32, cdh[38..42], 0, .little); // external attrs
+        std.mem.writeInt(u32, cdh[38..42], entry.external_attributes, .little); // external attrs
         std.mem.writeInt(u32, cdh[42..46], offset, .little); // local header offset
 
         try cd_entries.appendSlice(allocator, &cdh);
