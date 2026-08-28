@@ -1,4 +1,5 @@
 const std = @import("std");
+const archive = @import("../../archive/root.zig");
 
 pub fn materialize(
     allocator: std.mem.Allocator,
@@ -15,18 +16,11 @@ pub fn materialize(
     defer allocator.free(tmp_unpack_path);
     defer out_dir.deleteTree(io, "tmp_unpack") catch {};
 
-    // 2. Unpack based on extension
-    if (std.mem.endsWith(u8, archive_path, ".tar.gz") or std.mem.endsWith(u8, archive_path, ".tgz") or std.mem.endsWith(u8, archive_path, ".tar.xz")) {
-        var child = std.process.Child.init(&.{ "tar", "-xf", archive_path, "-C", tmp_unpack_path }, allocator);
-        const term = try child.spawnAndWait();
-        if (term != .Exited or term.Exited != 0) return error.TarFailed;
-    } else if (std.mem.endsWith(u8, archive_path, ".zip")) {
-        var child = std.process.Child.init(&.{ "unzip", "-q", archive_path, "-d", tmp_unpack_path }, allocator);
-        const term = try child.spawnAndWait();
-        if (term != .Exited or term.Exited != 0) return error.UnzipFailed;
-    } else {
-        return error.UnsupportedArchiveFormat;
-    }
+    // 2. Unpack using unified archive abstraction
+    archive.unpackArchive(allocator, io, archive_path, tmp_unpack_path, .{}) catch |err| switch (err) {
+        error.UnsupportedArchiveFormat => return error.UnsupportedArchiveFormat,
+        else => return error.UnpackError,
+    };
 
     // 3. Handle strip_components
     var current_root_path = try allocator.dupe(u8, tmp_unpack_path);

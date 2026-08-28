@@ -18,6 +18,9 @@ pub const tools = struct {
     pub const host_resolver = @import("tools/host_resolver.zig");
 };
 
+pub const system_tools = @import("system_tools/root.zig");
+pub const archive = @import("archive/root.zig");
+
 pub const identity = struct {
     pub const hash = @import("identity/hash.zig");
 };

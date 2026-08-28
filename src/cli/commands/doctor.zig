@@ -38,6 +38,7 @@ pub const DoctorCommand = struct {
         lockfile_sync,
         env_symlinks,
         link_targets,
+        archive_backend,
         system_tools,
     };
 
@@ -474,30 +475,70 @@ pub const DoctorCommand = struct {
             idx_res = null;
         }
 
-        // ── 9. System tools ───────────────────────────────────────────────
+        // ── 9. Archive backend ───────────────────────────────────────────
+        var archive_ok = true;
+        var archive_msg: []const u8 = "";
+        switch (build_options.archive_backend) {
+            .native => {
+                archive_msg = try std.fmt.allocPrint(allocator, "OK (native: built-in Zstandard, TAR, Gzip, ZIP)", .{});
+            },
+            .system => {
+                const archive_tools = [_][]const u8{ "tar", "zstd", "unzip" };
+                var missing_tools = std.ArrayList([]const u8).empty;
+                defer missing_tools.deinit(allocator);
+                var found_details = std.ArrayList(u8).empty;
+                defer found_details.deinit(allocator);
+
+                for (archive_tools) |tool| {
+                    var status = try moonstone.system_tools.checkTool(allocator, io, tool, "--version");
+                    defer status.deinit(allocator);
+
+                    if (!status.available) {
+                        try missing_tools.append(allocator, tool);
+                    } else {
+                        if (found_details.items.len > 0) try found_details.appendSlice(allocator, ", ");
+                        try found_details.appendSlice(allocator, tool);
+                        if (status.path) |p| {
+                            try found_details.appendSlice(allocator, " at ");
+                            try found_details.appendSlice(allocator, p);
+                        }
+                    }
+                }
+
+                if (missing_tools.items.len > 0) {
+                    archive_ok = false;
+                    var miss_buf = std.ArrayList(u8).empty;
+                    defer miss_buf.deinit(allocator);
+                    for (missing_tools.items, 0..) |t, i| {
+                        if (i > 0) try miss_buf.appendSlice(allocator, ", ");
+                        try miss_buf.appendSlice(allocator, t);
+                    }
+                    archive_msg = try std.fmt.allocPrint(allocator, "FAIL: system archive backend missing host tools: {s}", .{miss_buf.items});
+                } else {
+                    archive_msg = try std.fmt.allocPrint(allocator, "OK (system: {s})", .{found_details.items});
+                }
+            },
+        }
+        try results.append(allocator, .{ .passed = archive_ok, .name = .archive_backend, .message = archive_msg, .fixed = false });
+        try self.reportCheck(emitter, io, stdout, "archive_backend", archive_ok, archive_msg);
+
+        // ── 10. System tools ──────────────────────────────────────────────
         var tools_ok = true;
         var tools_msg: []const u8 = "";
-        const sys_tools = [_][]const u8{ "gcc", "make", "tar", "zig", "zstd", "cmake", "unzip", "git" };
+        const sys_tools: []const []const u8 = switch (build_options.archive_backend) {
+            .native => &.{ "gcc", "make", "zig", "cmake", "git" },
+            .system => &.{ "gcc", "make", "tar", "zig", "zstd", "cmake", "unzip", "git" },
+        };
         var missing_critical = std.ArrayList([]const u8).empty;
         defer missing_critical.deinit(allocator);
         var missing_warn = std.ArrayList([]const u8).empty;
         defer missing_warn.deinit(allocator);
 
         for (sys_tools) |tool| {
-            var missing = false;
-            const res = std.process.run(allocator, io, .{
-                .argv = &.{ "which", tool },
-            }) catch |err| blk: {
-                if (err == error.FileNotFound) {
-                    missing = true;
-                    break :blk std.process.RunResult{ .term = .{ .exited = 1 }, .stdout = "", .stderr = "" };
-                }
-                return err;
-            };
+            const exe_path = try moonstone.system_tools.findExecutable(allocator, io, tool);
+            defer if (exe_path) |p| allocator.free(p);
 
-            if (!missing and (res.term != .exited or res.term.exited != 0)) {
-                missing = true;
-            }
+            const missing = (exe_path == null);
 
             if (missing) {
                 if (std.mem.eql(u8, tool, "zig") or std.mem.eql(u8, tool, "cmake")) {

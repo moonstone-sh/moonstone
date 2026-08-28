@@ -49,15 +49,10 @@ pub fn encodeArtifactTransport(
         return error.ArtifactLocalHashMismatch;
     }
 
-    const cp_res = try std.process.run(allocator, io, .{
-        .argv = &.{ "tar", "-czf", out_transport_path, "-C", cas_path, "." },
-    });
-    defer allocator.free(cp_res.stdout);
-    defer allocator.free(cp_res.stderr);
-
-    if (cp_res.term != .exited or cp_res.term.exited != 0) {
+    const archive = @import("../archive/root.zig");
+    archive.createTarGz(allocator, io, cas_path, out_transport_path) catch {
         return error.ArtifactEncodingFailed;
-    }
+    };
 
     return TransportInfo{
         .artifact_hash = try allocator.dupe(u8, expected_artifact_hash),

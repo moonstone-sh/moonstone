@@ -7,6 +7,7 @@ const store = @import("../store.zig");
 const resolver = @import("../resolution/root.zig");
 const package_spec = @import("../domain/package_spec.zig");
 const error_context = @import("../diagnostics/error_context.zig");
+const archive = @import("../archive/root.zig");
 
 var materialization_workspace_counter: std.atomic.Value(u64) = .init(0);
 
@@ -209,52 +210,17 @@ pub const Materializer = struct {
         const source_origin = if (desc.source) |src| (src.url orelse art.url) else art.url;
         const source_hash = if (desc.source) |src| src.hash else if (art.source_hash.len > 0) art.source_hash else if (source_payloads.source_payload_path != null) art.hash else "";
 
-        // Unpack using system archive tools
-        var tar_argv = std.ArrayList([]const u8).empty;
-        defer tar_argv.deinit(self.allocator);
-        var strip_arg: ?[]const u8 = null;
-        if (std.mem.eql(u8, art.format, "zip")) {
-            if (art.layout.strip_components > 0) return error.UnsupportedZipStripComponents;
-            try tar_argv.append(self.allocator, "unzip");
-            try tar_argv.append(self.allocator, "-q");
-            try tar_argv.append(self.allocator, blob_path);
-            try tar_argv.append(self.allocator, "-d");
-            try tar_argv.append(self.allocator, tmp_path);
-        } else {
-            try tar_argv.append(self.allocator, "tar");
-            try tar_argv.append(self.allocator, "-xf");
-            try tar_argv.append(self.allocator, blob_path);
-            try tar_argv.append(self.allocator, "-C");
-            try tar_argv.append(self.allocator, tmp_path);
-        }
-        if (!std.mem.eql(u8, art.format, "zip") and art.layout.strip_components > 0) {
-            strip_arg = try std.fmt.allocPrint(self.allocator, "--strip-components={d}", .{art.layout.strip_components});
-            try tar_argv.append(self.allocator, strip_arg.?);
-        }
-        defer if (strip_arg) |sa| self.allocator.free(sa);
-
-        const tar_res = std.process.run(self.allocator, self.io, .{ .argv = tar_argv.items }) catch |err| {
-            if (err == error.FileNotFound) {
-                error_context.setFmt(
-                    self.allocator,
-                    "system utility '{s}' is missing but required to unpack {s} package artifact for {s}@{s}",
-                    .{ tar_argv.items[0], art.format, desc.package.name, desc.package.version },
-                );
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer self.allocator.free(tar_res.stdout);
-        defer self.allocator.free(tar_res.stderr);
-
-        if (tar_res.term != .exited or tar_res.term.exited != 0) {
+        // Unpack using unified backend-neutral archive abstraction
+        archive.unpackArchive(self.allocator, self.io, blob_path, tmp_path, .{
+            .strip_components = art.layout.strip_components,
+        }) catch |err| {
             error_context.setFmt(
                 self.allocator,
-                "failed to unpack {s} package artifact for {s}@{s}\narchive: {s}\ncommand: {s}\nresult: {any}\nstderr: {s}",
-                .{ art.format, desc.package.name, desc.package.version, blob_path, tar_argv.items[0], tar_res.term, tar_res.stderr },
+                "failed to unpack {s} package artifact for {s}@{s}\narchive: {s}\nerror: {s}",
+                .{ art.format, desc.package.name, desc.package.version, blob_path, @errorName(err) },
             );
             return error.UnpackError;
-        }
+        };
 
         var final_art = art;
         final_art.source_hash = source_hash;

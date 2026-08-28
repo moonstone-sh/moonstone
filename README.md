@@ -164,7 +164,10 @@ Moonstone relies on several unified concepts to achieve offline-first, determini
 - **Zig 0.16.0**
 - **Supported hosts:** Linux, macOS, and Windows
 - **Windows:** Developer Mode or an account/policy permitted to create symbolic links
-- **Common Tools**: `gcc`, `make`, `cmake`, `tar`, `curl`, `zstd`, `sqlite3`
+- **Archive Backends (`-Darchive-backend`):**
+  - `native` (**default**): Pure Zig streaming compression and extraction for `.tar.zst`, `.tar.gz`, `.tar`, `.zip`, `.rock`, and `.src.rock`. Completely self-contained with no external runtime dependencies on host archive tools.
+  - `system`: OS-aware backend utilizing system command-line utilities (`tar`, `zstd`, `unzip`) via direct argv invocation and path resolution.
+- **Common Tools**: `gcc`, `make`, `cmake`, `git` (and `tar`, `zstd`, `unzip` only when compiled with `-Darchive-backend=system`)
 
 ---
 

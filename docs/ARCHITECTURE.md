@@ -36,11 +36,17 @@ Moonstone prioritizes modern DX, eliminating boilerplate and "magic" environment
 - **Command Semantics (`moon run`):** Scripts defined in `moonstone.toml` execute strictly within the project's isolated environment. Moonstone manipulates `PATH`, `LUA_PATH`, and `LUA_CPATH` on the fly, ensuring scripts hit the correct runtime and dependencies without polluting the global shell profile.
 
 ## 6. Resilience & Diagnostics
-- **`moon doctor`:** A built-in diagnostic tool that performs exhaustive system checks. It verifies the integrity of the SQLite database, checks for dangling symlinks in the local environment, tests network connectivity, and validates shim installations.
+- **`moon doctor`:** A built-in diagnostic tool that performs exhaustive system checks. It verifies the integrity of the SQLite database, checks for dangling symlinks in the local environment, tests network connectivity, validates shim installations, and confirms archive backend capabilities.
 - **Lockfile Integrity:** `moonstone.lock` guarantees reproducible builds by pinning exact versions, cryptographic artifact hashes, and ABI targets. If the lockfile drifts from the `moonstone.toml`, Moonstone halts execution to prevent undefined behavior.
 - **Graceful Failures:** If a download is interrupted or a compilation fails, the artifact is discarded. The immutable store is only updated upon total success, preventing poisoned cache states.
 
-## 7. The Core Execution Flow
+## 7. Unified Archive & Compression Engine
+Moonstone encapsulates all archive and compression operations under a unified backend-neutral abstraction (`src/core/archive/`):
+- **Native Streaming Backend (`-Darchive-backend=native`, default):** Pure Zig implementation leveraging `std.compress.zstd.Decompress`, `std.compress.flate.Decompress`, `std.tar.Iterator`, `std.tar.Writer`, and `std.zip.Iterator`. Operates with strict streaming to avoid buffering full archives in memory, validates path security against directory traversal, and removes any dependency on host utilities like `tar`, `zstd`, or `unzip`.
+- **OS-Aware System Backend (`-Darchive-backend=system`):** Robust abstraction over platform CLI tools (`tar`, `zstd`, `unzip`) using direct argv execution, environment `PATH`/`PATHEXT` resolution, and automatic temporary path cleanups.
+- **Supported Formats:** Transparent auto-detection and handling of `.tar.zst`, `.tzst`, `.tar.gz`, `.tgz`, `.tar`, `.zip`, `.rock`, and `.src.rock` across all materialization workflows.
+
+## 8. The Core Execution Flow
 The lifecycle of a mutating command (like `moon sync` or `moon add`) is strictly orchestrated to guarantee determinism and environment safety. The flow operates in four distinct phases:
 
 ### Phase 1: Context & Coordination

@@ -6,6 +6,11 @@ pub const InstallationOwnership = enum {
     externally_managed,
 };
 
+pub const ArchiveBackend = enum {
+    native,
+    system,
+};
+
 pub fn build(b: *std.Build) void {
 
     // 1. Build Options
@@ -31,6 +36,12 @@ pub fn build(b: *std.Build) void {
 
     const distribution_label = (b.option([]const u8, "distribution-label", "Distribution channel (standalone, homebrew, custom)")) orelse "standalone";
 
+    const archive_backend = b.option(
+        ArchiveBackend,
+        "archive-backend",
+        "Archive and compression backend (native, system)",
+    ) orelse .native;
+
     const options = b.addOptions();
     options.addOption([]const u8, "name", @tagName(zon.name));
     options.addOption([]const u8, "version", zon.version);
@@ -39,6 +50,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "default_installer_url", default_installer_url);
     options.addOption(InstallationOwnership, "installation_ownership", installation_ownership);
     options.addOption([]const u8, "distribution_label", distribution_label);
+    options.addOption(ArchiveBackend, "archive_backend", archive_backend);
 
     const build_options_mod = options.createModule();
 
@@ -65,6 +77,13 @@ pub fn build(b: *std.Build) void {
     const artifact_publication_tests = createMoonTest(b, "tests/unit/artifact_publication_test.zig", target, optimize, build_options_mod);
     const closure_assurance_tests = createMoonTest(b, "tests/unit/closure_assurance_test.zig", target, optimize, build_options_mod);
     const replay_contract_tests = createMoonTest(b, "tests/unit/replay_contract_test.zig", target, optimize, build_options_mod);
+    const archive_tests = createMoonTest(b, "tests/unit/archive_test.zig", target, optimize, build_options_mod);
+    const archive_contract_tests = createMoonTest(b, "tests/unit/archive_contract_test.zig", target, optimize, build_options_mod);
+    const archive_corruption_tests = createMoonTest(b, "tests/unit/archive_corruption_test.zig", target, optimize, build_options_mod);
+    const archive_security_tests = createMoonTest(b, "tests/unit/archive_security_test.zig", target, optimize, build_options_mod);
+    const archive_differential_tests = createMoonTest(b, "tests/unit/archive_differential_test.zig", target, optimize, build_options_mod);
+    const system_tools_tests = createMoonTest(b, "tests/unit/system_tools_test.zig", target, optimize, build_options_mod);
+    const doctor_archive_tests = createMoonTest(b, "tests/unit/doctor_archive_test.zig", target, optimize, build_options_mod);
 
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_cli_tests = b.addRunArtifact(cli_tests);
@@ -73,6 +92,13 @@ pub fn build(b: *std.Build) void {
     const run_artifact_publication_tests = b.addRunArtifact(artifact_publication_tests);
     const run_closure_assurance_tests = b.addRunArtifact(closure_assurance_tests);
     const run_replay_contract_tests = b.addRunArtifact(replay_contract_tests);
+    const run_archive_tests = b.addRunArtifact(archive_tests);
+    const run_archive_contract_tests = b.addRunArtifact(archive_contract_tests);
+    const run_archive_corruption_tests = b.addRunArtifact(archive_corruption_tests);
+    const run_archive_security_tests = b.addRunArtifact(archive_security_tests);
+    const run_archive_differential_tests = b.addRunArtifact(archive_differential_tests);
+    const run_system_tools_tests = b.addRunArtifact(system_tools_tests);
+    const run_doctor_archive_tests = b.addRunArtifact(doctor_archive_tests);
 
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
@@ -81,6 +107,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_artifact_publication_tests.step);
     test_step.dependOn(&run_closure_assurance_tests.step);
     test_step.dependOn(&run_replay_contract_tests.step);
+    test_step.dependOn(&run_archive_tests.step);
+    test_step.dependOn(&run_archive_contract_tests.step);
+    test_step.dependOn(&run_archive_corruption_tests.step);
+    test_step.dependOn(&run_archive_security_tests.step);
+    test_step.dependOn(&run_archive_differential_tests.step);
+    test_step.dependOn(&run_system_tools_tests.step);
+    test_step.dependOn(&run_doctor_archive_tests.step);
 
     // 4. Official Release Matrix (`zig build release`)
     // -------------------------------------------------------------------------

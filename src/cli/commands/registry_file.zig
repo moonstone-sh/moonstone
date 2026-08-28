@@ -367,12 +367,7 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
     defer allocator.free(zst_path);
     try maybeDeleteFile(io, zst_path);
 
-    const zstd_res = try std.process.run(allocator, io, .{
-        .argv = &.{ "zstd", "-q", "-f", sqlite_path, "-o", zst_path },
-    });
-    defer allocator.free(zstd_res.stdout);
-    defer allocator.free(zstd_res.stderr);
-    if (zstd_res.term != .exited or zstd_res.term.exited != 0) return error.ZstdCompressionFailed;
+    try moonstone.archive.compressZstdFile(allocator, io, sqlite_path, zst_path);
 
     const zst_bytes = try readFile(allocator, io, zst_path);
     defer allocator.free(zst_bytes);

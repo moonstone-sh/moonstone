@@ -2376,131 +2376,20 @@ fn apply_declared_patches(
 // ---------------------------------------------------------------------------
 
 fn unpack_archive(allocator: std.mem.Allocator, io: std.Io, package_name: []const u8, package_version: []const u8, archive_url: []const u8, archive_path: []const u8, out_dir: []const u8) !void {
-    const is_zip = std.mem.endsWith(u8, archive_path, ".zip") or
-        std.mem.endsWith(u8, archive_path, ".src.rock") or
-        std.mem.endsWith(u8, archive_path, ".rock");
-    const is_tar_gz = std.mem.endsWith(u8, archive_path, ".tar.gz") or
-        std.mem.endsWith(u8, archive_path, ".tgz") or
-        std.mem.endsWith(u8, archive_path, ".gz");
-    const is_tar_bz2 = std.mem.endsWith(u8, archive_path, ".tar.bz2") or
-        std.mem.endsWith(u8, archive_path, ".tbz2") or
-        std.mem.endsWith(u8, archive_path, ".tbz") or
-        std.mem.endsWith(u8, archive_path, ".bz2");
-    const is_tar_xz = std.mem.endsWith(u8, archive_path, ".tar.xz") or
-        std.mem.endsWith(u8, archive_path, ".txz") or
-        std.mem.endsWith(u8, archive_path, ".xz");
-    const is_tar = std.mem.endsWith(u8, archive_path, ".tar");
-
-    if (is_zip) {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = std.process.run(allocator, io, .{
-            .argv = &.{ "unzip", "-q", archive_path, "-d", out_dir },
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'unzip' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) {
-            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'unzip' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack zip archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
-            return error.UnpackError;
+    const archive = @import("../../archive/root.zig");
+    archive.unpackArchive(allocator, io, archive_path, out_dir, .{}) catch |err| {
+        switch (err) {
+            error.UnsupportedArchiveFormat => {
+                const ext = std.fs.path.extension(archive_url);
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "unsupported archive format while unpacking LuaRocks package {s}@{s}\narchive: {s}\ndetected extension: {s}", .{ package_name, package_version, archive_url, if (ext.len > 0) ext else "<none>" });
+                return error.UnsupportedArchiveFormat;
+            },
+            else => {
+                @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack archive {s} for LuaRocks package {s}@{s}\nerror: {s}", .{ archive_url, package_name, package_version, @errorName(err) });
+                return error.UnpackError;
+            },
         }
-    } else if (is_tar_gz) {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = std.process.run(allocator, io, .{
-            .argv = &.{ "tar", "-xzf", archive_path, "-C", out_dir },
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) {
-            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.gz archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
-            return error.UnpackError;
-        }
-    } else if (is_tar_bz2) {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = std.process.run(allocator, io, .{
-            .argv = &.{ "tar", "-xjf", archive_path, "-C", out_dir },
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) {
-            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.bz2 archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
-            return error.UnpackError;
-        }
-    } else if (is_tar_xz) {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = std.process.run(allocator, io, .{
-            .argv = &.{ "tar", "-xJf", archive_path, "-C", out_dir },
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) {
-            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar.xz archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
-            return error.UnpackError;
-        }
-    } else if (is_tar) {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-        const res = std.process.run(allocator, io, .{
-            .argv = &.{ "tar", "-xf", archive_path, "-C", out_dir },
-        }) catch |err| {
-            if (err == error.FileNotFound) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            return err;
-        };
-        defer allocator.free(res.stdout);
-        defer allocator.free(res.stderr);
-        if (res.term != .exited or res.term.exited != 0) {
-            if (res.term == .exited and (res.term.exited == 127 or std.mem.indexOf(u8, res.stderr, "not found") != null)) {
-                @import("../../diagnostics/error_context.zig").setFmt(allocator, "system utility 'tar' is missing on system PATH but required to unpack LuaRocks archive: {s}", .{archive_url});
-                return error.SystemUtilityMissing;
-            }
-            @import("../../diagnostics/error_context.zig").setFmt(allocator, "failed to unpack tar archive {s}\nstderr: {s}", .{ archive_url, res.stderr });
-            return error.UnpackError;
-        }
-    } else {
-        const ext = std.fs.path.extension(archive_url);
-        @import("../../diagnostics/error_context.zig").setFmt(allocator, "unsupported archive format while unpacking LuaRocks package {s}@{s}\narchive: {s}\ndetected extension: {s}", .{ package_name, package_version, archive_url, if (ext.len > 0) ext else "<none>" });
-        return error.UnsupportedArchiveFormat;
-    }
+    };
 }
 
 fn archive_suffix(url: []const u8) []const u8 {

@@ -6,6 +6,7 @@ const http = @import("../platform/http.zig");
 const driver_mod = @import("../store/driver.zig");
 const profiler = @import("../diagnostics/profiler.zig");
 const manifest_cache_mod = @import("../cache/manifest_cache.zig");
+const archive = @import("../archive/root.zig");
 
 var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 var compact_index_staging_counter: std.atomic.Value(u64) = .init(0);
@@ -303,15 +304,8 @@ pub const RegistryClient = struct {
         try zst_file.writeStreamingAll(self.io, zst_bytes);
         zst_file.close(self.io);
 
-        // 4. Decompress with zstd
-        const zstd_res = try std.process.run(self.allocator, self.io, .{
-            .argv = &.{ "zstd", "-d", "-f", "-o", tmp_sqlite, tmp_zst },
-        });
-        defer self.allocator.free(zstd_res.stdout);
-        defer self.allocator.free(zstd_res.stderr);
-        if (zstd_res.term != .exited or zstd_res.term.exited != 0) {
-            return error.ZstdDecompressionFailed;
-        }
+        // 4. Decompress with zstd via archive backend
+        try archive.decompressZstdFile(self.allocator, self.io, tmp_zst, tmp_sqlite);
 
         // 5. Verify content hash
         const sqlite_content = try std.Io.Dir.cwd().readFileAlloc(self.io, tmp_sqlite, self.allocator, std.Io.Limit.limited(100 * 1024 * 1024));

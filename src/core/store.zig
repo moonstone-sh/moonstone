@@ -3,6 +3,7 @@ const manifest = @import("domain/manifest.zig");
 const fs = @import("platform/fs.zig");
 const driver_mod = @import("store/driver.zig");
 const hash = @import("identity/hash.zig");
+const archive = @import("archive/root.zig");
 
 var staging_counter: std.atomic.Value(u64) = .init(0);
 
@@ -227,21 +228,9 @@ pub fn materializeLocalProject(
     const tar_path = try std.fs.path.join(allocator, &.{ paths.tmp, "local-artifact.tar.gz" });
     defer allocator.free(tar_path);
 
-    const tar_result = try std.process.run(allocator, io, .{
-        .argv = &.{
-            "tar",
-            "-czf",
-            tar_path,
-            "-C",
-            project_path,
-            ".",
-        },
-    });
-    defer allocator.free(tar_result.stdout);
-    defer allocator.free(tar_result.stderr);
-    if (tar_result.term != .exited or tar_result.term.exited != 0) {
+    archive.createTarGz(allocator, io, project_path, tar_path) catch {
         return error.TarCreationFailed;
-    }
+    };
 
     const artifact_hash = try hash.blake3_file(allocator, io, tar_path);
     defer allocator.free(artifact_hash);
@@ -263,14 +252,9 @@ pub fn materializeLocalProject(
     try std.Io.Dir.cwd().createDirPath(io, final_art_path);
     try std.Io.Dir.cwd().createDirPath(io, files_path);
 
-    const extract_result = try std.process.run(allocator, io, .{
-        .argv = &.{ "tar", "-xzf", tar_path, "-C", files_path },
-    });
-    defer allocator.free(extract_result.stdout);
-    defer allocator.free(extract_result.stderr);
-    if (extract_result.term != .exited or extract_result.term.exited != 0) {
+    archive.extractTarGz(allocator, io, tar_path, files_path, .{}) catch {
         return error.TarExtractionFailed;
-    }
+    };
 
     const mt_path = try std.fs.path.join(allocator, &.{ project_path, "moonstone.toml" });
     defer allocator.free(mt_path);
