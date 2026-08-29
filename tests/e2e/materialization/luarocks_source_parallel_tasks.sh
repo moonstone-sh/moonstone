@@ -84,14 +84,49 @@ if ! command -v script >/dev/null 2>&1; then
 fi
 
 if script --version 2>&1 | grep -q 'util-linux'; then
-    script -q -e -c 'moon sync --jobs 2 --progress fancy' "${WORKDIR}/fancy.typescript" </dev/null >/dev/null 2>&1
+    COLUMNS=80 script -q -e -c 'moon sync --jobs 2 --progress fancy' "${WORKDIR}/fancy.typescript" </dev/null >/dev/null 2>&1
 else
-    script -q "${WORKDIR}/fancy.typescript" moon sync --jobs 2 --progress fancy </dev/null >/dev/null 2>&1
+    COLUMNS=80 script -q "${WORKDIR}/fancy.typescript" moon sync --jobs 2 --progress fancy </dev/null >/dev/null 2>&1
 fi
 for package_name in fakebin fakealt; do
     grep -Fq "preparing: ${package_name}@1.0-1" "${WORKDIR}/fancy.typescript"
     grep -Fq "materializing: ${package_name}@1.0-1" "${WORKDIR}/fancy.typescript"
 done
+# The selected runtime is a real member of this target's materialization
+# closure, not a hidden prelude; execution-only foreign parser/tool runtimes
+# remain outside that target closure.
+grep -Eq "(downloading|ready): lua@5\.4" "${WORKDIR}/fancy.typescript"
+# The transcript is intentionally checked rather than a timing assumption:
+# both concurrent package rows and the derived aggregate must be painted, and
+# all observed frames must place their fixed package names in the same terminal
+# column.  This catches arrival-order rows, variable-width bars, and autowrap.
+python3 - "${WORKDIR}/fancy.typescript" <<'PY'
+import re
+import sys
+import unicodedata
+
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
+rows = []
+for line in clean.replace("\r", "\n").splitlines():
+    if re.match(r"^[✓✗!·⠋] ", line) and ("fakebin" in line or "fakealt" in line) and any(marker in line for marker in (
+        "queued: fake", "preparing: fake", "materializing: fake", "%",
+    )):
+        rows.append(line)
+if not rows:
+    raise SystemExit("ERROR: fancy PTY emitted no package rows")
+positions = []
+for line in rows:
+    package = "fakebin" if "fakebin" in line else "fakealt"
+    positions.append(line.index(package))
+    width = sum(2 if unicodedata.east_asian_width(c) in "WF" else 0 if unicodedata.combining(c) else 1 for c in line)
+    if width > 79:
+        raise SystemExit("ERROR: package progress row wrapped its 80-column PTY")
+if len(set(positions)) != 1:
+    raise SystemExit("ERROR: package name column jittered across concurrent frames: %r" % positions)
+if "Packages:" not in clean or "total)" not in clean:
+    raise SystemExit("ERROR: fancy PTY omitted derived package aggregate")
+PY
 
 # An explicit plain request must override the pseudo-terminal selected above:
 # resolver and solver callbacks may still run, but none may write repaint

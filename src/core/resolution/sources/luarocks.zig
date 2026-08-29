@@ -2408,14 +2408,10 @@ fn compute_dir_hash(allocator: std.mem.Allocator, io: std.Io, dir_path: []const 
 
 pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, runtime_path: []const u8, env_map: ?*std.process.Environ.Map) ![]const u8 {
     const binaries = [_][]const u8{ "lua", "luajit" };
+    const runtime_bin_dir = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin" });
+    defer allocator.free(runtime_bin_dir);
     for (binaries) |binary| {
-        const executable = try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin", binary });
-        std.Io.Dir.cwd().access(io, executable, .{}) catch |err| {
-            allocator.free(executable);
-            if (err == error.FileNotFound) continue;
-            return err;
-        };
-        return executable;
+        if (try @import("../../platform/executable.zig").resolveInDirectory(allocator, io, runtime_bin_dir, binary)) |executable| return executable;
     }
     // Fallback: search PATH for a system lua/luajit (needed when project runtime
     // is LÖVE or another engine that does not ship a CLI lua binary).
@@ -2425,13 +2421,7 @@ pub fn find_runtime_lua_executable(allocator: std.mem.Allocator, io: std.Io, run
             while (path_it.next()) |dir| {
                 if (dir.len == 0) continue;
                 for (binaries) |binary| {
-                    const candidate = try std.fs.path.join(allocator, &.{ dir, binary });
-                    std.Io.Dir.cwd().access(io, candidate, .{}) catch |err| {
-                        allocator.free(candidate);
-                        if (err == error.FileNotFound) continue;
-                        return err;
-                    };
-                    return candidate;
+                    if (try @import("../../platform/executable.zig").resolveInDirectory(allocator, io, dir, binary)) |candidate| return candidate;
                 }
             }
         }

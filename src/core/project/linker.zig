@@ -5,6 +5,7 @@ const manifest = @import("../domain/manifest.zig");
 const package_spec = @import("../domain/package_spec.zig");
 const driver_mod = @import("../store/driver.zig");
 const semver = @import("../domain/semver.zig");
+const executable = @import("../platform/executable.zig");
 
 pub const ProjectEnv = struct {
     bin_map: std.array_hash_map.String(struct { path: []const u8, artifact_hash: []const u8 }),
@@ -627,16 +628,127 @@ fn writeLiveLinkScriptShim(
     }
 }
 
+const ProjectionMethod = enum { linked, copied };
+
+/// Zig 0.16's Windows `Dir.symLink` sets the reparse point itself. Its
+/// `deviceIoControl(.SET_REPARSE_POINT)` maps `PRIVILEGE_NOT_HELD` and
+/// `ACCESS_DENIED` explicitly, but sends every other NTSTATUS through
+/// `windows.unexpectedStatus`; that intentionally loses the status and returns
+/// `error.Unexpected`. Wine's `STATUS_NOT_SUPPORTED` (0xc00000bb) therefore
+/// reaches Moonstone as `Unexpected`, with no status value left to inspect.
+///
+/// Keep that unavoidable compatibility escape hatch at this exact derived-env
+/// projection boundary. Do not apply it to other filesystem operations: their
+/// `Unexpected` errors still propagate normally.
+fn isWindowsProjectionSymlinkFallback(err: anyerror) bool {
+    if (comptime builtin.os.tag != .windows) return false;
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.Unexpected => true,
+        else => false,
+    };
+}
+
+/// `Dir.symLink` creates the destination as a normal entry before attempting
+/// to set its Windows reparse point. Remove that partial entry before copying
+/// after an unavailable-symlink fallback; otherwise the failed link can block
+/// the replacement copy.
+fn removeFailedFileSymlinkEntry(io: std.Io, destination_dir: std.Io.Dir, destination_name: []const u8) !void {
+    destination_dir.deleteFile(io, destination_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+}
+
+fn removeFailedDirectorySymlinkEntry(io: std.Io, destination_dir: std.Io.Dir, destination_name: []const u8) !void {
+    destination_dir.deleteTree(io, destination_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+}
+
+/// A package descriptor's public binary name is logical (`lua`), while a
+/// Windows store payload is physically suffixed (`lua.exe`, `tool.cmd`, or
+/// `tool.bat`). Preserve that physical suffix in the environment so both PATH
+/// and explicit environment-bin lookup can execute the projected file.
+fn windowsExecutableProjectionExtension(
+    logical_name: []const u8,
+    source_path: []const u8,
+    is_windows: bool,
+) ?[]const u8 {
+    if (!is_windows or std.fs.path.extension(logical_name).len != 0) return null;
+    return executable.windowsExecutableExtension(source_path);
+}
+
+fn needsWindowsExeProjection(
+    logical_name: []const u8,
+    source_path: []const u8,
+    is_windows: bool,
+) bool {
+    return windowsExecutableProjectionExtension(logical_name, source_path, is_windows) != null;
+}
+
+fn projectFileWithFallback(
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+    destination_name: []const u8,
+) !ProjectionMethod {
+    destination_dir.deleteFile(io, destination_name) catch |err| {
+        if (err != error.FileNotFound) return err;
+    };
+    destination_dir.symLink(io, source_path, destination_name, .{}) catch |err| {
+        if (!isWindowsProjectionSymlinkFallback(err)) return err;
+        // A project environment is derived state, unlike the immutable store.
+        // Copy only this projection when Windows cannot create its symlink.
+        try removeFailedFileSymlinkEntry(io, destination_dir, destination_name);
+        try std.Io.Dir.cwd().copyFile(source_path, destination_dir, destination_name, io, .{ .replace = true });
+        return .copied;
+    };
+    return .linked;
+}
+
 fn projectFile(
     io: std.Io,
     destination_dir: std.Io.Dir,
     source_path: []const u8,
     destination_name: []const u8,
 ) !void {
-    destination_dir.deleteFile(io, destination_name) catch |err| {
-        if (err != error.FileNotFound) return err;
-    };
-    try destination_dir.symLink(io, source_path, destination_name, .{});
+    _ = try projectFileWithFallback(io, destination_dir, source_path, destination_name);
+}
+
+/// A copied PE launcher needs co-located DLLs that a symlinked launcher gets
+/// from its store directory automatically. Keep this limited to the fallback
+/// path, so normal environments remain link-based and store-deduplicated.
+fn copySiblingDllsForWindows(
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+    is_windows: bool,
+) !void {
+    if (!is_windows) return;
+
+    const source_parent = std.fs.path.dirname(source_path) orelse return;
+    var source_dir = try std.Io.Dir.cwd().openDir(io, source_parent, .{ .iterate = true });
+    defer source_dir.close(io);
+
+    var iterator = source_dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind != .file or !std.ascii.eqlIgnoreCase(std.fs.path.extension(entry.name), ".dll")) continue;
+        destination_dir.access(io, entry.name, .{}) catch |err| {
+            if (err != error.FileNotFound) return err;
+            try source_dir.copyFile(entry.name, destination_dir, entry.name, io, .{ .replace = false });
+            continue;
+        };
+    }
+}
+
+fn projectExecutable(
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    source_path: []const u8,
+    destination_name: []const u8,
+) !void {
+    if (try projectFileWithFallback(io, destination_dir, source_path, destination_name) == .copied) {
+        try copySiblingDllsForWindows(io, destination_dir, source_path, comptime builtin.os.tag == .windows);
+    }
 }
 
 fn projectTree(
@@ -668,6 +780,7 @@ fn projectTree(
 }
 
 fn projectDirectory(
+    allocator: std.mem.Allocator,
     io: std.Io,
     destination_dir: std.Io.Dir,
     source_path: []const u8,
@@ -677,7 +790,15 @@ fn projectDirectory(
         if (err != error.FileNotFound) return err;
     };
 
-    try destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true });
+    destination_dir.symLink(io, source_path, destination_name, .{ .is_directory = true }) catch |err| {
+        if (!isWindowsProjectionSymlinkFallback(err)) return err;
+        try removeFailedDirectorySymlinkEntry(io, destination_dir, destination_name);
+        try destination_dir.createDirPath(io, destination_name);
+        var copied_dir = try destination_dir.openDir(io, destination_name, .{});
+        defer copied_dir.close(io);
+        try projectTree(allocator, io, copied_dir, source_path);
+        return;
+    };
 }
 
 fn packageLocalName(pkg_name: []const u8) []const u8 {
@@ -1158,7 +1279,12 @@ pub fn link_project_env_at(
             break :blk provision_path;
         };
 
-        try projectFile(io, bin_dir, target_path, name);
+        var projected_name: ?[]const u8 = null;
+        defer if (projected_name) |value| allocator.free(value);
+        if (windowsExecutableProjectionExtension(name, target_path, comptime builtin.os.tag == .windows)) |extension| {
+            projected_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, extension });
+        }
+        try projectExecutable(io, bin_dir, target_path, projected_name orelse name);
 
         // If this public binary comes from a package with an isolated runtime
         // that differs from the project runtime, create a bin-runtime scope so
@@ -1405,7 +1531,7 @@ pub fn link_project_env_at(
         const ll_policy = ll.role.getProjectionPolicy();
         if (ll_policy.metadata_only) continue;
         const ll_local = packageLocalName(ll.pkg_name);
-        try linkPackageIntoLibexec(io, libexec_dir, ll_local, ll.source_path);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, ll_local, ll.source_path);
     }
 
     // 6. Fallback linking for artifacts without successful module metadata linking
@@ -1590,7 +1716,7 @@ pub fn link_project_env_at(
         const pa_path = try index.get_artifact_path(pa2.artifact_hash) orelse continue;
         defer allocator.free(pa_path);
         const pa_local = packageLocalName(pa2.name);
-        try linkPackageIntoLibexec(io, libexec_dir, pa_local, pa_path);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, pa_path);
     }
 
     // 7. Generate env.toml
@@ -1741,18 +1867,59 @@ fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.
 }
 
 fn linkPackageIntoLibexec(
+    allocator: std.mem.Allocator,
     io: std.Io,
     libexec_dir: std.Io.Dir,
     local_name: []const u8,
     src_path: []const u8,
 ) !void {
-    try projectDirectory(io, libexec_dir, src_path, local_name);
+    try projectDirectory(allocator, io, libexec_dir, src_path, local_name);
 }
 
 test "link_project_env basic" {
     // This is an integration test that requires filesystem setup.
     // We verify the struct compiles correctly.
     _ = LiveLink{ .name = "test", .source_path = "/tmp", .mode = "live", .pkg_name = "test", .pkg_version = "0.1.0", .pkg_kind = .lib };
+}
+
+test "Windows binary projection retains the executable suffix" {
+    try std.testing.expect(needsWindowsExeProjection("lua", "C:\\store\\files\\bin\\lua.exe", true));
+    try std.testing.expect(!needsWindowsExeProjection("lua.exe", "C:\\store\\files\\bin\\lua.exe", true));
+    try std.testing.expect(!needsWindowsExeProjection("lua", "/store/files/bin/lua", true));
+    try std.testing.expect(!needsWindowsExeProjection("lua", "C:\\store\\files\\bin\\lua.exe", false));
+    try std.testing.expectEqualStrings(".cmd", windowsExecutableProjectionExtension("tool", "C:\\store\\files\\bin\\tool.cmd", true).?);
+    try std.testing.expectEqualStrings(".bat", windowsExecutableProjectionExtension("tool", "C:\\store\\files\\bin\\tool.bat", true).?);
+}
+
+test "Windows copied executable projection retains sibling DLLs" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "source");
+    try tmp.dir.createDir(io, "destination");
+
+    var source = try tmp.dir.openDir(io, "source", .{});
+    defer source.close(io);
+    const launcher = try source.createFile(io, "lua.exe", .{});
+    launcher.close(io);
+    const sibling = try source.createFile(io, "lua54.DLL", .{});
+    defer sibling.close(io);
+    try sibling.writeStreamingAll(io, "runtime dependency");
+    const unrelated = try source.createFile(io, "README.txt", .{});
+    unrelated.close(io);
+
+    const source_root = try tmp.dir.realPathAlloc(io, std.testing.allocator, "source");
+    defer std.testing.allocator.free(source_root);
+    const launcher_path = try std.fs.path.join(std.testing.allocator, &.{ source_root, "lua.exe" });
+    defer std.testing.allocator.free(launcher_path);
+    var destination = try tmp.dir.openDir(io, "destination", .{});
+    defer destination.close(io);
+
+    try std.Io.Dir.cwd().copyFile(launcher_path, destination, "lua.exe", io, .{ .replace = true });
+    try copySiblingDllsForWindows(io, destination, launcher_path, true);
+    try destination.access(io, "lua.exe", .{});
+    try destination.access(io, "lua54.DLL", .{});
+    try std.testing.expectError(error.FileNotFound, destination.access(io, "README.txt", .{}));
 }
 
 test "live-link shim uses the target launcher without hardcoded Lua versions" {

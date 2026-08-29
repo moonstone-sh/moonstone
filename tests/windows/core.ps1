@@ -9,12 +9,14 @@ $windowsProfile = Join-Path $work 'windows-profile'
 $windowsAppData = Join-Path $windowsProfile 'AppData/Roaming'
 $windowsLocalAppData = Join-Path $windowsProfile 'AppData/Local'
 $nativeSources = Join-Path $work 'native-sources'
+$runtimeSources = Join-Path $work 'runtime-sources'
+$runtimeHash = 'b3:1111111111111111111111111111111111111111111111111111111111111111'
 $nativePackage = 'native-loader-probe'
 $nativeLibraryDirectory = Join-Path $project '.moonstone/env/lib/native'
 $nativeProgram = Join-Path $project ".moonstone/env/bin/$nativePackage.exe"
 
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $project, (Join-Path $project '.moonstone/env/bin') | Out-Null
+New-Item -ItemType Directory -Force $project | Out-Null
 $transcript = Join-Path $work 'windows-core-transcript.txt'
 Start-Transcript -Path $transcript -Force | Out-Null
 
@@ -34,8 +36,19 @@ $env:USERPROFILE = $windowsProfile
 $env:APPDATA = $windowsAppData
 $env:LOCALAPPDATA = $windowsLocalAppData
 
-& $moon init $bootstrapProject --name windows-bootstrap --kind script --interpreter lua@5.4 --no-git --no-sync
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $bootstrapProject 'moonstone.toml'))) { throw 'moon init failed without HOME or MOONSTONE_* overrides' }
+# Git is optional: use an empty PATH to reproduce a fresh Windows installation
+# without Git, while invoking moon through its absolute path.
+$noGitPath = Join-Path $work 'no-git-path'
+New-Item -ItemType Directory -Force $noGitPath | Out-Null
+$originalPath = $env:PATH
+try {
+    $env:PATH = $noGitPath
+    $bootstrapOutput = & $moon init $bootstrapProject --name windows-bootstrap --kind script --interpreter lua@5.4 --no-sync
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $bootstrapProject 'moonstone.toml'))) { throw 'moon init failed when Git was absent from PATH' }
+    if (($bootstrapOutput -join "`n") -notmatch 'skipped Git initialization') { throw 'moon init did not report that optional Git initialization was skipped' }
+} finally {
+    $env:PATH = $originalPath
+}
 
 Push-Location $bootstrapProject
 try {
@@ -57,6 +70,68 @@ $env:MOONSTONE_CACHE = Join-Path $work 'moonstone-cache'
 $env:MOONSTONE_CONFIG = Join-Path $work 'moonstone-config'
 $env:HOME = Join-Path $work 'home'
 
+# Stage a valid, Windows-targeted runtime directly in the local immutable store.
+# `moon index rebuild` makes sync exercise the same runtime projection path as a
+# registry/store hit without relying on public-network availability. The PE
+# launcher loads its adjacent DLL, proving that a no-symlink fallback copies
+# both the .exe and its co-located runtime dependency.
+$runtimeStore = Join-Path $env:MOONSTONE_DATA 'store/v0/b3/11/11/111111111111111111111111111111111111111111111111111111111111-lua-5.4.9'
+$runtimeBin = Join-Path $runtimeStore 'files/bin'
+New-Item -ItemType Directory -Force $runtimeBin, $runtimeSources | Out-Null
+$runtimeDllSource = Join-Path $runtimeSources 'runtime_sibling.c'
+$runtimeExeSource = Join-Path $runtimeSources 'runtime_main.c'
+
+@'
+__declspec(dllexport) int runtime_sibling_value(void) { return 7; }
+'@ | Set-Content -NoNewline -Encoding utf8 $runtimeDllSource
+
+@'
+#include <windows.h>
+#include <stdio.h>
+typedef int (__cdecl *runtime_sibling_value_fn)(void);
+int main(void) {
+    HMODULE library = LoadLibraryA("runtime-sibling.dll");
+    if (library == NULL) return 10;
+    runtime_sibling_value_fn value = (runtime_sibling_value_fn)GetProcAddress(library, "runtime_sibling_value");
+    if (value == NULL || value() != 7) return 11;
+    puts("runtime sibling loaded");
+    FreeLibrary(library);
+    return 0;
+}
+'@ | Set-Content -NoNewline -Encoding utf8 $runtimeExeSource
+
+& zig cc -shared $runtimeDllSource -o (Join-Path $runtimeBin 'runtime-sibling.dll')
+if ($LASTEXITCODE -ne 0) { throw 'failed to compile runtime sibling DLL' }
+& zig cc $runtimeExeSource -o (Join-Path $runtimeBin 'lua.exe')
+if ($LASTEXITCODE -ne 0) { throw 'failed to compile Windows runtime launcher' }
+
+@"
+[artifact]
+name = "moonstone/lua"
+version = "5.4.9"
+kind = "runtime"
+source_hash = ""
+recipe_hash = ""
+artifact_hash = "$runtimeHash"
+target = "x86_64-windows-gnu"
+
+[origin]
+resolver = "moonstone"
+source = ""
+
+[compat]
+runtime_version = "lua@5.4.9"
+lua_abi = "lua54"
+interpreter_artifact_hash = ""
+
+[provides]
+runtime = [{ name = "lua", version = "5.4.9", abi = "lua54" }]
+bin = [{ name = "lua", path = "bin/lua.exe" }]
+"@ | Set-Content -NoNewline (Join-Path $runtimeStore 'manifest.toml')
+
+& $moon index rebuild
+if ($LASTEXITCODE -ne 0) { throw 'failed to index staged Windows runtime' }
+
 @'
 manifest_version = 2
 
@@ -67,19 +142,25 @@ kind = "script"
 
 [interpreter]
 name = "lua"
-version = "5.4"
+version = "5.4.9"
 abi = "5.4"
 
 [scripts]
-check = "exit /b 0"
+check = "lua"
 '@ | Set-Content -NoNewline (Join-Path $project 'moonstone.toml')
 
-@'
-[runtime]
-name = "lua"
-version = "5.4"
-abi = "lua54"
-'@ | Set-Content -NoNewline (Join-Path $project '.moonstone/env/env.toml')
+& $moon -C $project sync --offline
+if ($LASTEXITCODE -ne 0) { throw 'moon sync failed to project the staged Windows Lua runtime' }
+if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/lua.exe'))) { throw 'Windows runtime projection did not retain lua.exe' }
+& $moon -C $project run check
+if ($LASTEXITCODE -ne 0) { throw 'projected Windows runtime could not load its sibling DLL' }
+
+$runtimeProjection = Get-Item -Force (Join-Path $project '.moonstone/env/bin/lua.exe')
+if (($runtimeProjection.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/runtime-sibling.dll'))) {
+        throw 'copy fallback for a non-symlink Windows runtime did not project the sibling DLL'
+    }
+}
 
 $manifest = & $moon -C $project manifest export --json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $manifest.manifest.project.name -ne 'windows-core') { throw 'manifest export through -C failed' }
@@ -111,6 +192,14 @@ exit /b 0
 
 & $moon -C $project exec live-tool
 if ($LASTEXITCODE -ne 0) { throw 'extensionless .cmd launcher resolution failed' }
+
+@'
+@echo off
+exit /b 0
+'@ | Set-Content -NoNewline (Join-Path $project '.moonstone/env/bin/live-tool-bat.bat')
+
+& $moon -C $project exec live-tool-bat
+if ($LASTEXITCODE -ne 0) { throw 'extensionless .bat launcher resolution failed' }
 
 # Exercise the actual Windows dynamic-loader boundary. The native package
 # materialization contract is covered on Linux; this harness isolates the

@@ -551,9 +551,23 @@ pub const init_command = struct {
             } else |_| {
                 if (emitter == null) try stdout.print("Initializing git repository...\n", .{});
 
-                const git_res = try std.process.run(allocator, io, .{
+                const git_res = std.process.run(allocator, io, .{
                     .argv = &.{ "git", "init", target_path },
-                });
+                }) catch |err| {
+                    // Git is an optional post-initialization convenience. In
+                    // particular, a normal Windows installation need not have
+                    // Git on PATH. The project files above are already durable
+                    // and valid, so a failed spawn must not turn that success
+                    // into a failed `moon init`.
+                    if (emitter == null) {
+                        try stdout.print("Warning: skipped Git initialization ({s}). The Moonstone project is ready.\n", .{@errorName(err)});
+                    }
+                    return;
+                };
+                defer {
+                    allocator.free(git_res.stdout);
+                    allocator.free(git_res.stderr);
+                }
 
                 if (git_res.term != .exited or git_res.term.exited != 0) {
                     if (emitter == null) try stdout.print("Warning: git init failed.\n", .{});

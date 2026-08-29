@@ -41,6 +41,13 @@ pub const Reporter = struct {
     plain_writer: ?*std.Io.Writer = null,
     plain_mutex: ?*std.Io.Mutex = null,
 
+    /// Interactive-only inventory. Plain and NDJSON retain their established
+    /// task-event contracts; the rich package model belongs solely to the TTY
+    /// reducer.
+    pub fn inventory(self: Reporter, record: progress_runtime.PackageInventory) void {
+        if (self.wctx) |value| value.sendPackageInventory(record);
+    }
+
     pub fn report(
         self: Reporter,
         io: std.Io,

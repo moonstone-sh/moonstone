@@ -106,4 +106,17 @@ moon init "${EMPTY_WORKDIR}" --empty --name "tmp-empty-$(date +%s)" --no-sync --
 [[ ! -e "${EMPTY_WORKDIR}/README.md" ]]
 rm -rf "${EMPTY_WORKDIR}"
 
+echo "━━━ testing init without optional git ━━━"
+NO_GIT_WORKDIR="$(mktemp -d /tmp/moon-test-init-no-git.XXXXXX)"
+NO_GIT_PATH="${NO_GIT_WORKDIR}/empty-path"
+mkdir -p "${NO_GIT_PATH}"
+if ! PATH="${NO_GIT_PATH}" "${PROJECT_ROOT}/zig-out/bin/moon" init "${NO_GIT_WORKDIR}/project" --name no-git --no-sync >"${NO_GIT_WORKDIR}/output" 2>&1; then
+    cat "${NO_GIT_WORKDIR}/output" >&2
+    echo "moon init must succeed when optional git is unavailable" >&2
+    exit 1
+fi
+grep -Fq "skipped Git initialization" "${NO_GIT_WORKDIR}/output"
+[[ -f "${NO_GIT_WORKDIR}/project/moonstone.toml" ]]
+rm -rf "${NO_GIT_WORKDIR}"
+
 echo "━━━ ✓ Init templates test passed ━━━"

@@ -67,7 +67,7 @@ windows_path() {
 work="${prefix_root}/work"
 mkdir -p "${work}"
 project="${work}/project"
-mkdir -p "${project}/.moonstone/env/bin"
+mkdir -p "${project}"
 
 export MOONSTONE_HOME="$(windows_path "${work}/moonstone-home")"
 export MOONSTONE_DATA="$(windows_path "${work}/moonstone-data")"
@@ -84,6 +84,48 @@ wine_moon() {
     wine_run "${moon_win}" "$@"
 }
 
+# Wine does not ship Git. This is the exact optional-tool absence seen by a
+# fresh Windows Moonstone user: init must leave a usable project and succeed.
+init_output="$(wine_moon init "${project_win}" --name windows-core --kind script --interpreter lua@5.4 --no-sync)"
+[[ "${init_output}" == *"skipped Git initialization"* ]] || {
+    echo "moon init did not report nonfatal missing Git" >&2
+    exit 1
+}
+
+# Stage a runtime in the local immutable store so sync performs a real Windows
+# runtime projection without relying on public-network registry availability.
+# native-loader-probe.exe loads nativeprobe.dll from beside the launcher; when
+# symlink creation is denied, the projection fallback must copy that sibling.
+runtime_hash='b3:1111111111111111111111111111111111111111111111111111111111111111'
+runtime_store="${work}/moonstone-data/store/v0/b3/11/11/111111111111111111111111111111111111111111111111111111111111-lua-5.4.9"
+mkdir -p "${runtime_store}/files/bin"
+cp /opt/wine-probes/native-loader-probe.exe "${runtime_store}/files/bin/lua.exe"
+cp /opt/wine-probes/nativeprobe.dll "${runtime_store}/files/bin/nativeprobe.dll"
+cat >"${runtime_store}/manifest.toml" <<TOML
+[artifact]
+name = "moonstone/lua"
+version = "5.4.9"
+kind = "runtime"
+source_hash = ""
+recipe_hash = ""
+artifact_hash = "${runtime_hash}"
+target = "x86_64-windows-gnu"
+
+[origin]
+resolver = "moonstone"
+source = ""
+
+[compat]
+runtime_version = "lua@5.4.9"
+lua_abi = "lua54"
+interpreter_artifact_hash = ""
+
+[provides]
+runtime = [{ name = "lua", version = "5.4.9", abi = "lua54" }]
+bin = [{ name = "lua", path = "bin/lua.exe" }]
+TOML
+wine_moon index rebuild
+
 cat >"${project}/moonstone.toml" <<'TOML'
 manifest_version = 2
 
@@ -94,19 +136,23 @@ kind = "script"
 
 [interpreter]
 name = "lua"
-version = "5.4"
+version = "5.4.9"
 abi = "5.4"
 
 [scripts]
-check = "exit /b 0"
+check = "lua"
 TOML
 
-cat >"${project}/.moonstone/env/env.toml" <<'TOML'
-[runtime]
-name = "lua"
-version = "5.4"
-abi = "lua54"
-TOML
+wine_moon -C "${project_win}" sync --offline
+test -f "${project}/.moonstone/env/bin/lua.exe"
+wine_moon -C "${project_win}" run check
+
+# A symlinked launcher loads the DLL from the store; a copied launcher needs
+# the fallback's local copy. Assert the latter whenever Wine/native Windows did
+# not create a reparse-point projection.
+if ! test -L "${project}/.moonstone/env/bin/lua.exe"; then
+    test -f "${project}/.moonstone/env/bin/nativeprobe.dll"
+fi
 
 manifest="$(wine_moon -C "${project_win}" manifest export --json)"
 [[ "${manifest}" == *'"windows-core"'* ]] || {
@@ -138,6 +184,12 @@ cat >"${project}/.moonstone/env/bin/live-tool.cmd" <<'CMD'
 exit /b 0
 CMD
 wine_moon -C "${project_win}" exec live-tool
+
+cat >"${project}/.moonstone/env/bin/live-tool-bat.bat" <<'BAT'
+@echo off
+exit /b 0
+BAT
+wine_moon -C "${project_win}" exec live-tool-bat
 
 native_library_dir="${project}/.moonstone/env/lib/native"
 mkdir -p "${native_library_dir}"
