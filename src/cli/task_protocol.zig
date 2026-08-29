@@ -8,6 +8,13 @@ pub const TaskKind = enum {
     replay,
 };
 
+pub fn canonicalPackageName(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "moonstone/lua") or std.mem.eql(u8, name, "lua")) return "lua";
+    if (std.mem.eql(u8, name, "moonstone/luajit") or std.mem.eql(u8, name, "luajit")) return "luajit";
+    if (std.mem.eql(u8, name, "moonstone/love") or std.mem.eql(u8, name, "love")) return "love";
+    return name;
+}
+
 pub fn formatOrbitSyncId(buffer: []u8, orbit_name: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "orbit-sync:{s}", .{orbit_name});
 }
@@ -23,11 +30,12 @@ pub fn formatId(
     package_name: []const u8,
     version: []const u8,
 ) ![]const u8 {
+    const canon_name = canonicalPackageName(package_name);
     return std.fmt.bufPrint(buffer, "{s}:{s}:{s}:{s}@{s}", .{
         @tagName(kind),
         target,
         resolver,
-        package_name,
+        canon_name,
         version,
     });
 }
@@ -128,4 +136,17 @@ test "plain reporter emits durable task transitions" {
         "  running orbit-sync:api: api\n",
         writer.buffer[0..writer.end],
     );
+}
+
+test "task identity canonicalizes moonstone/lua to lua" {
+    var buffer1: [256]u8 = undefined;
+    var buffer2: [256]u8 = undefined;
+    const id1 = try formatId(&buffer1, .realize, "native", "moonstone", "moonstone/lua", "5.4.7");
+    const id2 = try formatId(&buffer2, .realize, "native", "moonstone", "lua", "5.4.7");
+    try std.testing.expectEqualStrings("realize:native:moonstone:lua@5.4.7", id1);
+    try std.testing.expectEqualStrings(id1, id2);
+
+    const ballad_id = try formatId(&buffer1, .realize, "native", "moonstone", "moonstone/ballad", "1.0.0");
+    const unscoped_ballad_id = try formatId(&buffer2, .realize, "native", "moonstone", "ballad", "1.0.0");
+    try std.testing.expect(!std.mem.eql(u8, ballad_id, unscoped_ballad_id));
 }

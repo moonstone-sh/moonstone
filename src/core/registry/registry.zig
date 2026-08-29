@@ -455,6 +455,22 @@ pub const RegistryClient = struct {
         }
     }
 
+    const ProgressAdapterCtx = struct {
+        url: []const u8,
+        on_event: resolver.ResolveCallback,
+        on_event_context: ?*anyopaque,
+    };
+
+    fn progress_adapter(ctx_ptr: ?*anyopaque, downloaded: usize, total: ?usize) void {
+        const ctx: *ProgressAdapterCtx = @ptrCast(@alignCast(ctx_ptr orelse return));
+        ctx.on_event(ctx.on_event_context, .{ .download_progress = .{
+            .url = ctx.url,
+            .pkg_name = null,
+            .downloaded_bytes = downloaded,
+            .total_bytes = total,
+        } });
+    }
+
     fn get_url_single(self: *RegistryClient, url: []const u8, timeout_ms: u32) ![]u8 {
         const client = &(self.http_client orelse return error.HttpClientNotInitialized);
 
@@ -467,7 +483,26 @@ pub const RegistryClient = struct {
             try extra_headers.append(self.allocator, .{ .name = "Authorization", .value = auth_val });
         }
 
-        return http.fetchGetBodyWithClient(self.allocator, client, url, extra_headers.items, timeout_ms);
+        var pctx: ?ProgressAdapterCtx = null;
+        var pcb: ?http.ProgressCallback = null;
+        if (self.on_event) |cb| {
+            pctx = .{
+                .url = url,
+                .on_event = cb,
+                .on_event_context = self.on_event_context,
+            };
+            pcb = progress_adapter;
+        }
+
+        return http.fetchGetBodyWithClientAndProgress(
+            self.allocator,
+            client,
+            url,
+            extra_headers.items,
+            timeout_ms,
+            pcb,
+            if (pctx) |*p| p else null,
+        );
     }
 
     fn get_url(self: *RegistryClient, url: []const u8) ![]u8 {
@@ -512,4 +547,36 @@ test "remote registry URL joining uses URL separators" {
     const url = try joinRemoteUrl(std.testing.allocator, "https://registry.moonstone.sh/registry/v0/", "/registry.toml");
     defer std.testing.allocator.free(url);
     try std.testing.expectEqualStrings("https://registry.moonstone.sh/registry/v0/registry.toml", url);
+}
+
+test "registry progress adapter forwards download_progress events" {
+    const Tracker = struct {
+        downloaded: usize = 0,
+        total: ?usize = null,
+        url: []const u8 = "",
+
+        fn onEvent(ctx_ptr: ?*anyopaque, event: resolver.ResolveEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr orelse return));
+            switch (event) {
+                .download_progress => |dp| {
+                    self.downloaded = dp.downloaded_bytes;
+                    self.total = dp.total_bytes;
+                    self.url = dp.url;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var tracker = Tracker{};
+    var pctx = RegistryClient.ProgressAdapterCtx{
+        .url = "https://registry.example/blob.tar.gz",
+        .on_event = Tracker.onEvent,
+        .on_event_context = &tracker,
+    };
+
+    RegistryClient.progress_adapter(&pctx, 512, 1024);
+    try std.testing.expectEqualStrings("https://registry.example/blob.tar.gz", tracker.url);
+    try std.testing.expectEqual(@as(usize, 512), tracker.downloaded);
+    try std.testing.expectEqual(@as(?usize, 1024), tracker.total);
 }

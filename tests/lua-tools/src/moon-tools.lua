@@ -38,11 +38,15 @@ local function q(path)
 end
 
 local function exists(path)
-  return lfs and lfs.attributes(path) ~= nil or os.execute("test -e " .. q(path)) == true
+  if lfs then return lfs.attributes(path) ~= nil end
+  local ok = os.execute("test -e " .. q(path))
+  return ok == true or ok == 0
 end
 
 local function is_dir(path)
-  return lfs and (lfs.attributes(path, "mode") == "directory") or os.execute("test -d " .. q(path)) == true
+  if lfs then return lfs.attributes(path, "mode") == "directory" end
+  local ok = os.execute("test -d " .. q(path))
+  return ok == true or ok == 0
 end
 
 local function mkdir_p(path)

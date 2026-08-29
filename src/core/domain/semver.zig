@@ -1011,14 +1011,34 @@ pub const VersionRange = struct {
     }
 };
 
+pub fn matchesScheme(version_text: []const u8, range_text: []const u8, scheme: VersionScheme) bool {
+    const trimmed_range = std.mem.trim(u8, range_text, " \t\r\n");
+    if (trimmed_range.len == 0 or std.mem.eql(u8, trimmed_range, "*")) {
+        _ = switch (scheme) {
+            .semver => Version.parse(version_text) catch return false,
+            .luarocks => Version.parseLuaRocks(version_text) catch return false,
+        };
+        return true;
+    }
+
+    const v = switch (scheme) {
+        .semver => Version.parse(version_text) catch return false,
+        .luarocks => Version.parseLuaRocks(version_text) catch return false,
+    };
+
+    var buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const r = switch (scheme) {
+        .semver => VersionRange.parse(fba.allocator(), range_text) catch return false,
+        .luarocks => VersionRange.parseLuaRocks(fba.allocator(), range_text) catch return false,
+    };
+    return r.contains(v);
+}
+
 /// Backward compatibility helper for existing codebase
 pub fn matches(version_text: []const u8, range_text: []const u8) bool {
-    const v = Version.parse(version_text) catch return false;
-    // We use a fixed stack allocator for this simple check to avoid complicated lifetime management
-    var buf: [2048]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const r = VersionRange.parse(fba.allocator(), range_text) catch return false;
-    return r.contains(v);
+    if (matchesScheme(version_text, range_text, .semver)) return true;
+    return matchesScheme(version_text, range_text, .luarocks);
 }
 
 test "version parsing" {
@@ -1294,4 +1314,32 @@ test "LuaRocks constraint excluded revision ~= 1.2.3-1" {
     try std.testing.expect(r.contains(v1_2_3_0));
     try std.testing.expect(!r.contains(v1_2_3_1));
     try std.testing.expect(r.contains(v1_2_3_2));
+}
+
+test "semver.matches with LuaRocks revisions and constraints" {
+    // Exact LuaRocks revisions
+    try std.testing.expect(matches("3.1.3-1", "== 3.1.3-1"));
+    try std.testing.expect(matches("3.1.3-1", "3.1.3-1"));
+    try std.testing.expect(!matches("3.1.3-2", "== 3.1.3-1"));
+
+    // LuaRocks pessimistic constraint (~>)
+    try std.testing.expect(matches("3.1.3-1", "~> 3.1"));
+    try std.testing.expect(matches("3.1.0-1", "~> 3.1"));
+    try std.testing.expect(!matches("4.0.0-1", "~> 3.1"));
+
+    // LuaRocks scm revision
+    try std.testing.expect(matches("scm-1", "*"));
+    try std.testing.expect(matches("scm-1", ""));
+    try std.testing.expect(matches("scm-1", "scm-1"));
+
+    // Wildcard matching
+    try std.testing.expect(matches("1.0.0", "*"));
+    try std.testing.expect(matches("1.0.0", ""));
+    try std.testing.expect(matches("1.2.3-1", "*"));
+    try std.testing.expect(matches("1.2.3-1", ""));
+
+    // Standard SemVer matching
+    try std.testing.expect(matches("1.2.3", "^1.2.0"));
+    try std.testing.expect(matches("1.2.3", ">= 1.0.0, < 2.0.0"));
+    try std.testing.expect(!matches("2.0.0", "^1.2.0"));
 }

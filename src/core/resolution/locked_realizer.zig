@@ -109,16 +109,10 @@ pub fn ensureLockedArtifact(
     const coordinator_mod = @import("coordinator.zig");
     const exact_artifact_hash = if (requiresExactArtifactHash(entry)) entry.artifact_hash else "";
     const requested_artifact_hash: ?[]const u8 = if (exact_artifact_hash.len > 0) exact_artifact_hash else null;
-    // 1. Check configured artifact providers by hash. A source-replayable
-    // LuaRocks entry must skip RegistryProvider here: its Rocks branch is an
-    // ordinary resolver probe and reconstructs rockspec URLs from the package
-    // name before this locked replay can apply the recorded provenance.
-    const is_source_replayable_rocks = std.mem.eql(u8, entry.resolver, "rocks") and
-        entry.replay_mode != .artifact_only;
-    if (!is_source_replayable_rocks and
-        entry.artifact_hash.len > 0 and
-        !std.mem.eql(u8, entry.artifact_hash, "link") and
-        !std.mem.eql(u8, entry.artifact_hash, "path"))
+    // 1. Check configured artifact providers / local store by hash.
+    if (exact_artifact_hash.len > 0 and
+        !std.mem.eql(u8, exact_artifact_hash, "link") and
+        !std.mem.eql(u8, exact_artifact_hash, "path"))
     {
         const req = package_provider.ArtifactRequest{
             .name = entry.name,
@@ -130,10 +124,28 @@ pub fn ensureLockedArtifact(
         };
 
         if (try provider.get_artifact(req)) |cand| {
-            return RealizeResult{
-                .candidate = cand,
-                .method = .local_cas,
-            };
+            var cand_valid = true;
+            if (cand.local_path) |cand_path| {
+                std.Io.Dir.cwd().access(io, cand_path, .{}) catch {
+                    cand_valid = false;
+                };
+                if (cand_valid) {
+                    const manifest_path = try std.fs.path.join(allocator, &.{ cand_path, "manifest.toml" });
+                    defer allocator.free(manifest_path);
+                    std.Io.Dir.cwd().access(io, manifest_path, .{}) catch {
+                        cand_valid = false;
+                    };
+                }
+            }
+            if (cand_valid) {
+                return RealizeResult{
+                    .candidate = cand,
+                    .method = .local_cas,
+                };
+            } else {
+                var mut_cand = cand;
+                mut_cand.deinit(allocator);
+            }
         }
     }
 
@@ -226,6 +238,9 @@ pub fn ensureLockedArtifact(
         .locked_source_url = if (entry.source.len > 0) entry.source else null,
         .locked_source_hash = if (entry.source_hash.len > 0) entry.source_hash else null,
         .build_artifacts = build_artifacts,
+        .on_event = provider.options.on_event,
+        .on_event_context = provider.options.on_event_context,
+        .cancellation_flag = provider.options.cancellation_flag,
     };
 
     const rocks_lookup_name = try allocator.dupe(u8, entry.name);

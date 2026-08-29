@@ -20,7 +20,94 @@ const profiler = @import("../../diagnostics/profiler.zig");
 
 var manifest_cache: std.StringHashMapUnmanaged([]u8) = .empty;
 var manifest_cache_mutex: std.Io.Mutex = .init;
+var manifest_flights: std.StringHashMapUnmanaged(*ManifestFlight) = .empty;
 var materialization_workspace_counter: std.atomic.Value(u64) = .init(0);
+
+/// A single manifest request owns one flight. Followers wait for that request,
+/// then consume the resulting memory cache entry (or its failure). Flights are
+/// removed as soon as their last caller leaves; unlike the former start/done
+/// sets, a transient error can neither suppress a retry nor retain a URL.
+const ManifestFlight = struct {
+    url: []u8,
+    callers: usize = 1,
+    complete: bool = false,
+    failure: ?anyerror = null,
+    condition: std.Io.Condition = .init,
+};
+
+const ManifestFlightAcquire = union(enum) {
+    cached: []u8,
+    leader: *ManifestFlight,
+    follower: *ManifestFlight,
+};
+
+fn acquireManifestFlight(io: std.Io, url: []const u8) !ManifestFlightAcquire {
+    manifest_cache_mutex.lockUncancelable(io);
+    defer manifest_cache_mutex.unlock(io);
+
+    if (manifest_cache.get(url)) |cached| return .{ .cached = cached };
+    if (manifest_flights.get(url)) |flight| {
+        flight.callers += 1;
+        return .{ .follower = flight };
+    }
+
+    const allocator = std.heap.page_allocator;
+    const flight = try allocator.create(ManifestFlight);
+    errdefer allocator.destroy(flight);
+    flight.* = .{ .url = try allocator.dupe(u8, url) };
+    errdefer allocator.free(flight.url);
+    try manifest_flights.put(allocator, flight.url, flight);
+    return .{ .leader = flight };
+}
+
+fn completeManifestFlight(io: std.Io, flight: *ManifestFlight, failure: ?anyerror) void {
+    manifest_cache_mutex.lockUncancelable(io);
+    defer manifest_cache_mutex.unlock(io);
+    flight.failure = failure;
+    flight.complete = true;
+    flight.condition.broadcast(io);
+}
+
+fn releaseManifestFlightLocked(flight: *ManifestFlight) void {
+    std.debug.assert(flight.callers > 0);
+    flight.callers -= 1;
+    if (flight.callers != 0) return;
+
+    std.debug.assert(flight.complete);
+    const removed = manifest_flights.fetchRemove(flight.url) orelse unreachable;
+    std.debug.assert(removed.value == flight);
+    const allocator = std.heap.page_allocator;
+    // The flight table has no cache semantics. Release even its backing table
+    // once the final in-flight URL leaves so it cannot become process-lifetime
+    // URL state.
+    if (manifest_flights.count() == 0) {
+        manifest_flights.deinit(allocator);
+        manifest_flights = .empty;
+    }
+    allocator.free(flight.url);
+    allocator.destroy(flight);
+}
+
+fn waitForManifestFlight(io: std.Io, flight: *ManifestFlight) ![]u8 {
+    manifest_cache_mutex.lockUncancelable(io);
+    defer manifest_cache_mutex.unlock(io);
+
+    while (!flight.complete) flight.condition.waitUncancelable(io, &manifest_cache_mutex);
+    const failure = flight.failure;
+    const body = if (failure == null) manifest_cache.get(flight.url) else null;
+    releaseManifestFlightLocked(flight);
+    if (failure) |err| return err;
+    return body orelse error.ManifestFlightMissingCachedBody;
+}
+
+/// A leader must drop its own reference on every error path. Doing so through
+/// the same wait/release path as followers guarantees that the URL entry is
+/// removed once all already-joined callers have observed the failure.
+fn failManifestFlight(io: std.Io, flight: *ManifestFlight, failure: anyerror) !void {
+    completeManifestFlight(io, flight, failure);
+    _ = try waitForManifestFlight(io, flight);
+    return error.ManifestFlightUnexpectedSuccess;
+}
 
 fn getCachedManifest(io: std.Io, url: []const u8) ?[]u8 {
     manifest_cache_mutex.lockUncancelable(io);
@@ -32,6 +119,10 @@ fn adoptCachedManifest(allocator: std.mem.Allocator, io: std.Io, url: []const u8
     manifest_cache_mutex.lockUncancelable(io);
     defer manifest_cache_mutex.unlock(io);
 
+    return adoptCachedManifestLocked(allocator, url, body);
+}
+
+fn adoptCachedManifestLocked(allocator: std.mem.Allocator, url: []const u8, body: []u8) ![]u8 {
     if (manifest_cache.get(url)) |cached| {
         allocator.free(body);
         return cached;
@@ -69,6 +160,53 @@ test "LuaRocks manifest cache serializes concurrent inserts" {
 
     try std.testing.expectEqual(@as(usize, threads.len), completed.load(.monotonic));
     try std.testing.expectEqualStrings("concurrent manifest body", getCachedManifest(std.testing.io, url).?);
+}
+
+test "LuaRocks manifest flights deduplicate callers and remove failures for retry" {
+    const Waiter = struct {
+        const Context = struct {
+            flight: *ManifestFlight,
+            observed_failure: *std.atomic.Value(bool),
+        };
+
+        fn run(context: *Context) void {
+            _ = waitForManifestFlight(std.testing.io, context.flight) catch |err| {
+                context.observed_failure.store(err == error.HttpError, .release);
+                return;
+            };
+            @panic("manifest follower unexpectedly succeeded");
+        }
+    };
+
+    const url = "https://moonstone.invalid/tests/manifest-flight-retry";
+    const first = try acquireManifestFlight(std.testing.io, url);
+    const leader = switch (first) {
+        .leader => |flight| flight,
+        else => return error.TestUnexpectedResult,
+    };
+    const second = try acquireManifestFlight(std.testing.io, url);
+    const follower = switch (second) {
+        .follower => |flight| flight,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(leader, follower);
+
+    var observed_failure = std.atomic.Value(bool).init(false);
+    var context = Waiter.Context{ .flight = follower, .observed_failure = &observed_failure };
+    const thread = try std.Thread.spawn(.{}, Waiter.run, .{&context});
+    completeManifestFlight(std.testing.io, leader, error.HttpError);
+    thread.join();
+    try std.testing.expect(observed_failure.load(.acquire));
+    try std.testing.expectError(error.HttpError, waitForManifestFlight(std.testing.io, leader));
+
+    const retry = try acquireManifestFlight(std.testing.io, url);
+    const retry_leader = switch (retry) {
+        .leader => |flight| flight,
+        else => return error.TestUnexpectedResult,
+    };
+    completeManifestFlight(std.testing.io, retry_leader, error.HttpError);
+    try std.testing.expectError(error.HttpError, waitForManifestFlight(std.testing.io, retry_leader));
+    try std.testing.expectEqual(@as(usize, 0), manifest_flights.count());
 }
 
 fn get_luarocks_base(env_map: *std.process.Environ.Map) []const u8 {
@@ -384,28 +522,55 @@ fn fetch_manifest(
     const url = try runtime_to_manifest_url(allocator, base, runtime);
     defer allocator.free(url);
     const body = blk: {
-        if (getCachedManifest(io, url)) |cached| {
-            profiler.mark("luarocks.manifest.cache_hit");
-            break :blk cached;
+        const acquired = try acquireManifestFlight(io, url);
+        switch (acquired) {
+            .cached => |cached| {
+                profiler.mark("luarocks.manifest.cache_hit");
+                break :blk cached;
+            },
+            .follower => |flight| {
+                // A failed leader completes and broadcasts before releasing its
+                // own reference, so this never waits on a permanently-started
+                // URL and retries can claim a new flight.
+                break :blk try waitForManifestFlight(io, flight);
+            },
+            .leader => |flight| {
+                if (read_persistent_manifest_cache(allocator, io, env_map, url, allow_stale_cache)) |maybe_cached| {
+                    if (maybe_cached) |cached| {
+                        profiler.mark("luarocks.manifest.disk_cache_hit");
+                        _ = adoptCachedManifest(allocator, io, url, cached) catch |err| {
+                            allocator.free(cached);
+                            failManifestFlight(io, flight, err) catch |flight_err| return flight_err;
+                            unreachable;
+                        };
+                        completeManifestFlight(io, flight, null);
+                        break :blk try waitForManifestFlight(io, flight);
+                    }
+                } else |err| {
+                    failManifestFlight(io, flight, err) catch |flight_err| return flight_err;
+                    unreachable;
+                }
+
+                const span = profiler.now();
+                if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_started = "Syncing LuaRocks manifest" });
+                const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest", cancellation_flag) catch |err| {
+                    const result_err: anyerror = if (err == error.Cancelled) err else error.RocksVersionDiscoveryFailed;
+                    if (err != error.Cancelled) std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
+                    failManifestFlight(io, flight, result_err) catch |flight_err| return flight_err;
+                    unreachable;
+                };
+                const adopted = adoptCachedManifest(allocator, io, url, fetched) catch |err| {
+                    allocator.free(fetched);
+                    failManifestFlight(io, flight, err) catch |flight_err| return flight_err;
+                    unreachable;
+                };
+                write_persistent_manifest_cache(allocator, io, env_map, url, adopted);
+                completeManifestFlight(io, flight, null);
+                if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_done = "LuaRocks manifest synced" });
+                profiler.span("luarocks.manifest.fetch", span);
+                break :blk try waitForManifestFlight(io, flight);
+            },
         }
-        if (try read_persistent_manifest_cache(allocator, io, env_map, url, allow_stale_cache)) |cached| {
-            profiler.mark("luarocks.manifest.disk_cache_hit");
-            errdefer allocator.free(cached);
-            break :blk try adoptCachedManifest(allocator, io, url, cached);
-        }
-        const span = profiler.now();
-        if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_started = "Syncing LuaRocks manifest" });
-        const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest", cancellation_flag) catch |err| {
-            if (err == error.Cancelled) return err;
-            // TODO: handle err
-            std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
-            return error.RocksVersionDiscoveryFailed;
-        };
-        if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_done = "LuaRocks manifest synced" });
-        profiler.span("luarocks.manifest.fetch", span);
-        errdefer allocator.free(fetched);
-        write_persistent_manifest_cache(allocator, io, env_map, url, fetched);
-        break :blk try adoptCachedManifest(allocator, io, url, fetched);
     };
     return std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
         // TODO: handle err

@@ -5,6 +5,8 @@ if [[ -z "${MOONSTONE_HOME:-}" ]]; then
     source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
 fi
 
+MOON_BIN="${MOON_BIN:-${PROJECT_ROOT}/zig-out/bin/moon}"
+
 WORKDIR="/tmp/moonstone-test-orbit-exec"
 rm -rf "${WORKDIR}"
 mkdir -p "${WORKDIR}"
@@ -30,6 +32,8 @@ path = "child"
 EOF
 
 cat <<EOF > child/moonstone.toml
+manifest_version = 2
+
 [package]
 name = "child"
 kind = "script"

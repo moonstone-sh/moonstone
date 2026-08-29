@@ -239,7 +239,22 @@ const ForeignRocksMetadataInterpreter = struct {
         defer parser_runtime.deinit(self.allocator);
 
         const parser_is_remote = runtimeRequiresProgressRecord(&parser_runtime);
+        var parser_task_buf: [512]u8 = undefined;
+        const parser_task_id = task_protocol.formatId(&parser_task_buf, .realize, host_target, runtimeProgressResolver(.host_parser), parser_runtime.name, parser_runtime.version) catch parser_runtime.name;
+        var parser_progress_ctx = AttributedResolveProgressContext{
+            .wctx = self.reporter.wctx,
+            .task_id = parser_task_id,
+            .forward = self.materializer.on_event,
+            .forward_context = self.materializer.on_event_context,
+        };
+        // Materializers retain their callback configuration.  The parser
+        // materialization is synchronous, so attribute it through a private
+        // value copy rather than leaving a pointer to this stack frame in the
+        // shared materializer used by the enclosing sync.
+        var parser_mat = self.materializer.*;
         if (parser_is_remote) {
+            parser_mat.on_event = onAttributedResolveEvent;
+            parser_mat.on_event_context = @ptrCast(&parser_progress_ctx);
             queueRuntimeMaterializationInventory(self.reporter, host_target, .host_parser, &parser_runtime);
             reportRuntimeMaterializationState(self.reporter, self.io, host_target, .host_parser, &parser_runtime, 1, "running", "materializing host parser runtime");
         }
@@ -250,7 +265,7 @@ const ForeignRocksMetadataInterpreter = struct {
                 .artifact_hash = try self.allocator.dupe(u8, parser_runtime.artifact_hash),
             },
             .remote => switch (parser_runtime.origin) {
-                .moonstone_registry => |r| self.materializer.materialize_remote(
+                .moonstone_registry => |r| parser_mat.materialize_remote(
                     r.url,
                     r.token,
                     r.descriptor_path,
@@ -563,6 +578,7 @@ fn queueResolvedPackageInventory(
     pkg: *const moonstone.resolution.candidate.ResolvedArtifact,
     reused: bool,
 ) !void {
+    const canon_name = task_protocol.canonicalPackageName(pkg.name);
     const resolver: []const u8 = switch (pkg.origin) {
         .moonstone_registry => "moonstone",
         .luarocks => "rocks",
@@ -571,10 +587,10 @@ fn queueResolvedPackageInventory(
         .artifact_hash => "store",
     };
     var task_buffer: [512]u8 = undefined;
-    const task_id = try task_protocol.formatId(&task_buffer, kind, target, resolver, pkg.name, pkg.version);
+    const task_id = try task_protocol.formatId(&task_buffer, kind, target, resolver, canon_name, pkg.version);
     reporter.inventory(.{
         .task_id = try allocator.dupe(u8, task_id),
-        .name = pkg.name,
+        .name = canon_name,
         .detail = pkg.version,
         .discriminator = pkg.artifact_hash,
         .reused = reused,
@@ -588,12 +604,13 @@ fn queueLockedReplayInventory(
     entry: *const moonstone.domain.lockfile.LockEntry,
     reused: bool,
 ) !void {
+    const canon_name = task_protocol.canonicalPackageName(entry.name);
     const resolver = if (entry.resolver.len > 0) entry.resolver else "locked";
     var task_buffer: [512]u8 = undefined;
-    const task_id = try task_protocol.formatId(&task_buffer, .replay, target, resolver, entry.name, entry.version);
+    const task_id = try task_protocol.formatId(&task_buffer, .replay, target, resolver, canon_name, entry.version);
     reporter.inventory(.{
         .task_id = try allocator.dupe(u8, task_id),
-        .name = entry.name,
+        .name = canon_name,
         .detail = entry.version,
         .discriminator = entry.artifact_hash,
         .reused = reused,
@@ -606,11 +623,12 @@ fn reportLockedReplayReady(
     target: []const u8,
     entry: *const moonstone.domain.lockfile.LockEntry,
 ) void {
+    const canon_name = task_protocol.canonicalPackageName(entry.name);
     const resolver = if (entry.resolver.len > 0) entry.resolver else "locked";
     var task_buffer: [512]u8 = undefined;
-    const task_id = task_protocol.formatId(&task_buffer, .replay, target, resolver, entry.name, entry.version) catch return;
+    const task_id = task_protocol.formatId(&task_buffer, .replay, target, resolver, canon_name, entry.version) catch return;
     reporter.report(io, task_id, 1, "completed", "reused local link/path", .{
-        .package = entry.name,
+        .package = canon_name,
         .version = entry.version,
         .resolver = resolver,
         .reused = true,
@@ -659,13 +677,14 @@ fn queueRuntimeMaterializationInventory(
     scope: RuntimeProgressScope,
     runtime: *const moonstone.resolution.candidate.ResolvedArtifact,
 ) void {
+    const canon_name = task_protocol.canonicalPackageName(runtime.name);
     var task_buffer: [512]u8 = undefined;
-    const task_id = task_protocol.formatId(&task_buffer, .realize, target, runtimeProgressResolver(scope), runtime.name, runtime.version) catch return;
+    const task_id = task_protocol.formatId(&task_buffer, .realize, target, runtimeProgressResolver(scope), canon_name, runtime.version) catch return;
     var detail_buffer: [256]u8 = undefined;
     const detail = std.fmt.bufPrint(&detail_buffer, "{s} ({s})", .{ runtime.version, runtimeProgressLabel(scope) }) catch runtime.version;
     reporter.inventory(.{
         .task_id = task_id,
-        .name = runtime.name,
+        .name = canon_name,
         .detail = detail,
         .discriminator = runtime.artifact_hash,
     });
@@ -681,10 +700,11 @@ fn reportRuntimeMaterializationState(
     state: []const u8,
     message: []const u8,
 ) void {
+    const canon_name = task_protocol.canonicalPackageName(runtime.name);
     var task_buffer: [512]u8 = undefined;
-    const task_id = task_protocol.formatId(&task_buffer, .realize, target, runtimeProgressResolver(scope), runtime.name, runtime.version) catch return;
+    const task_id = task_protocol.formatId(&task_buffer, .realize, target, runtimeProgressResolver(scope), canon_name, runtime.version) catch return;
     reporter.report(io, task_id, revision, state, message, .{
-        .package = runtime.name,
+        .package = canon_name,
         .version = runtime.version,
         .resolver = runtimeProgressResolver(scope),
         .runtime_scope = runtimeProgressLabel(scope),
@@ -993,7 +1013,7 @@ const RocksPool = struct {
         const task_id = task_protocol.formatId(&task_buf, .realize, self.target, "rocks", pkg.name, pkg.version) catch pkg.name;
         const task_label = std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ pkg.name, pkg.version }) catch pkg.name;
         defer if (task_label.ptr != pkg.name.ptr) self.allocator.free(task_label);
-        self.reporter.report(self.io, task_id, 1, "preparing", task_label, .{
+        self.reporter.report(self.io, task_id, 1, "downloading", task_label, .{
             .package = pkg.name,
             .version = pkg.version,
             .resolver = "rocks",
@@ -1512,6 +1532,14 @@ const LockedReplayPool = struct {
 
         var provider_options = self.provider_options;
         provider_options.locked = true;
+        var progress_context = AttributedResolveProgressContext{
+            .wctx = self.wctx,
+            .task_id = task_id,
+            .forward = self.provider_options.on_event,
+            .forward_context = self.provider_options.on_event_context,
+        };
+        provider_options.on_event = onAttributedResolveEvent;
+        provider_options.on_event_context = @ptrCast(&progress_context);
         var worker_provider: moonstone.resolution.provider.graph_provider.RegistryProvider = undefined;
         worker_provider.init(
             self.allocator,
@@ -2094,7 +2122,20 @@ pub const SyncCommand = struct {
         };
 
         const selected_runtime_is_remote = runtimeRequiresProgressRecord(&rt_res);
+        var selected_task_buf: [512]u8 = undefined;
+        const selected_task_id = task_protocol.formatId(&selected_task_buf, .realize, lock_target, runtimeProgressResolver(.selected), rt_res.name, rt_res.version) catch rt_res.name;
+        var selected_progress_ctx = AttributedResolveProgressContext{
+            .wctx = task_reporter.wctx,
+            .task_id = selected_task_id,
+            .forward = on_resolve_cb,
+            .forward_context = on_resolve_ctx,
+        };
+        // Attribute each synchronous runtime fetch on its own Materializer
+        // value. `mat` remains the unmodified baseline for later scopes.
+        var selected_mat = mat;
         if (selected_runtime_is_remote) {
+            selected_mat.on_event = onAttributedResolveEvent;
+            selected_mat.on_event_context = @ptrCast(&selected_progress_ctx);
             queueRuntimeMaterializationInventory(task_reporter, lock_target, .selected, &rt_res);
             reportRuntimeMaterializationState(task_reporter, io, lock_target, .selected, &rt_res, 1, "running", "materializing selected runtime");
         }
@@ -2107,7 +2148,7 @@ pub const SyncCommand = struct {
             },
             .remote => switch (rt_res.origin) {
                 .moonstone_registry => |r| blk: {
-                    const materialized = mat.materialize_remote(
+                    const materialized = selected_mat.materialize_remote(
                         r.url,
                         r.token,
                         r.descriptor_path,
@@ -2171,7 +2212,20 @@ pub const SyncCommand = struct {
             defer parser_runtime.deinit(allocator);
 
             const host_parser_is_remote = runtimeRequiresProgressRecord(&parser_runtime);
+            var host_task_buf: [512]u8 = undefined;
+            const host_task_id = task_protocol.formatId(&host_task_buf, .realize, host_target, runtimeProgressResolver(.host_parser), parser_runtime.name, parser_runtime.version) catch parser_runtime.name;
+            var host_progress_ctx = AttributedResolveProgressContext{
+                .wctx = task_reporter.wctx,
+                .task_id = host_task_id,
+                .forward = on_resolve_cb,
+                .forward_context = on_resolve_ctx,
+            };
+            // Do not overwrite selected_mat/mat with a callback context that
+            // belongs only to this host-parser materialization.
+            var host_mat = mat;
             if (host_parser_is_remote) {
+                host_mat.on_event = onAttributedResolveEvent;
+                host_mat.on_event_context = @ptrCast(&host_progress_ctx);
                 queueRuntimeMaterializationInventory(task_reporter, host_target, .host_parser, &parser_runtime);
                 reportRuntimeMaterializationState(task_reporter, io, host_target, .host_parser, &parser_runtime, 1, "running", "materializing host parser runtime");
             }
@@ -2182,7 +2236,7 @@ pub const SyncCommand = struct {
                     .artifact_hash = try allocator.dupe(u8, parser_runtime.artifact_hash),
                 },
                 .remote => switch (parser_runtime.origin) {
-                    .moonstone_registry => |r| mat.materialize_remote(
+                    .moonstone_registry => |r| host_mat.materialize_remote(
                         r.url,
                         r.token,
                         r.descriptor_path,
@@ -2387,7 +2441,7 @@ pub const SyncCommand = struct {
         var replay_entries = std.ArrayList(*const moonstone.domain.lockfile.LockEntry).empty;
         defer replay_entries.deinit(allocator);
         const selected_profile = if (existing_lock.version == 3)
-            existing_lock.findExactProfile(lock_target, rt_res.name, active_lua_abi)
+            findLockedRuntimeProfile(&existing_lock, lock_target, rt_res.name, mt.runtimeName(), active_lua_abi)
         else
             null;
         if (selected_profile) |profile| {
@@ -4040,6 +4094,16 @@ pub const SyncCommand = struct {
     }
 };
 
+fn packageNamesMatch(index_name: []const u8, requested_name: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(index_name, requested_name)) return true;
+
+    const canonical_req = if (std.mem.eql(u8, requested_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, requested_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, requested_name, "love")) @as([]const u8, "moonstone/love") else requested_name;
+
+    const canonical_idx = if (std.mem.eql(u8, index_name, "lua")) @as([]const u8, "moonstone/lua") else if (std.mem.eql(u8, index_name, "luajit")) @as([]const u8, "moonstone/luajit") else if (std.mem.eql(u8, index_name, "love")) @as([]const u8, "moonstone/love") else index_name;
+
+    return std.ascii.eqlIgnoreCase(canonical_idx, canonical_req);
+}
+
 fn lockedDependenciesMatch(
     deps: []const moonstone.domain.manifest.StoreDependency,
     lf: *moonstone.domain.lockfile.LockFile,
@@ -4053,7 +4117,14 @@ fn lockedDependenciesMatch(
             if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
         }
 
-        const lock_entry = lf.findIgnoreCase(dep_name) orelse return false;
+        var found_entry: ?*const moonstone.domain.lockfile.LockEntry = null;
+        for (lf.packages.items) |*entry| {
+            if (packageNamesMatch(entry.name, dep_name)) {
+                found_entry = entry;
+                break;
+            }
+        }
+        const lock_entry = found_entry orelse return false;
         const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }
@@ -4062,10 +4133,7 @@ fn lockedDependenciesMatch(
 
 fn findReplayEntry(entries: []const *const moonstone.domain.lockfile.LockEntry, name: []const u8) ?*const moonstone.domain.lockfile.LockEntry {
     for (entries) |entry| {
-        if (std.mem.eql(u8, entry.name, name)) return entry;
-    }
-    for (entries) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
+        if (packageNamesMatch(entry.name, name)) return entry;
     }
     return null;
 }
@@ -4077,7 +4145,7 @@ fn lockedRuntimeEntry(
     for (profile.packages) |reference| {
         const realization = lockfile.findRealization(reference.realization_hash) orelse continue;
         if (realization.kind != .runtime) continue;
-        if (std.mem.eql(u8, realization.name, profile.runtime)) return realization;
+        if (packageNamesMatch(realization.name, profile.runtime)) return realization;
     }
     return null;
 }
@@ -4089,6 +4157,15 @@ fn findLockedRuntimeProfile(
     declared_runtime_name: []const u8,
     lua_abi: []const u8,
 ) ?*const moonstone.domain.resolution_profile.ResolutionProfile {
+    for (lockfile.profiles.items) |*profile| {
+        if (profile.target.len > 0 and target.len > 0 and !std.mem.eql(u8, profile.target, target)) continue;
+        if (profile.lua_abi) |profile_abi| {
+            if (lua_abi.len > 0 and !std.mem.eql(u8, profile_abi, lua_abi)) continue;
+        } else if (lua_abi.len > 0) continue;
+        if (packageNamesMatch(profile.runtime, canonical_runtime_name) or packageNamesMatch(profile.runtime, declared_runtime_name)) {
+            return profile;
+        }
+    }
     return lockfile.findExactProfile(target, canonical_runtime_name, lua_abi) orelse
         if (!std.mem.eql(u8, canonical_runtime_name, declared_runtime_name))
             lockfile.findExactProfile(target, declared_runtime_name, lua_abi)
@@ -4168,8 +4245,10 @@ fn lockedRuntimeMatches(
     runtime_version: []const u8,
     active_lua_abi: []const u8,
 ) bool {
-    if (lf.find(runtime_name)) |entry| {
-        return std.mem.eql(u8, entry.version, runtime_version);
+    for (lf.packages.items) |entry| {
+        if (packageNamesMatch(entry.name, runtime_name)) {
+            return std.mem.eql(u8, entry.version, runtime_version);
+        }
     }
 
     for (lf.packages.items) |entry| {
@@ -4472,9 +4551,25 @@ fn resolveAndMaterializeRuntime(
         .local_store, .local_path => {},
         .remote => switch (rt_res_iso.origin) {
             .moonstone_registry => |r| {
+                // `mat` is shared by the sync caller.  Copy its value before
+                // attaching this stack-local attribution context; assigning
+                // the pointer itself aliases the shared materializer and
+                // leaves it holding a dangling context after this call.
+                var iso_mat = mat.*;
+                var iso_task_buf: [512]u8 = undefined;
+                const iso_task_id = task_protocol.formatId(&iso_task_buf, .realize, target, runtimeProgressResolver(.isolated_tool), rt_res_iso.name, rt_res_iso.version) catch rt_res_iso.name;
+                var iso_progress_ctx = AttributedResolveProgressContext{
+                    .wctx = reporter.wctx,
+                    .task_id = iso_task_id,
+                    .forward = mat.on_event,
+                    .forward_context = mat.on_event_context,
+                };
+                iso_mat.on_event = onAttributedResolveEvent;
+                iso_mat.on_event_context = @ptrCast(&iso_progress_ctx);
+
                 queueRuntimeMaterializationInventory(reporter, target, .isolated_tool, &rt_res_iso);
                 reportRuntimeMaterializationState(reporter, io, target, .isolated_tool, &rt_res_iso, 1, "running", "materializing isolated tool runtime");
-                _ = mat.materialize_remote(
+                _ = iso_mat.materialize_remote(
                     r.url,
                     r.token,
                     r.descriptor_path,
@@ -4788,4 +4883,55 @@ test "rocks preparation coordination elects one leader for an identical resolved
     try pool.selectPreparationLeaders();
     try std.testing.expectEqual(@as(?usize, 0), jobs[0].preparation_leader);
     try std.testing.expectEqual(@as(?usize, 0), jobs[1].preparation_leader);
+}
+
+test "attributed resolve event delivers determinate progress to package row" {
+    const allocator = std.testing.allocator;
+    var queue = try progress_runtime.ProgressQueue.init(std.testing.allocator, 16);
+    defer queue.deinit(std.testing.allocator);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var cancelled = std.atomic.Value(bool).init(false);
+    var worker = progress_runtime.WorkerContext{ .allocator = allocator, .io = std.testing.io, .env = &env, .queue = &queue, .cancel = &cancelled };
+    const reporter = task_protocol.Reporter{ .wctx = &worker };
+
+    const task_id = "realize:x86_64-linux-gnu:moonstone:demo@1.0.0";
+    queue.send(.{ .package_inventory = .{ .task_id = task_id, .name = "demo", .detail = "1.0.0", .total_bytes = 1000 } });
+    reporter.report(std.testing.io, task_id, 1, "downloading", "demo@1.0.0", .{});
+
+    var progress_context = AttributedResolveProgressContext{
+        .wctx = &worker,
+        .task_id = task_id,
+        .forward = null,
+        .forward_context = null,
+    };
+
+    onAttributedResolveEvent(&progress_context, .{ .download_progress = .{
+        .url = "https://registry.example/demo-1.0.0.tar.gz",
+        .pkg_name = "demo",
+        .downloaded_bytes = 500,
+        .total_bytes = 1000,
+    } });
+
+    var output: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    var ui = progress_runtime.ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+
+    while (queue.tryRecv()) |event| ui.apply(event);
+
+    try std.testing.expectEqual(@as(usize, 1), ui.package_rows.items.len);
+    const row = &ui.package_rows.items[0];
+    try std.testing.expectEqual(progress_runtime.PackageState.active, row.state);
+    try std.testing.expectEqual(progress_runtime.PackageStatus.downloading, row.status);
+    try std.testing.expectEqual(@as(u64, 500), row.done);
+    try std.testing.expectEqual(@as(?u64, 1000), row.total);
+
+    var progress_cell_buf: [64]u8 = undefined;
+    var cell_writer = std.Io.Writer.fixed(&progress_cell_buf);
+    try ui.writePackageProgress(&cell_writer, row);
+    // At 50% done in 80-column layout (width 5), braille cells must not be empty or fully filled
+    try std.testing.expect(cell_writer.buffered().len > 0);
+    try std.testing.expect(!std.mem.eql(u8, cell_writer.buffered(), "     "));
+    try std.testing.expect(!std.mem.eql(u8, cell_writer.buffered(), "⣿⣿⣿⣿⣿"));
 }

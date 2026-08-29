@@ -30,6 +30,8 @@ path = "deep/nested/child"
 EOF
 
 cat <<EOF > deep/nested/child/moonstone.toml
+manifest_version = 2
+
 [package]
 name = "child"
 kind = "script"

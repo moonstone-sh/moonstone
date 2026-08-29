@@ -22,6 +22,33 @@ fn columnsFromEnv(env: *std.process.Environ.Map) ?usize {
     return if (columns > 1) columns else null;
 }
 
+pub fn terminalRows(io: std.Io, env: ?*std.process.Environ.Map, use_stderr: bool) usize {
+    const fallback = if (env) |e| rowsFromEnv(e) orelse 24 else 24;
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
+
+    var winsize: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
+    const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
+    const result = io.operate(.{ .device_io_control = .{
+        .file = file,
+        .code = std.posix.T.IOCGWINSZ,
+        .arg = &winsize,
+    } }) catch return fallback;
+    if (result.device_io_control >= 0 and winsize.row > 0) return winsize.row;
+    return fallback;
+}
+
+fn rowsFromEnv(env: *std.process.Environ.Map) ?usize {
+    const raw = env.get("LINES") orelse return null;
+    const rows = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
+    return if (rows > 1) rows else null;
+}
+
+pub fn clampVisibleRows(total_items: usize, max_cap: usize, terminal_rows_count: usize) usize {
+    const height_budget = if (terminal_rows_count > 5) terminal_rows_count - 5 else 1;
+    const budget = @min(max_cap, height_budget);
+    return @min(total_items, budget);
+}
+
 /// Reserves the last terminal cell so a repaint never triggers terminal autowrap.
 pub fn appendBounded(writer: *std.Io.Writer, text: []const u8, columns: usize) !void {
     return appendBoundedWithGlyphMode(writer, text, columns, .ascii);
@@ -313,6 +340,7 @@ const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi 
 
     fn sigintHandler(sig: std.c.SIG) callconv(.c) void {
         _ = sig;
+        _ = std.c.write(std.posix.STDERR_FILENO, "\x1b[?25h", 6);
         if (global_cancel) |cancel| cancel.store(true, .release);
     }
 
@@ -786,11 +814,21 @@ pub const PackageCounts = struct {
     }
 };
 
-fn writePackageSummary(writer: *std.Io.Writer, counts: PackageCounts) !void {
-    try writer.print(
-        "Packages: {d} ready, {d} active, {d} queued, {d} failed, {d} cancelled ({d} total)",
-        .{ counts.ready, counts.active, counts.queued, counts.failed, counts.cancelled, counts.total() },
-    );
+pub fn writePackageSummary(writer: *std.Io.Writer, counts: PackageCounts, glyph_mode: GlyphMode) !void {
+    const total = counts.total();
+    const sep = switch (glyph_mode) {
+        .unicode => " · ",
+        .ascii => " - ",
+    };
+    try writer.print("Installing {d} packages{s}{d} ready, {d} active", .{
+        total,
+        sep,
+        counts.ready,
+        counts.active,
+    });
+    if (counts.failed > 0) {
+        try writer.print(", {d} failed", .{counts.failed});
+    }
 }
 
 pub const PackageBreakpoint = enum { compact, normal, wide };
@@ -907,6 +945,7 @@ pub const ProgressUi = struct {
         task_id: []const u8,
         name: []const u8,
         detail: []const u8,
+        discriminator: []const u8 = "",
         state: PackageState,
         status: PackageStatus,
         phase: []const u8 = "queued",
@@ -933,6 +972,8 @@ pub const ProgressUi = struct {
     is_tty: bool,
     io: std.Io,
     columns: usize,
+    rows: usize = 24,
+    max_visible_rows: usize = 5,
     env: ?*std.process.Environ.Map,
     glyph_mode: GlyphMode,
     package_layout: PackageLayout,
@@ -962,6 +1003,7 @@ pub const ProgressUi = struct {
     package_rows: std.ArrayList(PackageRow),
     task_slots: [max_visible_tasks]?usize = .{ null, null, null, null, null },
     completed_tasks: usize = 0,
+    completed_phases: std.ArrayList([]const u8),
     frame_writer: std.Io.Writer.Allocating,
     content_writer: std.Io.Writer.Allocating,
     bounded_writer: std.Io.Writer.Allocating,
@@ -981,15 +1023,20 @@ pub const ProgressUi = struct {
         columns: usize,
         env: ?*std.process.Environ.Map,
     ) ProgressUi {
-        return .{
+        const rows = if (env) |map| terminalRows(io, map, true) else 24;
+        const max_vis = std.math.clamp(rows -| 5, @as(usize, 1), @as(usize, 25));
+        var ui = ProgressUi{
             .writer = writer,
             .is_tty = is_tty,
             .io = io,
             .columns = columns,
+            .rows = rows,
+            .max_visible_rows = max_vis,
             .env = env,
             .glyph_mode = glyphModeFromSetting(if (env) |map| map.get("MOONSTONE_PROGRESS_GLYPHS") else null),
             .package_layout = packageLayout(columns),
             .warnings = .empty,
+            .completed_phases = .empty,
             .task_rows = .empty,
             .package_rows = .empty,
             .frame_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator),
@@ -999,9 +1046,14 @@ pub const ProgressUi = struct {
             .package_storage = std.Io.Writer.Allocating.init(std.heap.page_allocator),
             .download_label_storage = std.Io.Writer.Allocating.init(std.heap.page_allocator),
         };
+        if (is_tty) ui.rawWrite("\x1b[?25l");
+        return ui;
     }
 
     pub fn deinit(self: *ProgressUi) void {
+        if (self.is_tty) self.rawWrite("\x1b[?25h");
+        for (self.completed_phases.items) |p| std.heap.page_allocator.free(@constCast(p));
+        self.completed_phases.deinit(std.heap.page_allocator);
         self.warnings.deinit(std.heap.page_allocator);
         self.task_rows.deinit(std.heap.page_allocator);
         self.package_rows.deinit(std.heap.page_allocator);
@@ -1081,10 +1133,23 @@ pub const ProgressUi = struct {
                 self.dl_total = null;
                 self.dl_seen = false;
 
+                // Deduplicate phase_done if already synced
+                for (self.completed_phases.items) |completed| {
+                    if (std.mem.eql(u8, completed, msg)) return;
+                }
+                const owned_msg = std.heap.page_allocator.dupe(u8, msg) catch return;
+                self.completed_phases.append(std.heap.page_allocator, owned_msg) catch {
+                    std.heap.page_allocator.free(owned_msg);
+                    return;
+                };
+
                 if (self.is_tty) {
                     self.clearRenderedRows();
-                    self.renderTaskLine(true, "⠿ {s}", .{msg});
+                    self.content_writer.clearRetainingCapacity();
+                    self.content_writer.writer.print("⠿ {s}", .{msg}) catch return;
+                    self.renderBoundedLine(self.content_writer.writer.buffered());
                     self.rawWrite("\n");
+                    self.rendered_lines = 0;
                 } else {
                     self.writer.print("{s}\n", .{msg}) catch {};
                 }
@@ -1177,8 +1242,15 @@ pub const ProgressUi = struct {
     }
 
     fn applyPackageInventory(self: *ProgressUi, inventory: PackageInventory) void {
-        for (self.package_rows.items) |row| {
-            if (std.mem.eql(u8, row.task_id, inventory.task_id)) return;
+        for (self.package_rows.items) |*row| {
+            if (std.mem.eql(u8, row.task_id, inventory.task_id)) {
+                if (inventory.reused and row.state == .queued) {
+                    row.state = .ready;
+                    row.status = .ready;
+                    row.phase = "reused";
+                }
+                return;
+            }
         }
         const seed = packageSeed(inventory.task_id, inventory.discriminator);
         // Inventory arrives before scheduling, but use ordered insertion rather
@@ -1190,6 +1262,7 @@ pub const ProgressUi = struct {
             .task_id = inventory.task_id,
             .name = inventory.name,
             .detail = inventory.detail,
+            .discriminator = inventory.discriminator,
             .state = if (inventory.reused) .ready else .queued,
             .status = if (inventory.reused) .ready else .queued,
             .phase = if (inventory.reused) "reused" else "queued",
@@ -1554,13 +1627,8 @@ pub const ProgressUi = struct {
         } else if (row.state == .active and phaseAllowsByteProgress(row.phase) and row.total != null and row.total.? > 0) {
             masks = brailleDotMasks(row.permutation, column, row.done, row.total.?);
         } else if (row.state == .active and column > 0) {
-            // An indeterminate spinner is deliberately not a partial bar.
-            try writer.writeAll(switch (self.glyph_mode) {
-                .unicode => spinner_frames[self.spinner_frame % spinner_frames.len],
-                .ascii => "*",
-            });
-            for (1..column) |_| try writer.writeByte(' ');
-            return;
+            // Indeterminate active: packageStatus owns the 1st-column spinner.
+            // writePackageProgress leaves masks as all 0s (blank braille cells or dots in ascii).
         } else if (row.state == .failed and column > 0) {
             masks[0] = 0x09;
         } else if (row.state == .cancelled and column > 0) {
@@ -1610,7 +1678,7 @@ pub const ProgressUi = struct {
                 .failed => "x",
                 .cancelled => "-",
                 .queued => "·",
-                .active => "⠋",
+                .active => spinner_frames[self.spinner_frame % spinner_frames.len],
             },
             .ascii => switch (row.state) {
                 .ready => "+",
@@ -1643,13 +1711,16 @@ pub const ProgressUi = struct {
                 try writer.print("{s}: {s}@{s}", .{ packageStatusWord(row.status), row.name, row.detail });
             },
             .wide => {
-                if (row.total) |total| {
+                if (row.status == .downloading and row.total != null) {
+                    const total = row.total.?;
                     const pair = packageBytePair(row.done, total);
                     try self.writeNumericField(writer, pair.done_whole, pair.done_tenths);
                     try writer.writeAll(" / ");
                     try self.writeNumericField(writer, pair.total_whole, pair.total_tenths);
                     try writer.print(" {s}", .{pair.unit});
-                } else try writer.writeAll(packageStatusWord(row.status));
+                } else {
+                    try writer.writeAll(packageStatusWord(row.status));
+                }
             },
         }
     }
@@ -1700,8 +1771,47 @@ pub const ProgressUi = struct {
 
     fn renderPackageRows(self: *ProgressUi) void {
         self.clearRenderedRows();
-        const visible = @min(self.package_rows.items.len, max_visible_tasks);
-        const overflow = self.package_rows.items.len - visible;
+        const max_vis = self.max_visible_rows;
+        const total_pkgs = self.package_rows.items.len;
+        const visible_limit = @min(total_pkgs, max_vis);
+
+        var visible_indices: [32]usize = undefined;
+        var vis_count: usize = 0;
+
+        // Partition 1: active rows (stably sorted by task_id)
+        for (self.package_rows.items, 0..) |row, idx| {
+            if (row.state == .active) {
+                if (vis_count < visible_limit) {
+                    visible_indices[vis_count] = idx;
+                    vis_count += 1;
+                }
+            }
+        }
+
+        // Partition 2: queued rows
+        if (vis_count < visible_limit) {
+            for (self.package_rows.items, 0..) |row, idx| {
+                if (row.state == .queued) {
+                    visible_indices[vis_count] = idx;
+                    vis_count += 1;
+                    if (vis_count == visible_limit) break;
+                }
+            }
+        }
+
+        // Partition 3: other rows (ready, failed, cancelled)
+        if (vis_count < visible_limit) {
+            for (self.package_rows.items, 0..) |row, idx| {
+                if (row.state != .active and row.state != .queued) {
+                    visible_indices[vis_count] = idx;
+                    vis_count += 1;
+                    if (vis_count == visible_limit) break;
+                }
+            }
+        }
+
+        const visible = vis_count;
+        const overflow = total_pkgs - visible;
         const counts = self.packageCounts();
         // The aggregate is intentionally absent for one package; a single row
         // already says more than a redundant denominator.
@@ -1709,7 +1819,8 @@ pub const ProgressUi = struct {
         const overflow_lines: usize = if (overflow > 0) 1 else 0;
         const lines = visible + overflow_lines + summary_lines;
         var written: usize = 0;
-        for (self.package_rows.items[0..visible]) |*row| {
+        for (visible_indices[0..visible]) |row_idx| {
+            const row = &self.package_rows.items[row_idx];
             written += 1;
             // buildPackageLine uses content_writer, so it must be sent directly
             // rather than passed through renderTaskLine (which clears that same
@@ -1725,7 +1836,7 @@ pub const ProgressUi = struct {
         if (summary_lines > 0) {
             written += 1;
             self.content_writer.clearRetainingCapacity();
-            writePackageSummary(&self.content_writer.writer, counts) catch return;
+            writePackageSummary(&self.content_writer.writer, counts, self.glyph_mode) catch return;
             self.renderBoundedLineAtColumns(self.content_writer.writer.buffered());
             if (written != lines) self.rawWrite("\n");
         }
@@ -1771,14 +1882,21 @@ pub const ProgressUi = struct {
         return barWidthForColumns(self.columns, 10);
     }
 
-    fn refreshColumns(self: *ProgressUi) void {
+    pub fn refreshGeometry(self: *ProgressUi) void {
         if (self.env) |env| {
-            const next = terminalColumns(self.io, env, true);
-            // A resize within a breakpoint must not move package columns. The
-            // outer safety clamp still prevents autowrap on very small TTYs.
-            if (packageLayout(next).breakpoint != self.package_layout.breakpoint) self.package_layout = packageLayout(next);
-            self.columns = next;
+            const next_cols = terminalColumns(self.io, env, true);
+            const next_rows = terminalRows(self.io, env, true);
+            if (packageLayout(next_cols).breakpoint != self.package_layout.breakpoint) {
+                self.package_layout = packageLayout(next_cols);
+            }
+            self.columns = next_cols;
+            self.rows = next_rows;
+            self.max_visible_rows = std.math.clamp(next_rows -| 5, @as(usize, 1), @as(usize, 25));
         }
+    }
+
+    pub fn refreshColumns(self: *ProgressUi) void {
+        self.refreshGeometry();
     }
 
     /// Called after the UI loop exits (on `.done` or `.failed`).
@@ -1787,6 +1905,7 @@ pub const ProgressUi = struct {
         if (self.is_tty) {
             self.clearRenderedRows();
             self.rawWrite("\x1b[2K\r");
+            self.rawWrite("\x1b[?25h");
         }
 
         for (self.warnings.items) |msg| {
@@ -1823,6 +1942,7 @@ pub const ProgressUi = struct {
             self.content_writer.writer.print("⠿ Stopped {d} process(es).", .{n}) catch {};
             self.renderBoundedLine(self.content_writer.writer.buffered());
             self.rawWrite("\n");
+            self.rawWrite("\x1b[?25h");
         } else {
             self.writer.print("Stopped {d} process(es).\n", .{n}) catch {};
         }
@@ -1853,6 +1973,14 @@ pub fn runWithProgress(
     cmd_data: ?*anyopaque,
 ) !void {
     const is_tty = std.Io.File.stderr().isTty(io) catch false;
+
+    errdefer if (is_tty) {
+        if (builtin.is_test) {
+            progress_writer.writeAll("\x1b[?25h") catch {};
+        } else {
+            std.Io.File.stderr().writeStreamingAll(io, "\x1b[?25h") catch {};
+        }
+    };
 
     var queue = try ProgressQueue.init(allocator, io);
     defer queue.deinit(allocator);
@@ -1898,7 +2026,24 @@ pub fn runWithProgress(
             }
             switch (event) {
                 .done => {
-                    if (ui.completionDisposition() == .durable_package_frame) ui.pinDurablePackageCompletion();
+                    if (is_tty) {
+                        const counts = ui.packageCounts();
+                        if (counts.total() > 0) {
+                            if (ui.completionDisposition() == .durable_package_frame) {
+                                ui.pinDurablePackageCompletion();
+                            } else {
+                                ui.clearRenderedRows();
+                                ui.content_writer.clearRetainingCapacity();
+                                ui.content_writer.writer.print("⠿ Synchronized {d} package{s}", .{
+                                    counts.total(),
+                                    if (counts.total() == 1) "" else "s",
+                                }) catch {};
+                                ui.renderBoundedLine(ui.content_writer.writer.buffered());
+                                ui.rawWrite("\n");
+                                ui.rendered_lines = 0;
+                            }
+                        }
+                    }
                     ui.renderFinal();
                     return;
                 },
@@ -2467,6 +2612,36 @@ test "structured status vocabulary and compact fallback stay one cell" {
     try std.testing.expectEqual(PackageStatus.queued, packageStatusForProtocol("untrusted-producer-word"));
 }
 
+test "package status animates across spinner frames in normal and wide breakpoints" {
+    var bytes: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+
+    const row = ProgressUi.PackageRow{
+        .task_id = "demo",
+        .name = "demo",
+        .detail = "1.0",
+        .state = .active,
+        .status = .downloading,
+        .total = 100,
+        .seed = 0,
+        .permutation = braillePermutation(0),
+    };
+
+    ui.spinner_frame = 0;
+    try std.testing.expectEqualStrings("⠋", ui.packageStatus(&row));
+    ui.spinner_frame = 1;
+    try std.testing.expectEqualStrings("⠙", ui.packageStatus(&row));
+    ui.spinner_frame = 5;
+    try std.testing.expectEqualStrings("⠴", ui.packageStatus(&row));
+    ui.spinner_frame = 10;
+    try std.testing.expectEqualStrings("⠋", ui.packageStatus(&row));
+
+    ui.glyph_mode = .ascii;
+    try std.testing.expectEqualStrings("*", ui.packageStatus(&row));
+}
+
 test "bar layout yields label space at narrow breakpoints" {
     try std.testing.expectEqual(@as(usize, 0), barWidthForColumns(0, 10));
     try std.testing.expectEqual(@as(usize, 0), barWidthForColumns(59, 10));
@@ -2630,7 +2805,7 @@ test "terminal package rows reject stale bytes and active byte counters are mono
     try std.testing.expectEqual(@as(u64, 100), completed.done);
     try std.testing.expectEqual(@as(?u64, 100), completed.total);
     const completed_line = ui.buildPackageLine(completed);
-    try std.testing.expect(std.mem.indexOf(u8, completed_line, "100.0 / 100.0   B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, completed_line, "ready") != null);
 
     ui.apply(.{ .package_inventory = .{ .task_id = "active", .name = "active", .detail = "1" } });
     ui.apply(.{ .bytes = .{ .task_id = "active", .label = "active", .done = 75, .total = 100 } });
@@ -2722,7 +2897,7 @@ test "package row golden reference" {
     const tiny_copy = try std.testing.allocator.dupe(u8, tiny);
     defer std.testing.allocator.free(tiny_copy);
     try std.testing.expectEqualStrings("⠋ ⠦⢊⢎⠘⢷⠷⢞ huge                              •32.0 / •64.0 MiB", huge_copy);
-    try std.testing.expectEqualStrings("+ ⣿⣿⣿⣿⣿⣿⣿ tiny                              ••1.0 / ••1.0   B", tiny_copy);
+    try std.testing.expectEqualStrings("+ ⣿⣿⣿⣿⣿⣿⣿ tiny                              ready", tiny_copy);
 
     var normal_bytes: [256]u8 = undefined;
     var normal_writer = std.Io.Writer.fixed(&normal_bytes);
@@ -2733,7 +2908,7 @@ test "package row golden reference" {
     const normal = normal_ui.buildPackageLine(&normal_ui.package_rows.items[0]);
     const normal_copy = try std.testing.allocator.dupe(u8, normal);
     defer std.testing.allocator.free(normal_copy);
-    try std.testing.expectEqualStrings("⠋ ⠋     normal                    preparing: normal@2.0", normal_copy);
+    try std.testing.expectEqualStrings("⠋ ⠀⠀⠀⠀⠀ normal                    preparing: normal@2.0", normal_copy);
 
     var compact_bytes: [128]u8 = undefined;
     var compact_writer = std.Io.Writer.fixed(&compact_bytes);
@@ -2756,7 +2931,7 @@ test "package row golden reference" {
     const ascii_wide = ascii_wide_ui.buildPackageLine(&ascii_wide_ui.package_rows.items[0]);
     const ascii_wide_copy = try std.testing.allocator.dupe(u8, ascii_wide);
     defer std.testing.allocator.free(ascii_wide_copy);
-    try std.testing.expectEqualStrings("+ ####### tiny                              ..1.0 / ..1.0   B", ascii_wide_copy);
+    try std.testing.expectEqualStrings("+ ####### tiny                              ready", ascii_wide_copy);
 
     var ascii_normal_bytes: [256]u8 = undefined;
     var ascii_normal_writer = std.Io.Writer.fixed(&ascii_normal_bytes);
@@ -2768,7 +2943,7 @@ test "package row golden reference" {
     const ascii_normal = ascii_normal_ui.buildPackageLine(&ascii_normal_ui.package_rows.items[0]);
     const ascii_normal_copy = try std.testing.allocator.dupe(u8, ascii_normal);
     defer std.testing.allocator.free(ascii_normal_copy);
-    try std.testing.expectEqualStrings("* *     normal                    preparing: normal@2.0", ascii_normal_copy);
+    try std.testing.expectEqualStrings("* ..... normal                    preparing: normal@2.0", ascii_normal_copy);
 
     var ascii_compact_bytes: [128]u8 = undefined;
     var ascii_compact_writer = std.Io.Writer.fixed(&ascii_compact_bytes);
@@ -2797,9 +2972,9 @@ test "aggregate golden derives mixed ready active queued and failure states" {
     const counts = ui.packageCounts();
     var summary: [128]u8 = undefined;
     var summary_writer = std.Io.Writer.fixed(&summary);
-    try writePackageSummary(&summary_writer, counts);
+    try writePackageSummary(&summary_writer, counts, .unicode);
     try std.testing.expectEqualStrings(
-        "Packages: 1 ready, 1 active, 1 queued, 1 failed, 0 cancelled (4 total)",
+        "Installing 4 packages · 1 ready, 1 active, 1 failed",
         summary_writer.buffered(),
     );
     // A terminal update is idempotent and counters are never independently
@@ -2923,7 +3098,7 @@ test "cached multi-package completion pins a newline-delimited durable frame" {
     ui.pinDurablePackageCompletion();
     ui.renderFinal();
     const transcript = writer.buffered();
-    const summary = std.mem.indexOf(u8, transcript, "Packages: 3 ready") orelse return error.TestUnexpectedResult;
+    const summary = std.mem.indexOf(u8, transcript, "Installing 3 packages · 3 ready") orelse return error.TestUnexpectedResult;
     const newline = std.mem.indexOfPos(u8, transcript, summary, "\n") orelse return error.TestUnexpectedResult;
     const erase = std.mem.indexOfPos(u8, transcript, newline, "\x1b[2K\r") orelse return error.TestUnexpectedResult;
     try std.testing.expect(erase > newline);
@@ -2999,4 +3174,134 @@ test "locked replay uses one terminal package record and failure reconciles unfi
     try std.testing.expectEqual(@as(usize, 1), counts.ready);
     try std.testing.expectEqual(@as(usize, 2), counts.cancelled);
     try std.testing.expectEqual(@as(usize, 3), counts.total());
+}
+
+test "indeterminate active package does not duplicate spinner" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+
+    ui.apply(.{ .package_inventory = .{ .task_id = "comp", .name = "comp", .detail = "1.0" } });
+    ui.apply(.{ .task_state = .{ .task_id = "comp", .revision = 1, .state = "compiling", .message = "build" } });
+
+    const line = ui.buildPackageLine(&ui.package_rows.items[0]);
+    try std.testing.expectEqualStrings("⠋ ⠀⠀⠀⠀⠀ comp                      compiling: comp@1.0", line);
+}
+
+test "wide mode detail shows status words for non-downloading and ready states" {
+    var bytes: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 100, null);
+    defer ui.deinit();
+
+    ui.apply(.{ .package_inventory = .{ .task_id = "pkg", .name = "pkg", .detail = "1.0", .total_bytes = 1000 } });
+
+    // When compiling, even with total_bytes set, wide detail shows compiling
+    ui.apply(.{ .task_state = .{ .task_id = "pkg", .revision = 1, .state = "compiling", .message = "build" } });
+    const compiling_line = ui.buildPackageLine(&ui.package_rows.items[0]);
+    try std.testing.expect(std.mem.indexOf(u8, compiling_line, "compiling") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compiling_line, "/") == null);
+
+    // When downloading with total, wide detail shows byte counters
+    ui.apply(.{ .task_state = .{ .task_id = "pkg", .revision = 2, .state = "downloading", .message = "fetch" } });
+    ui.apply(.{ .bytes = .{ .task_id = "pkg", .label = "pkg", .done = 500, .total = 1000 } });
+    const dl_line = ui.buildPackageLine(&ui.package_rows.items[0]);
+    try std.testing.expect(std.mem.indexOf(u8, dl_line, "/") != null);
+
+    // When completed (ready), wide detail shows ready
+    ui.apply(.{ .task_state = .{ .task_id = "pkg", .revision = 3, .state = "completed", .message = "done" } });
+    const ready_line = ui.buildPackageLine(&ui.package_rows.items[0]);
+    try std.testing.expect(std.mem.indexOf(u8, ready_line, "ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ready_line, "/") == null);
+}
+
+test "renderPackageRows partitions active rows first respecting max_visible_rows" {
+    var bytes: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, true, std.testing.io, 80, null);
+    defer ui.deinit();
+    ui.max_visible_rows = 3;
+
+    // Add 5 packages: a (ready), b (active), c (queued), d (active), e (queued)
+    ui.apply(.{ .package_inventory = .{ .task_id = "a", .name = "a", .detail = "1" } });
+    ui.apply(.{ .package_inventory = .{ .task_id = "b", .name = "b", .detail = "1" } });
+    ui.apply(.{ .package_inventory = .{ .task_id = "c", .name = "c", .detail = "1" } });
+    ui.apply(.{ .package_inventory = .{ .task_id = "d", .name = "d", .detail = "1" } });
+    ui.apply(.{ .package_inventory = .{ .task_id = "e", .name = "e", .detail = "1" } });
+
+    ui.apply(.{ .task_state = .{ .task_id = "a", .revision = 1, .state = "completed", .message = "done" } });
+    ui.apply(.{ .task_state = .{ .task_id = "b", .revision = 1, .state = "compiling", .message = "build" } });
+    ui.apply(.{ .task_state = .{ .task_id = "d", .revision = 1, .state = "downloading", .message = "fetch" } });
+
+    ui.render();
+    const transcript = writer.buffered();
+    const b_pos = std.mem.indexOf(u8, transcript, "b ") orelse return error.TestUnexpectedResult;
+    const d_pos = std.mem.indexOf(u8, transcript, "d ") orelse return error.TestUnexpectedResult;
+    const c_pos = std.mem.indexOf(u8, transcript, "c ") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(b_pos < d_pos);
+    try std.testing.expect(d_pos < c_pos);
+    _ = std.mem.indexOf(u8, transcript, "… 2 more packages") orelse return error.TestUnexpectedResult;
+}
+
+test "apply deduplicates phase_done and resets rendered_lines on durable print" {
+    var bytes: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+
+    ui.apply(.{ .phase_done = "LuaRocks manifest synced" });
+    ui.apply(.{ .phase_done = "LuaRocks manifest synced" }); // Duplicate!
+    try std.testing.expectEqualStrings("LuaRocks manifest synced\n", writer.buffered());
+}
+
+test "cursor is hidden at TTY init and restored at deinit and renderFinal" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    {
+        var ui = ProgressUi.init(&writer, true, std.testing.io, 80, null);
+        try std.testing.expectEqualStrings("\x1b[?25l", writer.buffered());
+        ui.renderFinal();
+        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\x1b[?25h") != null);
+    }
+}
+
+test "progress keeps identical package versions in distinct task scopes separate" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+
+    const selected = "realize:native:runtime-selected:lua@5.4.7";
+    const parser = "realize:native:runtime-host-parser:lua@5.4.7";
+    ui.apply(.{ .package_inventory = .{ .task_id = selected, .name = "lua", .detail = "5.4.7" } });
+    ui.apply(.{ .package_inventory = .{ .task_id = parser, .name = "lua", .detail = "5.4.7" } });
+    ui.apply(.{ .task_state = .{ .task_id = selected, .revision = 1, .state = "completed", .message = "selected done" } });
+    ui.apply(.{ .task_state = .{ .task_id = parser, .revision = 1, .state = "downloading", .message = "parser fetch" } });
+
+    const counts = ui.packageCounts();
+    try std.testing.expectEqual(@as(usize, 2), counts.total());
+    for (ui.package_rows.items) |row| {
+        if (std.mem.eql(u8, row.task_id, selected)) {
+            try std.testing.expectEqual(PackageState.ready, row.state);
+        } else if (std.mem.eql(u8, row.task_id, parser)) {
+            try std.testing.expectEqual(PackageState.active, row.state);
+        } else return error.TestUnexpectedResult;
+    }
+}
+
+test "terminalRows queries LINES env and clamps max_visible_rows" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("LINES", "40");
+
+    const rows = terminalRows(std.testing.io, &env_map, false);
+    try std.testing.expectEqual(@as(usize, 40), rows);
+
+    var bytes: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, &env_map);
+    defer ui.deinit();
+    try std.testing.expectEqual(@as(usize, 40), ui.rows);
+    try std.testing.expectEqual(@as(usize, 25), ui.max_visible_rows);
 }

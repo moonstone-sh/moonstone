@@ -584,7 +584,7 @@ pub fn commit_to_store_with_sources(
     return try allocator.dupe(u8, final_art_path);
 }
 
-fn isCompleteArtifact(
+pub fn isCompleteArtifact(
     allocator: std.mem.Allocator,
     io: std.Io,
     artifact_path: []const u8,
@@ -611,7 +611,7 @@ fn isCompleteArtifact(
     return std.mem.eql(u8, stored_manifest.artifact.artifact_hash, expected_hash);
 }
 
-fn registerCompleteArtifact(
+pub fn registerCompleteArtifact(
     allocator: std.mem.Allocator,
     io: std.Io,
     index_path: []const u8,

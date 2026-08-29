@@ -181,7 +181,7 @@ pub const RegistryProvider = struct {
                 defer {
                     if (should_deinit) c.deinit(self.allocator);
                 }
-                const matches_request = std.mem.eql(u8, c.name, request.name) or std.mem.eql(u8, request.name, "lua");
+                const matches_request = packageNamesMatch(c.name, request.name);
                 if (matches_request) {
                     const v = parseResolverVersion(c.version, request_is_rocks) catch null;
                     const req_v = parseResolverVersion(request.version, request_is_rocks) catch null;
@@ -595,19 +595,17 @@ pub const RegistryProvider = struct {
                 }
                 if (!storeCandidateCompatible(cand, self.options)) continue;
 
-                if (res_constraint) |_| {
-                    var already_present = false;
-                    for (versions.items) |v| {
-                        const candidate_is_rocks = res_constraint == .rocks or
-                            (if (cand.resolver) |resolver_name| std.mem.eql(u8, resolver_name, "rocks") else false);
-                        const parsed_v = parseResolverVersion(cand.version, candidate_is_rocks) catch continue;
-                        if (compareResolverVersion(v, parsed_v, candidate_is_rocks) == 0) {
-                            already_present = true;
-                            break;
-                        }
+                var already_present = false;
+                for (versions.items) |v| {
+                    const candidate_is_rocks = (res_constraint != null and res_constraint.? == .rocks) or
+                        (if (cand.resolver) |resolver_name| std.mem.eql(u8, resolver_name, "rocks") else false);
+                    const parsed_v = parseResolverVersion(cand.version, candidate_is_rocks) catch continue;
+                    if (compareResolverVersion(v, parsed_v, candidate_is_rocks) == 0) {
+                        already_present = true;
+                        break;
                     }
-                    if (already_present) continue;
                 }
+                if (already_present) continue;
 
                 std.Io.Dir.cwd().access(self.io, cand.path, .{}) catch |err| {
                     if (err == error.FileNotFound) {
@@ -729,16 +727,14 @@ pub const RegistryProvider = struct {
                         if (packageNamesMatch(pkg.name, name)) {
                             const v = try semver.Version.parseCloned(arena, pkg.version);
 
-                            if (res_constraint) |_| {
-                                var already_present = false;
-                                for (versions.items) |v_existing| {
-                                    if (v_existing.compare(v) == 0) {
-                                        already_present = true;
-                                        break;
-                                    }
+                            var already_present = false;
+                            for (versions.items) |v_existing| {
+                                if (v_existing.compare(v) == 0) {
+                                    already_present = true;
+                                    break;
                                 }
-                                if (already_present) continue;
                             }
+                            if (already_present) continue;
 
                             try self.artifacts.append(arena, .{
                                 .name = try arena.dupe(u8, pkg.name),
@@ -1223,7 +1219,8 @@ pub const RegistryProvider = struct {
 };
 
 fn parseResolverVersion(text: []const u8, is_rocks: bool) !semver.Version {
-    return if (is_rocks) semver.Version.parseLuaRocks(text) else semver.Version.parse(text);
+    if (is_rocks) return semver.Version.parseLuaRocks(text);
+    return semver.Version.parse(text) catch semver.Version.parseLuaRocks(text);
 }
 
 fn compareResolverVersion(left: semver.Version, right: semver.Version, is_rocks: bool) i8 {

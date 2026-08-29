@@ -17,6 +17,13 @@ cd "${WORKDIR}"
 
 echo "━━━ init with no install ━━━"
 moon init . --name use-abi-test --no-git --interpreter lua@5.4.7 --no-sync
+cat >> moonstone.toml <<EOF
+
+[[registries]]
+name = "synthetic"
+resolver = "moonstone"
+path = "${SANDBOX_DIR}/registry"
+EOF
 
 echo "━━━ use lua@5.4.7 installs runtime ━━━"
 moon interpreter set lua@5.4.7

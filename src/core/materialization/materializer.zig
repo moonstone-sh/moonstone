@@ -4,6 +4,7 @@ const registry = @import("../registry/registry.zig");
 const fs = @import("../platform/fs.zig");
 const platform_target = @import("../platform/target.zig");
 const store = @import("../store.zig");
+const store_driver = @import("../store/driver.zig");
 const resolver = @import("../resolution/root.zig");
 const package_spec = @import("../domain/package_spec.zig");
 const error_context = @import("../diagnostics/error_context.zig");
@@ -139,6 +140,34 @@ pub const Materializer = struct {
                 if (value == null or value.?.len == 0) {
                     setMissingExternalPathContext(self.allocator, desc.package.name, desc.package.version, config.external_paths, self.environ_map);
                     return error.ExternalDependencyPathRequired;
+                }
+            }
+        }
+
+        // Fast path: Check if the artifact hash already exists in the local store and is healthy
+        if (art.hash.len > 7 and std.mem.startsWith(u8, art.hash, "b3:")) {
+            const paths = try fs.resolve_moonstone(self.allocator, self.environ_map, self.io);
+            defer {
+                var p = paths;
+                p.deinit(self.allocator);
+            }
+            const art_hash = art.hash[3..];
+            if (art_hash.len >= 4) {
+                const h0h1 = art_hash[0..2];
+                const h2h3 = art_hash[2..4];
+                const shard_path = try std.fs.path.join(self.allocator, &.{ paths.store, "b3", h0h1, h2h3 });
+                defer self.allocator.free(shard_path);
+                const art_folder_name = try std.fmt.allocPrint(self.allocator, "{s}-{s}-{s}", .{ art_hash, desc.package.name, desc.package.version });
+                defer self.allocator.free(art_folder_name);
+                const final_art_path = try std.fs.path.join(self.allocator, &.{ shard_path, art_folder_name });
+                defer self.allocator.free(final_art_path);
+
+                if (try store.isCompleteArtifact(self.allocator, self.io, final_art_path, art.hash)) {
+                    try store.registerCompleteArtifact(self.allocator, self.io, paths.index, final_art_path);
+                    return MaterializeResult{
+                        .path = try self.allocator.dupe(u8, final_art_path),
+                        .artifact_hash = try self.allocator.dupe(u8, art.hash),
+                    };
                 }
             }
         }
@@ -636,3 +665,70 @@ pub const Materializer = struct {
         try manifest_file.writeStreamingAll(self.io, aw.writer.buffer[0..aw.writer.end]);
     }
 };
+
+test "materializer reuses a healthy CAS artifact and restores its index without fetching" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(home);
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", home);
+    try env.put("MOONSTONE_HOME", home);
+
+    const unpacked = try std.fs.path.join(allocator, &.{ home, "unpacked" });
+    defer allocator.free(unpacked);
+    try std.Io.Dir.cwd().createDirPath(io, unpacked);
+    const module_path = try std.fs.path.join(allocator, &.{ unpacked, "module.lua" });
+    defer allocator.free(module_path);
+    const module_file = try std.Io.Dir.cwd().createFile(io, module_path, .{});
+    defer module_file.close(io);
+    try module_file.writeStreamingAll(io, "return 'cached'\n");
+
+    const artifact: manifest.RemoteArtifact = .{
+        .url = "https://registry.invalid/should-not-be-fetched.tar.gz",
+        .hash = "b3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        .format = "tar.gz",
+    };
+    const descriptor: manifest.RemotePackageDescriptor = .{
+        .package = .{ .name = "cached-materializer", .version = "1.0.0", .kind = .lib },
+        .compat = .{},
+        .artifact = &.{artifact},
+    };
+
+    const committed = try store.commit_to_store(allocator, io, &env, unpacked, descriptor, artifact, "moonstone", "test", &.{});
+    defer allocator.free(committed);
+
+    const paths = try fs.resolve_moonstone(allocator, &env, io);
+    defer {
+        var owned_paths = paths;
+        owned_paths.deinit(allocator);
+    }
+    const index_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
+    defer allocator.free(index_path);
+    try std.Io.Dir.cwd().deleteFile(io, index_path);
+
+    var materializer = Materializer{
+        .allocator = allocator,
+        .io = io,
+        .environ_map = &env,
+    };
+    // The invalid URL is an observable no-fetch boundary: if the healthy CAS
+    // fast path is missed, this call cannot succeed by downloading anything.
+    const reused = try materializer.materialize_remote("not a registry URL", null, "descriptor.toml", descriptor, 0);
+    defer reused.deinit(allocator);
+    try std.testing.expectEqualStrings(committed, reused.path);
+    try std.testing.expectEqualStrings(artifact.hash, reused.artifact_hash);
+
+    const index_path_z = try allocator.dupeZ(u8, index_path);
+    defer allocator.free(index_path_z);
+    var index = try store_driver.StoreDriver.init(allocator, index_path_z);
+    defer index.deinit();
+    var candidate = (try index.get_candidate_by_hash(artifact.hash)) orelse return error.TestUnexpectedResult;
+    defer candidate.deinit(allocator);
+    try std.testing.expectEqualStrings(committed, candidate.path);
+}
