@@ -22,8 +22,9 @@ matrix and are published as GitHub Release artifacts, but native execution
 coverage is still incomplete for the architectures noted below.
 
 - Windows GNU (`x86_64-windows-gnu`) - *Native `windows-latest` projection and
-  process smoke coverage; still experimental due to symlink and filesystem
-  atomic rename constraints.*
+  process smoke coverage. Enabling Developer Mode is strongly recommended for
+  unprivileged symlink creation; fallback handling exists when symlinks are restricted,
+  though native symlinks remain preferred.*
 - Windows GNU ARM64 (`aarch64-windows-gnu`) - *Compile-time and release-matrix
   coverage. Native Windows-on-ARM execution coverage remains to be added.*
 - Linux / Musl (`x86_64-linux-musl`, `aarch64-linux-musl`) - *Fully supported by Zig, ideal for ultra-minimalist distros.*

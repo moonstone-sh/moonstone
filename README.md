@@ -1,239 +1,83 @@
-# ⋆⁺₊⋆ ☾⋆⁺₊⋆ moon ⋆⁺₊⋆
+# Moonstone
 
-> Documentation map: [`docs/README.md`](docs/README.md) · contributor guidance:
-> [`AGENTS.md`](AGENTS.md)
+Moonstone is a cross-platform Lua runtime manager and package manager written in
+[Zig](https://ziglang.org). It resolves dependencies into deterministic,
+runtime-aware project environments backed by a content-addressed store.
 
-> A modern, cross-platform **Lua runtime and package manager** written in [Zig](https://ziglang.org).  
-> Moonstone creates deterministic Lua project environments from content-addressed artifacts.
+## Quick start
 
----
-
-## ✨ Features
-
-- 🧩 **Deterministic Environments** — Content-addressed store ensures reproducible project setups.
-- ⚙️ **Project-Local Isolation** — `moon sync` creates a localized `.moonstone/env/` for each project.
-- 🔗 **Smart Linking** — Symlinks binaries and modules from a global CAS store.
-- 🧱 **ABI-Aware** — Built-in detection of Lua ABI compatibility.
-- 🧰 **Self-Contained** — Compiled Zig binary with no runtime dependencies.
-- 🎯 **Target Profiles** — Locks concrete runtime, ABI, package, and realization closures per target.
-- 🤖 **Semantic Automation** — Exposes versioned manifest and read-only lock JSON contracts for tools and CI.
-- ⚡ **Bounded Sync Work** — Materializes independent selected packages concurrently with controlled terminal or NDJSON output.
-
-## 🆕 Moonstone 0.4
-
-Moonstone 0.4 makes project automation and target-aware replay explicit:
-
-```bash
-moon -C ./my-app manifest export --json
-moon -C ./my-app sync --target x86_64-windows-gnu --update
-moon -C ./my-app lock profile list --json
-moon -C ./my-app sync --jobs 8 --progress fancy
-```
-
-- `moon manifest` reads and applies bounded semantic project edits; integrations do not need to rewrite TOML layout.
-- `moon lock` is a read-only inspection surface for profiles, packages, realizations, graphs, and verification.
-- `[scripts]` remains intentionally simple: `moon run` projects the environment and the host shell interprets the command. Keep orchestration in Lua, Ballad, or ordinary script files.
-- Windows uses the same linked `.moonstone/env` projection as Unix. Enable Developer Mode or equivalent symlink permission before syncing.
-- LuaRocks materialization now covers pure Lua rocks and selected native build contracts while retaining explicit ABI, target, and system-tool boundaries.
-
-Read the [Moonstone 0.4 Upgrade Guide](https://moonstone.sh/docs/guide/v0-4/) for migration details and CI examples.
-
----
-
-## 🚀 Quick Start
-
-1. **Initialize a project**
+Create a project, add packages, and synchronize its environment:
 
 ```bash
 moon init . --name my-app --kind script --interpreter lua@5.4
-```
-
-2. **Add dependencies**
-
-```bash
 moon add inspect
-moon add rocks:lua-cjson      # LuaRocks resolver
-moon add path:../my-lib       # Local path resolver
-moon add link:my-lib          # Registered link resolver
-```
-
-3. **Sync the environment**
-
-```bash
+moon add rocks:lua-cjson   # LuaRocks resolver
 moon sync
 ```
 
-4. **Run your code**
+Run a script or invoke a command in the project environment:
 
 ```bash
 moon run dev
-# or
 moon exec lua src/main.lua
 ```
 
-Run from outside a project with Moonstone's global project-resolution option:
+Use `-C` or `--directory` to select a project from another directory:
 
 ```bash
 moon -C ./my-app sync
 moon --directory ./my-app run dev
 ```
 
-`moon exec` is the primitive projected process runner. `moon run <name>` is an
-optional, discoverable entrypoint declared in `[scripts]`; keep simple commands
-inline and move substantial orchestration to Lua, Ballad, or ordinary script
-files.
+## Operational model
 
-## Testing
+- `moonstone.toml` is the project manifest. It declares metadata, the selected
+  Lua interpreter, dependencies, and optional `[scripts]` entries.
+- `moonstone.lock` records the exact resolution, including package artifacts,
+  hashes, target profiles, runtime ABI, and materialization details.
+- The global content-addressed store keeps immutable artifacts under the
+  Moonstone data directory. Projects share these artifacts rather than copying
+  them into each project.
+- `moon sync` creates or updates `.moonstone/env/`, a project-local projection
+  of the locked interpreter, libraries, modules, and binaries.
 
-Moonstone separates deterministic developer checks from opt-in upstream and
-platform coverage:
+The store is shared; the environment is project-specific. Use Moonstone
+commands to change either one rather than editing `.moonstone/env/`, the store,
+or the lockfile by hand.
 
-```bash
-tests/run-fast.sh        # formatting, Zig unit tests, public contracts
-tests/run-synthetic.sh   # generated fixtures and isolated E2E coverage
-tests/run-real-rocks.sh  # pinned upstream LuaRocks compatibility contracts
-```
+## `run` and `exec`
 
-See [TESTING.md](./TESTING.md) for prerequisites, CI reproduction, platform
-coverage, and the policy for local-only experiments.
+`moon exec <command> [args...]` is the primitive projected process runner. It
+sets the project environment, including executable and Lua module paths, before
+starting the command.
 
----
+`moon run <name>` selects a named entry in `[scripts]`, projects the same
+environment, and lets the host shell interpret the script command. Keep script
+entries simple; put substantial orchestration in Lua or ordinary script files.
 
-## 🛠️ CLI Lifecycle
+## Runtime and ABI
 
-Project environments are synchronized separately from the Moonstone binary:
+Moonstone treats PUC Lua and LuaJIT runtimes as first-class packages. Native Lua
+modules are checked against the selected runtime ABI and target. Switching, for
+example, from Lua 5.4 to LuaJIT changes the ABI profile, so incompatible native
+artifacts are not reused until `moon sync` resolves or rebuilds them.
 
-```bash
-moon sync                         # Synchronize the current project environment
-moon self install --latest        # Install the latest Moonstone CLI release
-moon self install --version 0.3.26 # Install an exact CLI release
-moon setup                        # Configure or repair global shims
-moon self uninstall              # Remove Moonstone user data, store, and shims
-moon interpreter remove lua@5.4.7 # Remove one unreferenced interpreter artifact
-```
+On Windows, environment projections prefer symbolic links and fall back to
+copying when links are unavailable. Developer Mode or symbolic-link privilege
+avoids the copy overhead.
 
-`moon interpreter remove` requires `--target <triple>` when multiple target builds match and requires `--force` when the runtime is still selected globally or referenced by projects.
+## Where to go next
 
----
+- [Documentation map](docs/README.md) for architecture, usage, platforms, and
+  protocol references
+- [Usage guide](docs/USAGE.md) for package and registry workflows
+- [Contributing](CONTRIBUTING.md) for project status and maintainer guidance
+- [Moonstone 0.4 Upgrade Guide](https://moonstone.sh/docs/guide/v0-4/) for
+  migration details
 
-## 🗂️ Directory Layout
+## Status and license
 
-By default, Moonstone adheres to the XDG base directory specifications. You can customize these paths using a global `config.toml` or by defining environment variables:
+Moonstone is pre-1.0 alpha. APIs, registry contracts, lockfile details, and CLI
+behavior may evolve.
 
-### Path Overrides & Environment Variables
-*   **Configuration**: Overridden by `MOONSTONE_CONFIG` or `MOONSTONE_HOME/config` (Defaults to `~/.config/moonstone/`).
-*   **Data**: Overridden by `MOONSTONE_DATA` or `MOONSTONE_HOME/data` (Defaults to `~/.local/share/moonstone/`).
-*   **Cache**: Overridden by `MOONSTONE_CACHE` or `MOONSTONE_HOME/cache` (Defaults to `~/.cache/moonstone/`).
-
-Additionally, your configuration directory can house a `config.toml` file to override internal folders (`store`, `cache`, `shims`, and `downloads`) and configure default registry priorities.
-
-### Default File Structure
-```
-~/.config/moonstone/
-└── config.toml                  # Global configuration file
-
-~/.local/share/moonstone/
-├── data/
-│   ├── store/v0/
-│   │   └── b3/                  # BLAKE3 sharded global CAS store
-│   │       └── <h0h1>/<h2h3>/<full-hash>-<name>-<version>/
-│   │           ├── files/       # Package source and build assets
-│   │           └── manifest.toml # Exposes artifact features (bin, cmodule, lib)
-│   └── index/v0/
-│       └── index.sqlite         # SQLite metadata database (caches index, shims, status)
-└── tmp/                         # Temporary materialization area
-```
-
----
-
-## 🧠 Core Architecture
-
-Moonstone relies on several unified concepts to achieve offline-first, deterministic environments:
-
-- **Declarative Manifest (`moonstone.toml`)**: Specifies project metadata, interpreter requirements (PUC Lua or LuaJIT under `[interpreter]`), scripts, and packages declared inside canonical `[[dependencies]]` entries.
-- **Dependency Lockfile (`moonstone.lock`)**: Freezes resolution by tracking exact resolved versions, package source hashes, ABI targets, and compiler/materializer recipes.
-- **Global CAS (Content-Addressed Store)**: A shared global directory housing read-only package files sharded under `blobs/b3/` by their BLAKE3 hashes.
-- **Workspace Symlink Environment (`.moonstone/env/`)**: Local to your project, the `moon sync` command projects symlinks of your exact interpreter version and package files directly from the global CAS, isolating execution.
-- **SQLite Registry Index**: Locally caches registry indexes, package descriptors, and shim pathways to accelerate dependency solver lookups and local registry indexing.
-- **Stored Artifact Manifest (`manifest.toml`)**: Bundled inside each package artifact in the CAS to define exposed features (like CLI binary names, Lua module entrypoints, or C-modules) for linker projections.
-
----
-
-## 🧰 Build & System Requirements
-
-- **Zig 0.16.0**
-- **Supported hosts:** Linux, macOS, and Windows
-- **Windows:** Developer Mode or an account/policy permitted to create symbolic links
-- **Archive Backends (`-Darchive-backend`):**
-  - `native` (**default**): Pure Zig streaming compression and extraction for `.tar.zst`, `.tar.gz`, `.tar`, `.zip`, `.rock`, and `.src.rock`. Completely self-contained with no external runtime dependencies on host archive tools.
-  - `system`: OS-aware backend utilizing system command-line utilities (`tar`, `zstd`, `unzip`) via direct argv invocation and path resolution.
-- **Common Tools**: `gcc`, `make`, `cmake`, `git` (and `tar`, `zstd`, `unzip` only when compiled with `-Darchive-backend=system`)
-
----
-
-## 🪪 License
-
-Apache 2.0
-© 2026 Maximo Angel Verzini Davico
-
----
-
-## 🌌 About
-
-Moonstone is an experimental Lua ecosystem manager aiming to bring deterministic builds, version pinning, and global-store efficiency to Lua and LuaJIT — powered entirely by Zig.
-
-### Local Linux CI contracts
-
-Run the Linux-native contract suite before pushing changes that touch runtime
-projection, lock replay, or LuaRocks materialization:
-
-```bash
-# Fast reproduction of the pinned luv CMake ABI contract.
-scripts/ci/run-linux.sh luv
-
-# All pinned upstream native LuaRocks contracts.
-scripts/ci/run-linux.sh native-rocks
-
-# Linux release-certification matrix and LuaRocks compatibility corpus.
-scripts/ci/run-linux.sh all
-```
-
-The wrapper defaults to a host-native Linux architecture so local Docker runs
-remain reliable. To exercise GitHub's `linux/amd64` runner ABI explicitly, use:
-
-```bash
-MOONSTONE_LINUX_CI_PLATFORM=linux/amd64 scripts/ci/run-linux.sh luv
-```
-
-On Apple Silicon, this is a best-effort Rosetta-emulated check. Zig's x86_64
-`translate-c` helper can currently fail in Rosetta with `bss_size overflow`,
-even when Docker has sufficient memory. Use the host-native `linux/arm64` run
-for the supported local contract; CI's native GitHub Ubuntu runner is the
-authoritative `linux/amd64` gate. The ARM run still validates the Linux
-toolchain and loader boundaries.
-
-### Reproduce the GitHub Actions workflow locally
-
-Use [nektos/act](https://github.com/nektos/act) when a change touches workflow
-configuration, runner behavior, progress execution, or CI-only failures. The
-wrapper runs the checked-in `Build & Test` job from `.github/workflows/ci.yml`,
-including setup actions and job ordering, against a pinned Ubuntu 24.04 Act
-runner image. It stages a disposable copy of the current working tree, so the
-Linux build cannot overwrite local `zig-out` or cache state:
-
-```bash
-brew install act
-scripts/ci/run-github-actions.sh test
-```
-
-The wrapper defaults to the host-native Linux Docker architecture. To add an
-emulated GitHub-like amd64 signal from Apple Silicon:
-
-```bash
-MOONSTONE_ACT_ARCH=linux/amd64 scripts/ci/run-github-actions.sh test
-```
-
-Act is a local workflow reproduction layer, not a replacement for GitHub's
-hosted Windows or amd64 runners. Run `scripts/ci/run-linux.sh all` for the fast
-native-rock preflight, run the Act wrapper before pushing workflow-sensitive
-changes, and retain GitHub Actions as the final platform gate.
+Licensed under Apache License 2.0.
