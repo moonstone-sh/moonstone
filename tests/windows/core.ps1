@@ -73,8 +73,8 @@ $env:HOME = Join-Path $work 'home'
 # Stage a valid, Windows-targeted runtime directly in the local immutable store.
 # `moon index rebuild` makes sync exercise the same runtime projection path as a
 # registry/store hit without relying on public-network availability. The PE
-# launcher loads its adjacent DLL, proving that a no-symlink fallback copies
-# both the .exe and its co-located runtime dependency.
+# launcher loads its adjacent DLL. The DLL must be projected next to the
+# launcher whether the launcher itself is linked or copied.
 $runtimeStore = Join-Path $env:MOONSTONE_DATA 'store/v0/b3/11/11/111111111111111111111111111111111111111111111111111111111111-lua-5.4.9'
 $runtimeBin = Join-Path $runtimeStore 'files/bin'
 New-Item -ItemType Directory -Force $runtimeBin, $runtimeSources | Out-Null
@@ -152,14 +152,13 @@ check = "lua"
 & $moon -C $project sync --offline
 if ($LASTEXITCODE -ne 0) { throw 'moon sync failed to project the staged Windows Lua runtime' }
 if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/lua.exe'))) { throw 'Windows runtime projection did not retain lua.exe' }
+if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/runtime-sibling.dll'))) { throw 'Windows runtime projection did not project the sibling DLL' }
 & $moon -C $project run check
 if ($LASTEXITCODE -ne 0) { throw 'projected Windows runtime could not load its sibling DLL' }
 
 $runtimeProjection = Get-Item -Force (Join-Path $project '.moonstone/env/bin/lua.exe')
 if (($runtimeProjection.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-    if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/runtime-sibling.dll'))) {
-        throw 'copy fallback for a non-symlink Windows runtime did not project the sibling DLL'
-    }
+    if (-not (Test-Path (Join-Path $project '.moonstone/env/bin/runtime-sibling.dll'))) { throw 'copy fallback for a non-symlink Windows runtime did not project the sibling DLL' }
 }
 
 $manifest = & $moon -C $project manifest export --json | ConvertFrom-Json

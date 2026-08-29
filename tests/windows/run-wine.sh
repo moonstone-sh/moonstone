@@ -145,6 +145,7 @@ TOML
 
 wine_moon -C "${project_win}" sync --offline
 test -f "${project}/.moonstone/env/bin/lua.exe"
+test -f "${project}/.moonstone/env/bin/nativeprobe.dll"
 wine_moon -C "${project_win}" run check
 
 # A symlinked launcher loads the DLL from the store; a copied launcher needs

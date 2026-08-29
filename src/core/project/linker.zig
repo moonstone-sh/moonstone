@@ -714,9 +714,10 @@ fn projectFile(
     _ = try projectFileWithFallback(io, destination_dir, source_path, destination_name);
 }
 
-/// A copied PE launcher needs co-located DLLs that a symlinked launcher gets
-/// from its store directory automatically. Keep this limited to the fallback
-/// path, so normal environments remain link-based and store-deduplicated.
+/// Projected PE launchers need co-located DLLs in the environment. A symlinked
+/// launcher resolves those from its store directory, but a copied launcher
+/// does not. Copy only immediate sibling DLLs; never recurse or copy arbitrary
+/// files. Replacing an existing entry makes rebuilds converge on this source.
 fn copySiblingDllsForWindows(
     io: std.Io,
     destination_dir: std.Io.Dir,
@@ -732,11 +733,13 @@ fn copySiblingDllsForWindows(
     var iterator = source_dir.iterate();
     while (try iterator.next(io)) |entry| {
         if (entry.kind != .file or !std.ascii.eqlIgnoreCase(std.fs.path.extension(entry.name), ".dll")) continue;
-        destination_dir.access(io, entry.name, .{}) catch |err| {
+        // Remove first rather than allowing a replacement copy to follow an
+        // old projected symlink. This makes collisions safe and deterministic
+        // across environment rebuilds.
+        destination_dir.deleteFile(io, entry.name) catch |err| {
             if (err != error.FileNotFound) return err;
-            try source_dir.copyFile(entry.name, destination_dir, entry.name, io, .{ .replace = false });
-            continue;
         };
+        try source_dir.copyFile(entry.name, destination_dir, entry.name, io, .{ .replace = false });
     }
 }
 
@@ -745,10 +748,10 @@ fn projectExecutable(
     destination_dir: std.Io.Dir,
     source_path: []const u8,
     destination_name: []const u8,
+    is_windows: bool,
 ) !void {
-    if (try projectFileWithFallback(io, destination_dir, source_path, destination_name) == .copied) {
-        try copySiblingDllsForWindows(io, destination_dir, source_path, comptime builtin.os.tag == .windows);
-    }
+    _ = try projectFileWithFallback(io, destination_dir, source_path, destination_name);
+    try copySiblingDllsForWindows(io, destination_dir, source_path, is_windows);
 }
 
 fn projectTree(
@@ -1284,7 +1287,7 @@ pub fn link_project_env_at(
         if (windowsExecutableProjectionExtension(name, target_path, comptime builtin.os.tag == .windows)) |extension| {
             projected_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, extension });
         }
-        try projectExecutable(io, bin_dir, target_path, projected_name orelse name);
+        try projectExecutable(io, bin_dir, target_path, projected_name orelse name, comptime builtin.os.tag == .windows);
 
         // If this public binary comes from a package with an isolated runtime
         // that differs from the project runtime, create a bin-runtime scope so
@@ -1891,7 +1894,7 @@ test "Windows binary projection retains the executable suffix" {
     try std.testing.expectEqualStrings(".bat", windowsExecutableProjectionExtension("tool", "C:\\store\\files\\bin\\tool.bat", true).?);
 }
 
-test "Windows copied executable projection retains sibling DLLs" {
+test "Windows executable projection retains sibling DLLs for linked launchers" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1915,11 +1918,18 @@ test "Windows copied executable projection retains sibling DLLs" {
     var destination = try tmp.dir.openDir(io, "destination", .{});
     defer destination.close(io);
 
-    try std.Io.Dir.cwd().copyFile(launcher_path, destination, "lua.exe", io, .{ .replace = true });
-    try copySiblingDllsForWindows(io, destination, launcher_path, true);
+    try projectExecutable(io, destination, launcher_path, "lua.exe", true);
     try destination.access(io, "lua.exe", .{});
     try destination.access(io, "lua54.DLL", .{});
     try std.testing.expectError(error.FileNotFound, destination.access(io, "README.txt", .{}));
+
+    const stale = try destination.createFile(io, "lua54.DLL", .{});
+    try stale.writeStreamingAll(io, "stale projection");
+    stale.close(io);
+    try copySiblingDllsForWindows(io, destination, launcher_path, true);
+    const projected = try destination.readFileAlloc(io, "lua54.DLL", std.testing.allocator, 4096);
+    defer std.testing.allocator.free(projected);
+    try std.testing.expectEqualStrings("runtime dependency", projected);
 }
 
 test "live-link shim uses the target launcher without hardcoded Lua versions" {
