@@ -113,6 +113,9 @@ pub const update_command = struct {
             .io = io,
             .stdout = stdout,
             .emitter = emitter,
+            .is_tty = std.Io.File.stdout().isTty(io) catch false,
+            .env = env,
+            .use_stderr = false,
         };
 
         const lua_rt_spec = mt.runtimeConstraint();

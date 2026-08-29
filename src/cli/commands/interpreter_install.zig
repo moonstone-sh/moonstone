@@ -70,6 +70,9 @@ pub const InterpreterInstallCommand = struct {
             .io = io,
             .stdout = stdout,
             .emitter = null,
+            .is_tty = std.Io.File.stdout().isTty(io) catch false,
+            .env = env,
+            .use_stderr = false,
         };
 
         var final_res = if (self.registry) |reg_url| blk: {

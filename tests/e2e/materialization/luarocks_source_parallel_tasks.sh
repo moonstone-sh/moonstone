@@ -93,6 +93,20 @@ for package_name in fakebin fakealt; do
     grep -Fq "materializing: ${package_name}@1.0-1" "${WORKDIR}/fancy.typescript"
 done
 
+# An explicit plain request must override the pseudo-terminal selected above:
+# resolver and solver callbacks may still run, but none may write repaint
+# controls into the captured terminal transcript.
+if script --version 2>&1 | grep -q 'util-linux'; then
+    script -q -e -c 'moon sync --jobs 2 --progress plain' "${WORKDIR}/plain.typescript" </dev/null >/dev/null 2>&1
+else
+    script -q "${WORKDIR}/plain.typescript" moon sync --jobs 2 --progress plain </dev/null >/dev/null 2>&1
+fi
+if LC_ALL=C grep -q $'\033' "${WORKDIR}/plain.typescript"; then
+    echo "ERROR: --progress plain emitted terminal controls under a pseudo-terminal" >&2
+    cat "${WORKDIR}/plain.typescript" >&2
+    exit 1
+fi
+
 # The fancy run intentionally populated the store. Reset the disposable
 # environment, retain the project declaration, then certify the durable plain
 # and NDJSON surfaces from a fresh source realization.

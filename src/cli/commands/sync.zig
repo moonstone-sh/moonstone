@@ -1733,22 +1733,32 @@ pub const SyncCommand = struct {
         profiler.span("sync.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(registries, allocator);
 
+        // `plain` is a rendering mode, not a terminal capability check.  In
+        // particular, a caller may explicitly request it from a PTY.  Keep the
+        // callbacks installed for durable completion events, but make every
+        // volatile callback path non-interactive.
+        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
-            .stdout = stdout,
+            .stdout = switch (backend) {
+                .direct => |writer| writer,
+                .queue, .silent => stdout,
+            },
             .emitter = emitter,
+            .is_tty = !plain_progress and !self.json and (std.Io.File.stderr().isTty(io) catch false),
+            .env = env,
+            .use_stderr = true,
         };
-        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
-
-        // Callback routing: direct mode uses the existing render callbacks,
-        // queue mode sends events through the WorkerContext.
+        // Callback routing: direct mode renders durable completions and queue
+        // mode sends events through the WorkerContext.  The context above
+        // suppresses only volatile frames for explicit plain output.
         const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
-            .direct => if (plain_progress) null else @import("command.zig").onResolveEvent,
+            .direct => @import("command.zig").onResolveEvent,
             .queue => progress_runtime.onResolveEventProgress,
             .silent => null,
         };
         const on_resolve_ctx: ?*anyopaque = switch (backend) {
-            .direct => if (plain_progress) null else @ptrCast(&resolve_cb_ctx),
+            .direct => @ptrCast(&resolve_cb_ctx),
             .queue => @ptrCast(backend.queue),
             .silent => null,
         };

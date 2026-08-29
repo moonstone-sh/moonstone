@@ -1,6 +1,210 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub fn terminalColumns(io: std.Io, env: *std.process.Environ.Map, use_stderr: bool) usize {
+    const fallback = columnsFromEnv(env) orelse 80;
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
+
+    var winsize: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
+    const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
+    const result = io.operate(.{ .device_io_control = .{
+        .file = file,
+        .code = std.posix.T.IOCGWINSZ,
+        .arg = &winsize,
+    } }) catch return fallback;
+    if (result.device_io_control >= 0 and winsize.col > 0) return winsize.col;
+    return fallback;
+}
+
+fn columnsFromEnv(env: *std.process.Environ.Map) ?usize {
+    const raw = env.get("COLUMNS") orelse return null;
+    const columns = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
+    return if (columns > 1) columns else null;
+}
+
+/// Reserves the last terminal cell so a repaint never triggers terminal autowrap.
+pub fn appendBounded(writer: *std.Io.Writer, text: []const u8, columns: usize) !void {
+    const limit = columns -| 1;
+    if (limit == 0) return;
+    var cells: usize = 0;
+    var scan: usize = 0;
+    while (scan < text.len) {
+        const cluster = boundedCluster(text, scan);
+        cells += cluster.cells;
+        scan += cluster.len;
+    }
+    const truncated = cells > limit;
+    const content_limit = if (truncated and limit >= 3) limit - 3 else limit;
+    var used: usize = 0;
+    var index: usize = 0;
+    while (index < text.len) {
+        const cluster = boundedCluster(text, index);
+        if (cluster.cells > content_limit -| used) break;
+        if (cluster.sanitize) {
+            try writer.writeByte(' ');
+        } else if (cluster.valid) {
+            try writer.writeAll(text[index..][0..cluster.len]);
+        } else {
+            try writer.writeAll("\u{fffd}");
+        }
+        used += cluster.cells;
+        index += cluster.len;
+    }
+    if (truncated and limit >= 3) try writer.writeAll("...");
+}
+
+/// A terminal-friendly binary byte quantity.  The blank unit for bytes keeps
+/// byte, KB, MB, ... values in the same `XXX.X UB` shape.
+pub const ByteQuantity = struct {
+    whole: u64,
+    tenths: u4,
+    unit: u8,
+
+    pub fn write(self: ByteQuantity, writer: *std.Io.Writer) !void {
+        try writer.print("{d}.{d} {c}B", .{ self.whole, self.tenths, self.unit });
+    }
+};
+
+/// Formats a byte count using 1024-based units and one decimal place.
+///
+/// Integer arithmetic preserves the rounding boundary for every `u64` value.
+/// If rounding produces 1024.0, promote to the next available unit instead of
+/// showing a misleading four-digit mantissa.
+pub fn byteQuantity(value: u64) ByteQuantity {
+    const units = " KMGTPE";
+    var unit_index: usize = 0;
+    var scale: u64 = 1;
+    while (unit_index + 1 < units.len and value >= scale * 1024) {
+        scale *= 1024;
+        unit_index += 1;
+    }
+
+    var rounded_tenths = (@as(u128, value) * 10 + scale / 2) / scale;
+    while (unit_index + 1 < units.len and rounded_tenths >= 10240) {
+        scale *= 1024;
+        unit_index += 1;
+        rounded_tenths = (@as(u128, value) * 10 + scale / 2) / scale;
+    }
+
+    return .{
+        .whole = @intCast(rounded_tenths / 10),
+        .tenths = @intCast(rounded_tenths % 10),
+        .unit = units[unit_index],
+    };
+}
+
+/// Selects a bar before labels are truncated.  At small widths the spinner and
+/// useful package text remain, while the bar is omitted entirely.
+pub fn barWidthForColumns(columns: usize, normal_width: usize) usize {
+    return if (columns >= 100) normal_width * 2 else if (columns >= 60) normal_width else 0;
+}
+
+/// Converts a possibly stale or malformed fraction to a bar state without an
+/// unchecked float-to-integer conversion.  Download counters may temporarily
+/// report more bytes than an advertised total, and a zero total is meaningful
+/// "unknown/empty", not a full bar.
+pub fn progressStates(fraction: f32, total_states: usize) usize {
+    if (!(fraction > 0)) return 0; // also maps NaN to a safe empty bar
+    if (fraction >= 1) return total_states;
+    return @as(usize, @intFromFloat(fraction * @as(f32, @floatFromInt(total_states))));
+}
+
+const BoundedCluster = struct { len: usize, cells: usize, valid: bool, sanitize: bool };
+
+const DecodedCodepoint = struct { len: usize, codepoint: u21, valid: bool };
+
+fn decodeCodepoint(text: []const u8, index: usize) DecodedCodepoint {
+    const byte = text[index];
+    const sequence_len = std.unicode.utf8ByteSequenceLength(byte) catch return .{ .len = 1, .codepoint = 0, .valid = false };
+    if (sequence_len > text.len - index) return .{ .len = 1, .codepoint = 0, .valid = false };
+    const codepoint = std.unicode.utf8Decode(text[index..][0..sequence_len]) catch return .{ .len = 1, .codepoint = 0, .valid = false };
+    return .{ .len = sequence_len, .codepoint = codepoint, .valid = true };
+}
+
+/// Return one display cluster, rather than a single code point. In particular,
+/// VS16 and ZWJ sequences stay intact: emitting only half an emoji sequence can
+/// make a terminal choose a different presentation and invalidate the bound.
+fn boundedCluster(text: []const u8, index: usize) BoundedCluster {
+    const first = decodeCodepoint(text, index);
+    if (!first.valid) return .{ .len = first.len, .cells = 1, .valid = false, .sanitize = false };
+    if (isControlCodepoint(first.codepoint) or isClusterExtender(first.codepoint)) {
+        return .{ .len = first.len, .cells = 1, .valid = true, .sanitize = true };
+    }
+
+    var end = index + first.len;
+    var cells = displayWidth(first.codepoint);
+    var expects_joined_base = false;
+    while (end < text.len) {
+        const next = decodeCodepoint(text, end);
+        if (!next.valid) break;
+        // A control must never be admitted as a joined base or continuation:
+        // otherwise a ZWJ immediately before it would make the control part
+        // of the emitted cluster and allow terminal escape sequences through.
+        if (isControlCodepoint(next.codepoint)) break;
+        if (next.codepoint == 0x200d) {
+            end += next.len;
+            expects_joined_base = true;
+            continue;
+        }
+        if (isClusterExtender(next.codepoint)) {
+            // Emoji presentation selectors turn otherwise narrow symbols such
+            // as U+2764 HEAVY BLACK HEART into a two-cell glyph.
+            if (next.codepoint == 0xfe0f or next.codepoint == 0x20e3 or isEmojiModifier(next.codepoint)) cells = @max(cells, 2);
+            end += next.len;
+            continue;
+        }
+        if (!expects_joined_base) break;
+        cells += displayWidth(next.codepoint);
+        end += next.len;
+        expects_joined_base = false;
+    }
+    return .{ .len = end - index, .cells = cells, .valid = true, .sanitize = false };
+}
+
+fn isControlCodepoint(codepoint: u21) bool {
+    return codepoint < 0x20 or codepoint == 0x7f or (codepoint >= 0x80 and codepoint <= 0x9f);
+}
+
+fn isClusterExtender(codepoint: u21) bool {
+    return (codepoint >= 0x0300 and codepoint <= 0x036f) or
+        (codepoint >= 0x1ab0 and codepoint <= 0x1aff) or
+        (codepoint >= 0x1dc0 and codepoint <= 0x1dff) or
+        (codepoint >= 0x20d0 and codepoint <= 0x20ff) or
+        (codepoint >= 0xfe00 and codepoint <= 0xfe0f) or
+        (codepoint >= 0xfe20 and codepoint <= 0xfe2f) or
+        (codepoint >= 0xe0100 and codepoint <= 0xe01ef) or
+        codepoint == 0x200d or
+        codepoint == 0x20e3 or
+        isEmojiModifier(codepoint);
+}
+
+fn isEmojiModifier(codepoint: u21) bool {
+    return codepoint >= 0x1f3fb and codepoint <= 0x1f3ff;
+}
+
+fn isEmojiPresentationBase(codepoint: u21) bool {
+    // This deliberately covers the full commonly implemented emoji blocks,
+    // including U+1F000..U+1F2FF which are easy to omit when only modern
+    // pictographs are considered.  Over-counting text-style glyphs is safer
+    // than allowing an emoji-presentation terminal to autowrap a repaint.
+    return (codepoint >= 0x1f000 and codepoint <= 0x1faff) or
+        (codepoint >= 0x2600 and codepoint <= 0x27ff);
+}
+
+fn displayWidth(codepoint: u21) usize {
+    if ((codepoint >= 0x0300 and codepoint <= 0x036f) or (codepoint >= 0x200b and codepoint <= 0x200f) or
+        (codepoint >= 0x202a and codepoint <= 0x202e) or (codepoint >= 0x2060 and codepoint <= 0x206f) or
+        (codepoint >= 0xfe00 and codepoint <= 0xfe0f) or (codepoint >= 0xe0100 and codepoint <= 0xe01ef)) return 0;
+    if ((codepoint >= 0x1100 and codepoint <= 0x115f) or (codepoint >= 0x2e80 and codepoint <= 0xa4cf) or
+        (codepoint >= 0xac00 and codepoint <= 0xd7a3) or (codepoint >= 0xf900 and codepoint <= 0xfaff) or
+        (codepoint >= 0xfe10 and codepoint <= 0xfe6f) or (codepoint >= 0xff01 and codepoint <= 0xff60) or
+        (codepoint >= 0xffe0 and codepoint <= 0xffe6) or (codepoint >= 0x2300 and codepoint <= 0x27ff) or
+        (codepoint >= 0x1f300 and codepoint <= 0x1faff) or
+        (codepoint >= 0x20000 and codepoint <= 0x3fffd) or
+        isEmojiPresentationBase(codepoint)) return 2;
+    return 1;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 //  Signal handling for cooperative cancellation
 // ────────────────────────────────────────────────────────────────────────────
@@ -269,6 +473,8 @@ pub const ProgressUi = struct {
     writer: *std.Io.Writer,
     is_tty: bool,
     io: std.Io,
+    columns: usize,
+    env: ?*std.process.Environ.Map,
 
     // render state
     spinner_frame: usize = 0,
@@ -277,6 +483,7 @@ pub const ProgressUi = struct {
     dl_label: []const u8 = "",
     dl_done: u64 = 0,
     dl_total: ?u64 = null,
+    dl_seen: bool = false,
     last_render_ns: i128 = 0,
 
     // cancellation state
@@ -292,6 +499,7 @@ pub const ProgressUi = struct {
     task_slots: [max_visible_tasks]?usize = .{ null, null, null, null, null },
     completed_tasks: usize = 0,
     frame_writer: std.Io.Writer.Allocating,
+    content_writer: std.Io.Writer.Allocating,
 
     // accumulated warnings to print at the end
     warnings: std.ArrayList([]const u8),
@@ -302,14 +510,19 @@ pub const ProgressUi = struct {
         writer: *std.Io.Writer,
         is_tty: bool,
         io: std.Io,
+        columns: usize,
+        env: ?*std.process.Environ.Map,
     ) ProgressUi {
         return .{
             .writer = writer,
             .is_tty = is_tty,
             .io = io,
+            .columns = columns,
+            .env = env,
             .warnings = .empty,
             .task_rows = .empty,
             .frame_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator),
+            .content_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator),
         };
     }
 
@@ -317,6 +530,7 @@ pub const ProgressUi = struct {
         self.warnings.deinit(std.heap.page_allocator);
         self.task_rows.deinit(std.heap.page_allocator);
         self.frame_writer.deinit();
+        self.content_writer.deinit();
     }
 
     /// Write directly to stderr, bypassing the buffered Threaded I/O writer.
@@ -337,8 +551,10 @@ pub const ProgressUi = struct {
             .phase_started => |msg| {
                 self.current_phase = msg;
                 self.current_package = null;
+                self.dl_label = "";
                 self.dl_done = 0;
                 self.dl_total = null;
+                self.dl_seen = false;
                 if (!self.is_tty) {
                     self.writer.print("{s}\n", .{msg}) catch {};
                     self.writer.flush() catch {};
@@ -350,10 +566,12 @@ pub const ProgressUi = struct {
                 self.dl_label = "";
                 self.dl_done = 0;
                 self.dl_total = null;
+                self.dl_seen = false;
 
                 if (self.is_tty) {
                     self.clearRenderedRows();
-                    self.renderFrameLine("\x1b[2K\r⠿ {s}\n", .{msg});
+                    self.renderTaskLine(true, "⠿ {s}", .{msg});
+                    self.rawWrite("\n");
                 } else {
                     self.writer.print("{s}\n", .{msg}) catch {};
                 }
@@ -378,6 +596,7 @@ pub const ProgressUi = struct {
                 self.dl_label = b.label;
                 self.dl_done = b.done;
                 self.dl_total = b.total;
+                self.dl_seen = true;
 
                 // No print here.
                 // The renderer will repaint the same progress bar line.
@@ -504,6 +723,7 @@ pub const ProgressUi = struct {
         // them into a redirected stream: each repaint would become a new log
         // line instead of replacing the previous frame.
         if (!self.is_tty) return;
+        self.refreshColumns();
 
         if (self.visibleTaskCount() > 0) {
             self.renderTaskRows();
@@ -514,46 +734,54 @@ pub const ProgressUi = struct {
 
         // If we have byte progress, show a filling bar.
         if (!self.stopping and self.dl_total != null) {
-            if (self.dl_total.? > 0) {
-                const fraction = @as(f32, @floatFromInt(self.dl_done)) / @as(f32, @floatFromInt(self.dl_total.?));
-                self.renderBar(frame, fraction, 10);
-                return;
-            }
+            const total = self.dl_total.?;
+            const fraction = if (total > 0)
+                @as(f32, @floatFromInt(self.dl_done)) / @as(f32, @floatFromInt(total))
+            else
+                0;
+            self.renderBar(frame, fraction);
+            return;
         }
 
         const has_no_visible_work =
             !self.stopping and
             self.current_phase.len == 0 and
             self.current_package == null and
-            self.dl_total == null and
-            self.dl_done == 0;
+            !self.dl_seen;
 
         if (has_no_visible_work) return;
 
-        // Otherwise, show a spinner line.
-        var buf: [320]u8 = undefined;
-        var w = std.Io.Writer.fixed(&buf);
-        w.print("\x1b[2K\r{s} ", .{frame}) catch return;
+        // Otherwise, show a spinner line. Use the reusable allocating writer:
+        // package names and URLs may be larger than a stack buffer, and are
+        // end-clamped only after their complete display width is known.
+        self.content_writer.clearRetainingCapacity();
+        const writer = &self.content_writer.writer;
+        writer.print("{s} ", .{frame}) catch return;
 
         if (self.stopping) {
             // Cancellation phase: show "Stopping… x/y"
             if (self.stop_total > 0) {
-                w.print("Stopping… {d}/{d}", .{ self.stopped_count, self.stop_total }) catch {};
+                writer.print("Stopping… {d}/{d}", .{ self.stopped_count, self.stop_total }) catch {};
             } else {
-                w.print("Stopping…", .{}) catch {};
+                writer.writeAll("Stopping…") catch {};
             }
         } else {
             if (self.current_phase.len > 0) {
-                w.print("{s}", .{self.current_phase}) catch {};
+                writer.print("{s}", .{self.current_phase}) catch {};
             }
             if (self.current_package) |pkg| {
-                w.print(" → {s}", .{pkg}) catch {};
+                writer.print(" → {s}", .{pkg}) catch {};
             }
-            if (self.dl_done > 0 and self.dl_total == null) {
-                w.print(" ({d} bytes)", .{self.dl_done}) catch {};
+            if (self.dl_seen and self.dl_total == null) {
+                if (self.dl_label.len > 0) {
+                    writer.print(" {s}", .{self.dl_label}) catch {};
+                }
+                writer.writeAll(" (") catch {};
+                byteQuantity(self.dl_done).write(writer) catch {};
+                writer.writeByte(')') catch {};
             }
         }
-        self.rawWrite(w.buffer[0..w.end]);
+        self.renderBoundedLine(writer.buffered());
     }
 
     fn clearRenderedRows(self: *ProgressUi) void {
@@ -576,18 +804,24 @@ pub const ProgressUi = struct {
         self.rendered_lines = 0;
     }
 
-    fn renderFrameLine(self: *ProgressUi, comptime fmt: []const u8, args: anytype) void {
+    fn renderBoundedLine(self: *ProgressUi, text: []const u8) void {
+        self.refreshColumns();
+        self.renderBoundedLineAtColumns(text);
+    }
+
+    fn renderBoundedLineAtColumns(self: *ProgressUi, text: []const u8) void {
         self.frame_writer.clearRetainingCapacity();
-        self.frame_writer.writer.print(fmt, args) catch return;
+        self.frame_writer.writer.writeAll("\x1b[2K\r") catch return;
+        appendBounded(&self.frame_writer.writer, text, self.columns) catch return;
         self.rawWrite(self.frame_writer.writer.buffered());
     }
 
     fn renderTaskLine(self: *ProgressUi, is_last: bool, comptime fmt: []const u8, args: anytype) void {
-        self.frame_writer.clearRetainingCapacity();
-        self.frame_writer.writer.writeAll("\x1b[2K\r") catch return;
-        self.frame_writer.writer.print(fmt, args) catch return;
-        if (!is_last) self.frame_writer.writer.writeAll("\n") catch return;
-        self.rawWrite(self.frame_writer.writer.buffered());
+        self.content_writer.clearRetainingCapacity();
+        self.content_writer.writer.print(fmt, args) catch return;
+        const text = self.content_writer.writer.buffered();
+        self.renderBoundedLine(text);
+        if (!is_last) self.rawWrite("\n");
     }
 
     fn renderTaskRows(self: *ProgressUi) void {
@@ -633,13 +867,17 @@ pub const ProgressUi = struct {
         self.releaseRenderedTerminalTaskRows();
     }
 
-    fn renderBar(self: *ProgressUi, frame: []const u8, fraction: f32, width: usize) void {
-        var buf: [512]u8 = undefined;
-        var w = std.Io.Writer.fixed(&buf);
-        w.print("\x1b[2K\r{s} [", .{frame}) catch return;
+    fn renderBar(self: *ProgressUi, frame: []const u8, fraction: f32) void {
+        self.refreshColumns();
+        const width = self.barWidth();
+        self.content_writer.clearRetainingCapacity();
+        const writer = &self.content_writer.writer;
+        writer.print("{s}", .{frame}) catch return;
+
+        if (width > 0) writer.writeAll(" [") catch return;
 
         const total_states = width * 8;
-        const current_state = @as(usize, @intFromFloat(fraction * @as(f32, @floatFromInt(total_states))));
+        const current_state = progressStates(fraction, total_states);
 
         for (0..width) |i| {
             const char_state = if (current_state >= (i + 1) * 8)
@@ -648,22 +886,34 @@ pub const ProgressUi = struct {
                 0
             else
                 current_state - i * 8;
-            w.print("{s}", .{fill_levels[char_state]}) catch {};
+            writer.print("{s}", .{fill_levels[char_state]}) catch {};
         }
-        w.print("] ", .{}) catch {};
+        if (width > 0) writer.writeByte(']') catch {};
+        writer.writeByte(' ') catch {};
         if (self.dl_label.len > 0) {
-            w.print("{s} ", .{self.dl_label}) catch {};
+            writer.print("{s} ", .{self.dl_label}) catch {};
         } else if (self.current_package) |pkg| {
-            w.print("{s} ", .{pkg}) catch {};
+            writer.print("{s} ", .{pkg}) catch {};
         }
-        w.print("{d}/{d} bytes", .{ self.dl_done, self.dl_total.? }) catch {};
-        self.rawWrite(w.buffer[0..w.end]);
+        byteQuantity(self.dl_done).write(writer) catch return;
+        writer.writeByte('/') catch return;
+        byteQuantity(self.dl_total.?).write(writer) catch return;
+        self.renderBoundedLineAtColumns(writer.buffered());
+    }
+
+    fn barWidth(self: *const ProgressUi) usize {
+        return barWidthForColumns(self.columns, 10);
+    }
+
+    fn refreshColumns(self: *ProgressUi) void {
+        if (self.env) |env| self.columns = terminalColumns(self.io, env, true);
     }
 
     /// Called after the UI loop exits (on `.done` or `.failed`).
     /// Clears the spinner line and prints any accumulated warnings.
     pub fn renderFinal(self: *ProgressUi) void {
         if (self.is_tty) {
+            self.clearRenderedRows();
             self.rawWrite("\x1b[2K\r");
         }
 
@@ -685,6 +935,7 @@ pub const ProgressUi = struct {
         self.current_phase = "Stopping…";
         self.current_package = null;
         self.dl_total = null;
+        self.dl_seen = false;
     }
 
     /// A worker has stopped; increment the counter.
@@ -696,7 +947,10 @@ pub const ProgressUi = struct {
     pub fn renderStopped(self: *ProgressUi) void {
         const n = self.stopped_count;
         if (self.is_tty) {
-            self.writer.print("\x1b[2K\r⠿ Stopped {d} process(es).\n", .{n}) catch {};
+            self.content_writer.clearRetainingCapacity();
+            self.content_writer.writer.print("⠿ Stopped {d} process(es).", .{n}) catch {};
+            self.renderBoundedLine(self.content_writer.writer.buffered());
+            self.rawWrite("\n");
         } else {
             self.writer.print("Stopped {d} process(es).\n", .{n}) catch {};
         }
@@ -753,7 +1007,7 @@ pub fn runWithProgress(
     defer thread.join();
 
     // Run UI loop on the main thread.
-    var ui = ProgressUi.init(progress_writer, is_tty, io);
+    var ui = ProgressUi.init(progress_writer, is_tty, io, terminalColumns(io, env, true), env);
     defer ui.deinit();
 
     const poll_sleep = std.Io.Duration.fromMilliseconds(16);
@@ -838,14 +1092,10 @@ pub const ProgressBackend = union(enum) {
                 w.flush() catch {};
             },
             .queue => |wctx| {
-                var buf: [256]u8 = undefined;
-                const tmp = std.fmt.bufPrint(&buf, fmt, args) catch return;
+                const tmp = formatQueuedText(wctx, fmt, args) orelse return;
                 // Strip trailing newlines — the UI handles line breaks itself.
                 const trimmed = std.mem.trimEnd(u8, tmp, "\n");
-                // Dupe from the process arena so the string outlives the
-                // worker thread's stack frame.
-                const msg = wctx.allocator.dupe(u8, trimmed) catch return;
-                wctx.sendPhase(msg);
+                wctx.sendPhase(trimmed);
             },
             .silent => {},
         }
@@ -858,10 +1108,8 @@ pub const ProgressBackend = union(enum) {
                 w.flush() catch {};
             },
             .queue => |wctx| {
-                var buf: [256]u8 = undefined;
-                const tmp = std.fmt.bufPrint(&buf, fmt, args) catch return;
-                const msg = wctx.allocator.dupe(u8, tmp) catch return;
-                wctx.sendPhaseDone(msg);
+                const tmp = formatQueuedText(wctx, fmt, args) orelse return;
+                wctx.sendPhaseDone(tmp);
             },
             .silent => {},
         }
@@ -907,8 +1155,7 @@ pub const ProgressBackend = union(enum) {
             },
 
             .queue => |wctx| {
-                var buf: [256]u8 = undefined;
-                const tmp = std.fmt.bufPrint(&buf, fmt, args) catch return;
+                const tmp = formatQueuedText(wctx, fmt, args) orelse return;
                 const trimmed = std.mem.trimEnd(u8, tmp, "\n");
                 wctx.sendStatus(id, trimmed);
             },
@@ -923,15 +1170,21 @@ pub const ProgressBackend = union(enum) {
                 w.flush() catch {};
             },
             .queue => |wctx| {
-                var buf: [256]u8 = undefined;
-                const tmp = std.fmt.bufPrint(&buf, fmt, args) catch return;
-                const msg = wctx.allocator.dupe(u8, tmp) catch return;
-                wctx.sendWarning(msg);
+                const tmp = formatQueuedText(wctx, fmt, args) orelse return;
+                wctx.sendWarning(tmp);
             },
             .silent => {},
         }
     }
 };
+
+/// Progress strings cross the worker/UI boundary, so stack-backed formatting
+/// would either truncate valid input or dangle before the UI can consume it.
+/// Worker allocators are process-lifetime arenas for these commands, so the
+/// formatted slice remains valid until the queue consumer has rendered it.
+fn formatQueuedText(wctx: *WorkerContext, comptime fmt: []const u8, args: anytype) ?[]const u8 {
+    return std.fmt.allocPrint(wctx.allocator, fmt, args) catch null;
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 //  Callback adapters — translate core resolver/solver events to queue events
@@ -942,23 +1195,24 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
     const wctx: *WorkerContext = @ptrCast(@alignCast(ctx orelse return));
     switch (event) {
         .retry => |r| {
-            var buf: [256]u8 = undefined;
-            const tmp = std.fmt.bufPrint(
-                &buf,
+            const tmp = formatQueuedText(
+                wctx,
                 "Retrying {s} ({d}/{d})",
                 .{ r.url, r.attempt, r.max_retries },
-            ) catch return;
+            ) orelse return;
 
-            wctx.sendWarning(tmp);
+            // Retry attempts are volatile just like direct callback spinners.
+            // Keep them out of non-TTY logs while still rendering them in the
+            // interactive queue UI.
+            wctx.sendStatus("resolver", tmp);
         },
 
         .status => |s| {
-            var buf: [256]u8 = undefined;
-            const tmp = std.fmt.bufPrint(
-                &buf,
+            const tmp = formatQueuedText(
+                wctx,
                 "{s}: {s}",
                 .{ s.pkg_name, s.msg },
-            ) catch return;
+            ) orelse return;
 
             wctx.sendStatus("resolver", tmp);
         },
@@ -971,22 +1225,23 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
             );
         },
 
-        .metadata_sync_started => |label| wctx.sendPhase(label),
+        // Metadata start is volatile.  A non-TTY queue must match the direct
+        // callback path: no start line, then one durable completion line.
+        .metadata_sync_started => |label| wctx.sendStatus("metadata", label),
         .metadata_sync_done => |label| wctx.sendPhaseDone(label),
         .build_failed => |bf| {
-            var buf: [4096]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
+            const msg = formatQueuedText(
+                wctx,
                 "Build failed for {s}. Command: {s}\nTail of stderr:\n{s}",
                 .{ bf.pkg_name, bf.command, bf.stderr_tail },
-            ) catch return;
+            ) orelse return;
             wctx.sendWarning(msg);
             if (bf.log_path) |lp| {
-                const log_msg = std.fmt.bufPrint(
-                    &buf,
+                const log_msg = formatQueuedText(
+                    wctx,
                     "Full build log for {s} saved to: {s}",
                     .{ bf.pkg_name, lp },
-                ) catch return;
+                ) orelse return;
                 wctx.sendWarning(log_msg);
             }
         },
@@ -996,17 +1251,17 @@ pub fn onResolveEventProgress(ctx: ?*anyopaque, event: @import("moonstone").reso
 /// Adapter for `SolverCallback` that forwards events through the queue.
 pub fn onSolverEventProgress(ctx: ?*anyopaque, event: @import("moonstone").resolution.solver.report.SolverEvent, data: std.json.Value) void {
     const wctx: *WorkerContext = @ptrCast(@alignCast(ctx orelse return));
-    var buf: [256]u8 = undefined;
     if (data == .object) {
         if (data.object.get("package")) |pkg| {
             if (pkg == .string) {
                 const tmp = switch (event) {
-                    .resolving => std.fmt.bufPrint(&buf, "Solving: choosing version for {s}…", .{pkg.string}) catch return,
-                    .propagating => std.fmt.bufPrint(&buf, "Solving: applying constraints for {s}…", .{pkg.string}) catch return,
-                    .conflict => std.fmt.bufPrint(&buf, "Solving: conflict on {s}…", .{pkg.string}) catch return,
-                    .backtracking => std.fmt.bufPrint(&buf, "Solving: backtracking from {s}…", .{pkg.string}) catch return,
+                    .resolving => formatQueuedText(wctx, "Solving: choosing version for {s}…", .{pkg.string}),
+                    .propagating => formatQueuedText(wctx, "Solving: applying constraints for {s}…", .{pkg.string}),
+                    .conflict => formatQueuedText(wctx, "Solving: conflict on {s}…", .{pkg.string}),
+                    .backtracking => formatQueuedText(wctx, "Solving: backtracking from {s}…", .{pkg.string}),
                 };
-                wctx.sendStatus("solver", tmp);
+                const message = tmp orelse return;
+                wctx.sendStatus("solver", message);
                 return;
             }
         }
@@ -1023,7 +1278,7 @@ pub fn onSolverEventProgress(ctx: ?*anyopaque, event: @import("moonstone").resol
 test "task rows keep terminal slots until the next render" {
     var bytes: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
-    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
     defer ui.deinit();
 
     ui.applyTaskState(.{ .task_id = "a", .revision = 1, .state = "running", .message = "a" });
@@ -1047,10 +1302,196 @@ test "task rows keep terminal slots until the next render" {
     try std.testing.expectEqual(@as(?usize, 2), ui.task_rows.items[2].slot);
 }
 
+test "bounded frames sanitize controls, invalid UTF-8, and double-width characters" {
+    var bytes: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try appendBounded(&writer, "one\x1b\tc2\u{0085}\n🙂three\xe2", 12);
+    try std.testing.expectEqualStrings("one  c2 ...", writer.buffered());
+
+    var narrow: [16]u8 = undefined;
+    var narrow_writer = std.Io.Writer.fixed(&narrow);
+    try appendBounded(&narrow_writer, "ééé", 3);
+    try std.testing.expectEqualStrings("éé", narrow_writer.buffered());
+}
+
+test "bounded frames sanitize controls after a ZWJ without exceeding the bound" {
+    var bytes: [32]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try appendBounded(&writer, "a\u{200d}\x1b[2J", 6);
+    try std.testing.expectEqualStrings("a\u{200d} [2J", writer.buffered());
+    var scan: usize = 0;
+    while (scan < writer.buffered().len) {
+        const codepoint = decodeCodepoint(writer.buffered(), scan);
+        try std.testing.expect(codepoint.valid);
+        try std.testing.expect(!isControlCodepoint(codepoint.codepoint));
+        scan += codepoint.len;
+    }
+    // Six columns reserve one cell for autowrap, so the five-cell result is
+    // admitted exactly rather than clamped or overrun.
+    try std.testing.expectEqual(@as(usize, 5), displayWidth('a') + displayWidth(0x200d) + displayWidth(' ') + displayWidth('[') + displayWidth('2') + displayWidth('J'));
+}
+
+test "bounded frames conservatively preserve emoji-presentation graphemes" {
+    var heart_bytes: [32]u8 = undefined;
+    var heart_writer = std.Io.Writer.fixed(&heart_bytes);
+    // Each heart is a narrow text base plus VS16, but common terminals render
+    // it as two cells.  A two-cell budget must never admit both hearts.
+    try appendBounded(&heart_writer, "❤️❤️", 3);
+    try std.testing.expectEqualStrings("❤️", heart_writer.buffered());
+
+    var zwj_bytes: [32]u8 = undefined;
+    var zwj_writer = std.Io.Writer.fixed(&zwj_bytes);
+    // Reserve ellipsis first, then refuse a partial woman-technologist ZWJ
+    // grapheme rather than writing a dangling joiner before the clamp.
+    try appendBounded(&zwj_writer, "👩‍💻xy", 6);
+    try std.testing.expectEqualStrings("...", zwj_writer.buffered());
+}
+
+test "queue metadata start is volatile and completion is printed once on non-TTY" {
+    var queue = try ProgressQueue.init(std.testing.allocator, std.testing.io);
+    defer queue.deinit(std.testing.allocator);
+    var cancel = std.atomic.Value(bool).init(false);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var wctx = WorkerContext{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .env = &env_map,
+        .queue = &queue,
+        .cancel = &cancel,
+    };
+
+    onResolveEventProgress(&wctx, .{ .metadata_sync_started = "Syncing registry" });
+    onResolveEventProgress(&wctx, .{ .metadata_sync_done = "Registry synced" });
+
+    var bytes: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
+    defer ui.deinit();
+    while (queue.tryRecv()) |event| ui.apply(event);
+    try std.testing.expectEqualStrings("Registry synced\n", writer.buffered());
+}
+
+test "queued status preserves long formatted strings" {
+    var queue = try ProgressQueue.init(std.testing.allocator, std.testing.io);
+    defer queue.deinit(std.testing.allocator);
+    var cancel = std.atomic.Value(bool).init(false);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var wctx = WorkerContext{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .env = &env_map,
+        .queue = &queue,
+        .cancel = &cancel,
+    };
+    const long_name = try arena.allocator().alloc(u8, 1024);
+    @memset(long_name, 'x');
+
+    const backend = ProgressBackend{ .queue = &wctx };
+    backend.status("resolver", "Solving: {s}", .{long_name});
+
+    const event = queue.tryRecv() orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    switch (event) {
+        .status => |status| {
+            try std.testing.expectEqualStrings("resolver", status.id);
+            try std.testing.expectEqual(@as(usize, "Solving: ".len + long_name.len), status.msg.len);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "bar states clamp over-complete and zero-total fractions" {
+    try std.testing.expectEqual(@as(usize, 80), progressStates(1.1, 80));
+    try std.testing.expectEqual(@as(usize, 0), progressStates(0, 80));
+    try std.testing.expectEqual(@as(usize, 0), progressStates(0, 0));
+}
+
+test "bounded frames honor narrow medium and wide row budgets" {
+    const cases = [_]struct { columns: usize, expected: []const u8 }{
+        .{ .columns = 20, .expected = "⠋ resolving moon..." },
+        .{ .columns = 60, .expected = "⠋ resolving moonstone/ballad" },
+        .{ .columns = 120, .expected = "⠋ resolving moonstone/ballad" },
+    };
+    for (cases) |case| {
+        var bytes: [64]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&bytes);
+        try appendBounded(&writer, "⠋ resolving moonstone/ballad", case.columns);
+        try std.testing.expectEqualStrings(case.expected, writer.buffered());
+    }
+}
+
+test "bounded frames leave no printable content in zero-width budgets" {
+    const cases = [_]usize{ 0, 1 };
+    for (cases) |columns| {
+        var bytes: [16]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&bytes);
+        try appendBounded(&writer, "frame", columns);
+        try std.testing.expectEqualStrings("", writer.buffered());
+    }
+}
+
+test "bounded frames end-clamp long task names and URLs at exact cell boundaries" {
+    const text = "⠋ running moonstone/ballad from https://registry.example.invalid/a/very/long/artifact.tar.gz";
+    const cases = [_]struct { columns: usize, expected: []const u8 }{
+        .{ .columns = 2, .expected = "⠋" },
+        .{ .columns = 3, .expected = "⠋ " },
+        .{ .columns = 4, .expected = "..." },
+        .{ .columns = 7, .expected = "⠋ r..." },
+        .{ .columns = 8, .expected = "⠋ ru..." },
+    };
+    for (cases) |case| {
+        var bytes: [128]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&bytes);
+        try appendBounded(&writer, text, case.columns);
+        try std.testing.expectEqualStrings(case.expected, writer.buffered());
+    }
+
+    var exact: [16]u8 = undefined;
+    var exact_writer = std.Io.Writer.fixed(&exact);
+    try appendBounded(&exact_writer, "abcdef", 7);
+    try std.testing.expectEqualStrings("abcdef", exact_writer.buffered());
+}
+
+test "byte quantities use binary units with stable one-decimal alignment" {
+    const Case = struct { value: u64, expected: []const u8 };
+    const cases = [_]Case{
+        .{ .value = 0, .expected = "0.0  B" },
+        .{ .value = 1, .expected = "1.0  B" },
+        .{ .value = 1023, .expected = "1023.0  B" },
+        .{ .value = 1024, .expected = "1.0 KB" },
+        .{ .value = 1536, .expected = "1.5 KB" },
+        .{ .value = 1024 * 1024 - 51, .expected = "1.0 MB" },
+        .{ .value = std.math.maxInt(u64), .expected = "16.0 EB" },
+    };
+    for (cases) |case| {
+        var bytes: [32]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&bytes);
+        try byteQuantity(case.value).write(&writer);
+        try std.testing.expectEqualStrings(case.expected, writer.buffered());
+    }
+}
+
+test "bar layout yields label space at narrow breakpoints" {
+    try std.testing.expectEqual(@as(usize, 0), barWidthForColumns(0, 10));
+    try std.testing.expectEqual(@as(usize, 0), barWidthForColumns(59, 10));
+    try std.testing.expectEqual(@as(usize, 10), barWidthForColumns(60, 10));
+    try std.testing.expectEqual(@as(usize, 10), barWidthForColumns(99, 10));
+    try std.testing.expectEqual(@as(usize, 20), barWidthForColumns(100, 10));
+    try std.testing.expectEqual(@as(usize, 14), barWidthForColumns(120, 7));
+}
+
 test "task rows ignore stale revisions" {
     var bytes: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
-    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
     defer ui.deinit();
 
     ui.applyTaskState(.{ .task_id = "a", .revision = 2, .state = "prepared", .message = "new" });
@@ -1064,7 +1505,7 @@ test "task rows ignore stale revisions" {
 test "terminal task rows promote queued work after one paint" {
     var bytes: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
-    var ui = ProgressUi.init(&writer, false, std.testing.io);
+    var ui = ProgressUi.init(&writer, false, std.testing.io, 80, null);
     defer ui.deinit();
 
     const ids = [_][]const u8{ "a", "b", "c", "d", "e", "f" };

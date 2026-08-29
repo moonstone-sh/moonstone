@@ -1,4 +1,5 @@
 const std = @import("std");
+const progress_runtime = @import("../progress.zig");
 const external_dependency = @import("moonstone").materialization.external_input;
 
 // Top-level commands
@@ -457,6 +458,9 @@ pub const ResolveCallbackContext = struct {
     stdout: *std.Io.Writer,
     emitter: ?*@import("ndjson.zig").Emitter = null,
     spinner_frame: usize = 0,
+    is_tty: bool = false,
+    env: *std.process.Environ.Map,
+    use_stderr: bool,
 };
 
 pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype) !void {
@@ -467,16 +471,19 @@ pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype)
 const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
 pub fn renderSpinner(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
+    if (!context.is_tty) return;
     const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
     context.spinner_frame +%= 1;
-    try context.stdout.print("\x1b[2K\r{s} ", .{frame});
-    try context.stdout.print(fmt, args);
-    try context.stdout.flush();
+    try renderVolatile(context, "{s} " ++ fmt, .{frame} ++ args);
 }
 
 pub fn renderDone(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
-    try context.stdout.print("\x1b[2K\r⠿ ", .{});
-    try context.stdout.print(fmt, args);
+    if (!context.is_tty) {
+        try context.stdout.print(fmt ++ "\n", args);
+        try context.stdout.flush();
+        return;
+    }
+    try renderVolatile(context, "⠿ " ++ fmt, args);
     try context.stdout.print("\n", .{});
     try context.stdout.flush();
 }
@@ -484,15 +491,21 @@ pub fn renderDone(context: *ResolveCallbackContext, comptime fmt: []const u8, ar
 const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿" };
 
 pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: usize, comptime fmt: []const u8, args: anytype) !void {
+    if (!context.is_tty) return;
     const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
     context.spinner_frame +%= 1;
 
-    try context.stdout.print("\x1b[2K\r{s} [", .{frame});
+    var content = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+    defer content.deinit();
+    const columns = progress_runtime.terminalColumns(context.io, context.env, context.use_stderr);
+    const bar_width = progress_runtime.barWidthForColumns(columns, width);
+    try content.writer.print("{s}", .{frame});
+    if (bar_width > 0) try content.writer.writeAll(" [");
 
-    const total_states = width * 8; // 8 states per character (from 0 to 8 fill levels)
-    const current_state = @as(usize, @intFromFloat(fraction * @as(f32, @floatFromInt(total_states))));
+    const total_states = bar_width * 8; // 8 states per character (from 0 to 8 fill levels)
+    const current_state = progress_runtime.progressStates(fraction, total_states);
 
-    for (0..width) |i| {
+    for (0..bar_width) |i| {
         const char_state = if (current_state >= (i + 1) * 8)
             8
         else if (current_state <= i * 8)
@@ -500,12 +513,71 @@ pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: us
         else
             current_state - i * 8;
 
-        try context.stdout.print("{s}", .{fill_levels[char_state]});
+        try content.writer.print("{s}", .{fill_levels[char_state]});
     }
 
-    try context.stdout.print("] ", .{});
-    try context.stdout.print(fmt, args);
+    if (bar_width > 0) try content.writer.writeAll("]");
+    try content.writer.print(" " ++ fmt, args);
+    try renderVolatileText(context, content.writer.buffered(), columns);
+}
+
+fn renderVolatile(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
+    var content = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+    defer content.deinit();
+    try content.writer.print(fmt, args);
+    try renderVolatileText(context, content.writer.buffered(), progress_runtime.terminalColumns(context.io, context.env, context.use_stderr));
+}
+
+/// A frame uses one terminal-width snapshot for both its optional bar and its
+/// final clamp.  A later resize is handled by the next repaint.
+fn renderVolatileText(context: *ResolveCallbackContext, text: []const u8, columns: usize) !void {
+    var frame = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+    defer frame.deinit();
+    try frame.writer.writeAll("\x1b[2K\r");
+    try progress_runtime.appendBounded(&frame.writer, text, columns);
+    try context.stdout.writeAll(frame.writer.buffered());
     try context.stdout.flush();
+}
+
+test "direct callback rendering suppresses ANSI on non-TTY streams" {
+    var bytes: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    var context = ResolveCallbackContext{ .io = std.testing.io, .stdout = &writer, .env = &env_map, .use_stderr = false };
+
+    try renderSpinner(&context, "resolving", .{});
+    try std.testing.expectEqual(@as(usize, 0), writer.buffered().len);
+    try renderDone(&context, "resolved", .{});
+    try std.testing.expectEqualStrings("resolved\n", writer.buffered());
+}
+
+test "plain callback rendering keeps metadata completion but suppresses its start" {
+    var bytes: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    var context = ResolveCallbackContext{ .io = std.testing.io, .stdout = &writer, .env = &env_map, .use_stderr = false };
+
+    onResolveEvent(&context, .{ .metadata_sync_started = "Syncing registry" });
+    onResolveEvent(&context, .{ .metadata_sync_done = "Registry synced" });
+
+    try std.testing.expectEqualStrings("Registry synced\n", writer.buffered());
+}
+
+test "volatile callbacks refresh their width for each frame" {
+    var bytes: [128]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("COLUMNS", "5");
+    var context = ResolveCallbackContext{ .io = std.testing.io, .stdout = &writer, .is_tty = true, .env = &env_map, .use_stderr = false };
+
+    try renderSpinner(&context, "abcdef", .{});
+    try env_map.put("COLUMNS", "2");
+    try renderSpinner(&context, "abcdef", .{});
+
+    try std.testing.expectEqualStrings("\x1b[2K\r⠋...\x1b[2K\r⠙", writer.buffered());
 }
 
 pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.options.ResolveEvent) void {
@@ -541,10 +613,22 @@ pub fn onResolveEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.o
                 }) catch {};
             } else {
                 if (dp.total_bytes) |total| {
-                    const fraction = @as(f32, @floatFromInt(dp.downloaded_bytes)) / @as(f32, @floatFromInt(total));
-                    renderProgress(context, fraction, 10, "{s} downloading... {d}/{d} bytes", .{ dp.pkg_name orelse dp.url, dp.downloaded_bytes, total }) catch {};
+                    const fraction = if (total > 0)
+                        @as(f32, @floatFromInt(dp.downloaded_bytes)) / @as(f32, @floatFromInt(total))
+                    else
+                        0;
+                    var done_bytes: [32]u8 = undefined;
+                    var done_writer = std.Io.Writer.fixed(&done_bytes);
+                    progress_runtime.byteQuantity(@intCast(dp.downloaded_bytes)).write(&done_writer) catch return;
+                    var total_bytes: [32]u8 = undefined;
+                    var total_writer = std.Io.Writer.fixed(&total_bytes);
+                    progress_runtime.byteQuantity(@intCast(total)).write(&total_writer) catch return;
+                    renderProgress(context, fraction, 10, "{s} downloading... {s}/{s}", .{ dp.pkg_name orelse dp.url, done_writer.buffered(), total_writer.buffered() }) catch {};
                 } else {
-                    renderSpinner(context, "{s} downloading... {d} bytes", .{ dp.pkg_name orelse dp.url, dp.downloaded_bytes }) catch {};
+                    var downloaded_bytes: [32]u8 = undefined;
+                    var downloaded_writer = std.Io.Writer.fixed(&downloaded_bytes);
+                    progress_runtime.byteQuantity(@intCast(dp.downloaded_bytes)).write(&downloaded_writer) catch return;
+                    renderSpinner(context, "{s} downloading... {s}", .{ dp.pkg_name orelse dp.url, downloaded_writer.buffered() }) catch {};
                 }
             }
         },

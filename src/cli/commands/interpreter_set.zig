@@ -211,6 +211,9 @@ pub const InterpreterSetCommand = struct {
             .io = io,
             .stdout = stdout,
             .emitter = emitter,
+            .is_tty = std.Io.File.stdout().isTty(io) catch false,
+            .env = env,
+            .use_stderr = false,
         };
 
         const rt_res = try resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime("lua"), version, idx, registries, .{

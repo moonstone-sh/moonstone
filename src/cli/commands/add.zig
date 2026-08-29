@@ -415,10 +415,20 @@ pub const add_command = struct {
         profiler.span("add.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(resolved_registries, allocator);
 
+        // An explicit plain request wins over a TTY.  Resolver callbacks stay
+        // installed so their durable completion messages remain available, but
+        // their spinner/status frames are disabled by this rendering context.
+        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
-            .stdout = stdout,
+            .stdout = switch (backend) {
+                .direct => |writer| writer,
+                .queue, .silent => stdout,
+            },
             .emitter = emitter,
+            .is_tty = !plain_progress and !self.json and (std.Io.File.stderr().isTty(io) catch false),
+            .env = env,
+            .use_stderr = true,
         };
 
         const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
