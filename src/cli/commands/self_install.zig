@@ -176,7 +176,9 @@ fn applyPosixInstaller(ctx: *router.Context, installer_url: []const u8, selectio
     var child = std.process.spawn(io, .{
         .argv = argv.items,
         .stdin = .pipe,
-        .stdout = .inherit,
+        // The installer is an implementation detail of --apply. Never let
+        // its human stdout contaminate the JSON event stream.
+        .stdout = if (is_json) .ignore else .inherit,
         .stderr = .inherit,
     }) catch |err| {
         if (!is_json) {

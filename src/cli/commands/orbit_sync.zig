@@ -97,7 +97,14 @@ pub const OrbitSyncCommand = struct {
             .queue => |value| value,
             .direct, .silent => null,
         };
-        const plain_task_writer: ?*std.Io.Writer = if (!self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) switch (backend) {
+        // Direct is the effective plain backend for JSON-free output, including
+        // CI/MOONSTONE_NO_PROGRESS selection. Keep orbit task transitions
+        // durable without allowing terminal control sequences through.
+        const effective_plain = !self.json and switch (backend) {
+            .direct => true,
+            .queue, .silent => false,
+        };
+        const plain_task_writer: ?*std.Io.Writer = if (effective_plain) switch (backend) {
             .direct => |writer| writer,
             .queue, .silent => null,
         } else null;

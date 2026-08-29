@@ -35,6 +35,8 @@ export WINEDEBUG=-all
 export WINEDLLOVERRIDES="mscoree,mshtml="
 export WINEARCH=win64
 export WINEPREFIX="${prefix_root}/wine-prefix"
+# Keep human CLI output deterministic in this CI/local compatibility harness.
+export MOONSTONE_NO_PROGRESS=1
 
 if command -v wine64 >/dev/null 2>&1; then
     readonly WINE_BIN=wine64

@@ -50,13 +50,22 @@ try {
 
     Write-Host "`n━━━ 3. Testing --json output mode ━━━"
     $jsonLatest = & $moon self install --latest --json | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $jsonLatest.status -ne 'ok') {
-        throw "moon self install --latest --json did not return ok status"
+    # Self-install JSON is the canonical single RESULT envelope, not a
+    # command-specific { status = ... } object. Keep this syntax compatible
+    # with both PowerShell 5.1 and PowerShell 7.
+    if ($LASTEXITCODE -ne 0 -or
+        $jsonLatest.kind -ne 'RESULT' -or
+        $jsonLatest.value -ne 'ok' -or
+        $jsonLatest.terminator -ne $true) {
+        throw "moon self install --latest --json did not return the canonical RESULT envelope"
     }
 
     $jsonVersion = & $moon self install --version 0.4.3 --json | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $jsonVersion.status -ne 'ok') {
-        throw "moon self install --version 0.4.3 --json did not return ok status"
+    if ($LASTEXITCODE -ne 0 -or
+        $jsonVersion.kind -ne 'RESULT' -or
+        $jsonVersion.value -ne 'ok' -or
+        $jsonVersion.terminator -ne $true) {
+        throw "moon self install --version 0.4.3 --json did not return the canonical RESULT envelope"
     }
 
     Write-Host "`nPASS: Moonstone Windows self install and installer contract tests succeeded." -ForegroundColor Green

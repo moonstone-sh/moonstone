@@ -29,6 +29,9 @@ case "${scope}" in
         ;;
 esac
 
+# The Docker harness is a CI-shaped runner even when invoked manually.
+export MOONSTONE_NO_PROGRESS=1
+
 run() {
     printf '\n━━━ %s ━━━\n' "$1"
     shift

@@ -8,6 +8,12 @@ on:
     branches:
       - main
 
+# Human CI output is deterministic newline-oriented plain mode. Commands may
+# still request --progress fancy explicitly for PTY feature coverage, while
+# --json always takes precedence and remains exclusive machine-readable output.
+env:
+  MOONSTONE_NO_PROGRESS: '1'
+
 jobs:
   test:
     name: Build & Test

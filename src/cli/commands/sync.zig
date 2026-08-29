@@ -1733,11 +1733,14 @@ pub const SyncCommand = struct {
         profiler.span("sync.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(registries, allocator);
 
-        // `plain` is a rendering mode, not a terminal capability check.  In
-        // particular, a caller may explicitly request it from a PTY.  Keep the
-        // callbacks installed for durable completion events, but make every
-        // volatile callback path non-interactive.
-        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
+        // Direct is the effective plain backend for JSON-free output, including
+        // the environment-selected noninteractive path. Keep the callbacks
+        // installed for durable completion events, but make every volatile
+        // callback path non-interactive.
+        const effective_plain = !self.json and switch (backend) {
+            .direct => true,
+            .queue, .silent => false,
+        };
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
             .stdout = switch (backend) {
@@ -1745,13 +1748,13 @@ pub const SyncCommand = struct {
                 .queue, .silent => stdout,
             },
             .emitter = emitter,
-            .is_tty = !plain_progress and !self.json and (std.Io.File.stderr().isTty(io) catch false),
+            .is_tty = !effective_plain and !self.json and (std.Io.File.stderr().isTty(io) catch false),
             .env = env,
             .use_stderr = true,
         };
         // Callback routing: direct mode renders durable completions and queue
-        // mode sends events through the WorkerContext.  The context above
-        // suppresses only volatile frames for explicit plain output.
+        // mode sends events through the WorkerContext. The context above
+        // suppresses only volatile frames for effective plain output.
         const on_resolve_cb: ?moonstone.resolution.options.ResolveCallback = switch (backend) {
             .direct => @import("command.zig").onResolveEvent,
             .queue => progress_runtime.onResolveEventProgress,
@@ -1772,7 +1775,7 @@ pub const SyncCommand = struct {
             .queue => @ptrCast(backend.queue),
             .silent => null,
         };
-        const plain_task_writer: ?*std.Io.Writer = if (plain_progress) switch (backend) {
+        const plain_task_writer: ?*std.Io.Writer = if (effective_plain) switch (backend) {
             .direct => |writer| writer,
             .queue, .silent => null,
         } else null;

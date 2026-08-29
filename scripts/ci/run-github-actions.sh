@@ -117,4 +117,5 @@ act "${EVENT}" \
     --platform "ubuntu-latest=${IMAGE}" \
     --container-architecture "${ARCH}" \
     --container-daemon-socket - \
-    --env CI=true
+    --env CI=true \
+    --env MOONSTONE_NO_PROGRESS=1

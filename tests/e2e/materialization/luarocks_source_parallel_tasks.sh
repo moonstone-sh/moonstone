@@ -107,6 +107,22 @@ if LC_ALL=C grep -q $'\033' "${WORKDIR}/plain.typescript"; then
     exit 1
 fi
 
+# Environment-selected direct mode must be just as plain when a PTY is
+# attached; it must not depend on the explicit --progress plain flag.
+source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
+rm -rf .moonstone
+rm -f moonstone.lock
+if script --version 2>&1 | grep -q 'util-linux'; then
+    MOONSTONE_NO_PROGRESS=1 script -q -e -c 'moon sync --jobs 2' "${WORKDIR}/env-plain.typescript" </dev/null >/dev/null 2>&1
+else
+    MOONSTONE_NO_PROGRESS=1 script -q "${WORKDIR}/env-plain.typescript" moon sync --jobs 2 </dev/null >/dev/null 2>&1
+fi
+if LC_ALL=C grep -q $'\033' "${WORKDIR}/env-plain.typescript"; then
+    echo "ERROR: MOONSTONE_NO_PROGRESS emitted terminal controls under a pseudo-terminal" >&2
+    cat "${WORKDIR}/env-plain.typescript" >&2
+    exit 1
+fi
+
 # The fancy run intentionally populated the store. Reset the disposable
 # environment, retain the project declaration, then certify the durable plain
 # and NDJSON surfaces from a fresh source realization.

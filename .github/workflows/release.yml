@@ -9,6 +9,10 @@ permissions:
   contents: write
   packages: write
 
+# Keep release certification and packaging logs free of transient ANSI UI.
+env:
+  MOONSTONE_NO_PROGRESS: '1'
+
 jobs:
   verify-release:
     name: Verify Release Certification

@@ -40,6 +40,11 @@ run() {
 
 cd "${ROOT_DIR}"
 
+# Match GitHub Actions' deterministic human output convention when this
+# certification harness is run directly. Explicit --progress fancy remains
+# available for PTY feature tests, and JSON mode is resolved by the CLI first.
+export MOONSTONE_NO_PROGRESS=1
+
 run "Check formatting" zig fmt --check --exclude src/core/assets/templates src/ build.zig
 run "Build native target" zig build
 run "Compile Windows x86_64 GNU target" zig build -Dtarget=x86_64-windows-gnu

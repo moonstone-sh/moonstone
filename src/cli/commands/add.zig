@@ -415,10 +415,14 @@ pub const add_command = struct {
         profiler.span("add.registry.resolve", profile_span);
         defer moonstone.registry.core.deinitResolved(resolved_registries, allocator);
 
-        // An explicit plain request wins over a TTY.  Resolver callbacks stay
+        // Direct is the effective plain backend for JSON-free output, including
+        // the environment-selected noninteractive path. Resolver callbacks stay
         // installed so their durable completion messages remain available, but
         // their spinner/status frames are disabled by this rendering context.
-        const plain_progress = !self.json and self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain");
+        const effective_plain = !self.json and switch (backend) {
+            .direct => true,
+            .queue, .silent => false,
+        };
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
             .stdout = switch (backend) {
@@ -426,7 +430,7 @@ pub const add_command = struct {
                 .queue, .silent => stdout,
             },
             .emitter = emitter,
-            .is_tty = !plain_progress and !self.json and (std.Io.File.stderr().isTty(io) catch false),
+            .is_tty = !effective_plain and !self.json and (std.Io.File.stderr().isTty(io) catch false),
             .env = env,
             .use_stderr = true,
         };
