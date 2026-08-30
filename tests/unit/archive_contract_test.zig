@@ -135,6 +135,98 @@ test "Archive contract: Valid .zip extraction" {
     try std.testing.expectEqualStrings("return 'core module'", core);
 }
 
+test "Archive contract: Native TAR and ZIP preserve readable relative symlinks" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "relative-links.tar" });
+    defer allocator.free(tar_path);
+    const tar_entries = [_]helpers.TarEntry{
+        .{ .name = "target.txt", .content = "tar target" },
+        .{ .name = "nested/link.txt", .kind = .symlink, .link_target = "../target.txt" },
+    };
+    try helpers.writeTarFile(allocator, io_val, tar_path, &tar_entries);
+
+    const tar_dest = try std.fs.path.join(allocator, &.{ tmp_path, "out_relative_tar" });
+    defer allocator.free(tar_dest);
+    try archive.native.extractTar(allocator, io_val, tar_path, tar_dest, .{});
+
+    const tar_link = try tmp.dir.readFileAlloc(io_val, "out_relative_tar/nested/link.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(tar_link);
+    try std.testing.expectEqualStrings("tar target", tar_link);
+    try tmp.dir.writeFile(io_val, .{ .sub_path = "out_relative_tar/target.txt", .data = "updated tar target" });
+    const updated_tar_link = try tmp.dir.readFileAlloc(io_val, "out_relative_tar/nested/link.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(updated_tar_link);
+    try std.testing.expectEqualStrings("updated tar target", updated_tar_link);
+
+    const zip_path = try std.fs.path.join(allocator, &.{ tmp_path, "relative-links.zip" });
+    defer allocator.free(zip_path);
+    const zip_entries = [_]helpers.ZipEntry{
+        .{ .name = "target.txt", .content = "zip target", .version_made_by = (3 << 8) | 20, .external_attributes = 0o100644 << 16 },
+        .{ .name = "nested/link.txt", .content = "../target.txt", .version_made_by = (3 << 8) | 20, .external_attributes = 0o120777 << 16 },
+    };
+    try helpers.writeZipFile(allocator, io_val, zip_path, &zip_entries);
+
+    const zip_dest = try std.fs.path.join(allocator, &.{ tmp_path, "out_relative_zip" });
+    defer allocator.free(zip_dest);
+    try archive.native.extractZip(allocator, io_val, zip_path, zip_dest, .{});
+
+    const zip_link = try tmp.dir.readFileAlloc(io_val, "out_relative_zip/nested/link.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(zip_link);
+    try std.testing.expectEqualStrings("zip target", zip_link);
+    try tmp.dir.writeFile(io_val, .{ .sub_path = "out_relative_zip/target.txt", .data = "updated zip target" });
+    const updated_zip_link = try tmp.dir.readFileAlloc(io_val, "out_relative_zip/nested/link.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(updated_zip_link);
+    try std.testing.expectEqualStrings("updated zip target", updated_zip_link);
+}
+
+test "Archive contract: Native TAR and ZIP materialize forward directory symlinks" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io_val = std.testing.io;
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io_val, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const tar_path = try std.fs.path.join(allocator, &.{ tmp_path, "forward-directory-links.tar" });
+    defer allocator.free(tar_path);
+    const tar_entries = [_]helpers.TarEntry{
+        .{ .name = "directory-link", .kind = .symlink, .link_target = "directory-target" },
+        .{ .name = "directory-target", .kind = .directory, .mode = 0o755 },
+        .{ .name = "directory-target/readable.txt", .content = "tar directory target" },
+    };
+    try helpers.writeTarFile(allocator, io_val, tar_path, &tar_entries);
+
+    const tar_dest = try std.fs.path.join(allocator, &.{ tmp_path, "out_forward_tar" });
+    defer allocator.free(tar_dest);
+    try archive.native.extractTar(allocator, io_val, tar_path, tar_dest, .{});
+    const tar_linked_file = try tmp.dir.readFileAlloc(io_val, "out_forward_tar/directory-link/readable.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(tar_linked_file);
+    try std.testing.expectEqualStrings("tar directory target", tar_linked_file);
+
+    const zip_path = try std.fs.path.join(allocator, &.{ tmp_path, "forward-directory-links.zip" });
+    defer allocator.free(zip_path);
+    const zip_entries = [_]helpers.ZipEntry{
+        .{ .name = "directory-link", .content = "directory-target", .version_made_by = (3 << 8) | 20, .external_attributes = 0o120777 << 16 },
+        .{ .name = "directory-target/" },
+        .{ .name = "directory-target/readable.txt", .content = "zip directory target" },
+    };
+    try helpers.writeZipFile(allocator, io_val, zip_path, &zip_entries);
+
+    const zip_dest = try std.fs.path.join(allocator, &.{ tmp_path, "out_forward_zip" });
+    defer allocator.free(zip_dest);
+    try archive.native.extractZip(allocator, io_val, zip_path, zip_dest, .{});
+    const zip_linked_file = try tmp.dir.readFileAlloc(io_val, "out_forward_zip/directory-link/readable.txt", allocator, std.Io.Limit.limited(1024));
+    defer allocator.free(zip_linked_file);
+    try std.testing.expectEqualStrings("zip directory target", zip_linked_file);
+}
+
 test "Archive contract: Empty archives (empty tar, empty tar.gz, empty tar.zst, empty zip)" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

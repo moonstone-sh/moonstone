@@ -5,6 +5,11 @@ const env_utils = @import("env.zig");
 const build_options = @import("build_options");
 
 extern "kernel32" fn SetCurrentDirectoryW(path: [*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn CreateSymbolicLinkW(
+    symlink_file_name: [*:0]const u16,
+    target_file_name: [*:0]const u16,
+    flags: u32,
+) callconv(.winapi) std.os.windows.BOOLEAN;
 extern fn moonstone_file_exists_w(path: [*:0]const u16, out_error: *u32) c_int;
 extern fn moonstone_read_file_w(path: [*:0]const u16, out_bytes: *?[*]u8, out_len: *usize, limit: usize, out_error: *u32) c_int;
 extern fn moonstone_free_file_w(bytes: [*]u8) void;
@@ -64,6 +69,79 @@ pub fn readFileAbsolute(allocator: std.mem.Allocator, io: std.Io, path: []const 
     };
     defer moonstone_free_file_w(bytes.?);
     return try allocator.dupe(u8, bytes.?[0..bytes_len]);
+}
+
+/// Creates an archive symlink without resolving its target. On Windows this
+/// uses the documented Win32 API with Developer Mode's unprivileged-create
+/// flag; Zig 0.16's `Dir.symLink` instead writes the reparse point directly
+/// and therefore requires `SeCreateSymbolicLinkPrivilege`.
+pub fn createArchiveSymlink(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    destination_root: []const u8,
+    target: []const u8,
+    entry_path: []const u8,
+    target_is_directory: bool,
+) !void {
+    const destination_path = try std.fs.path.join(allocator, &.{ destination_root, entry_path });
+    defer allocator.free(destination_path);
+
+    if (comptime builtin.os.tag != .windows) {
+        destination_dir.symLink(io, target, entry_path, .{}) catch |err| {
+            std.log.err("archive symlink creation failed for entry '{s}' (target '{s}', destination '{s}'): {s}", .{
+                entry_path,
+                target,
+                destination_path,
+                @errorName(err),
+            });
+            return err;
+        };
+        return;
+    }
+
+    // `CreateSymbolicLinkW` accepts a full destination path, while the target
+    // remains exactly relative to the link location. Its directory bit is a
+    // required type hint, classified by the archive extractor after regular
+    // entries have been materialized.
+    const target_w = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, target);
+    defer allocator.free(target_w);
+    const destination_w = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, destination_path);
+    defer allocator.free(destination_w);
+
+    // Win32 requires backslashes in relative symlink targets. This changes
+    // only the representation needed by Windows, not a relative target into
+    // an absolute target.
+    std.mem.replaceScalar(u16, target_w, '/', '\\');
+
+    const create_directory = @as(u32, 0x1);
+    const allow_unprivileged_create = @as(u32, 0x2);
+    const flags = allow_unprivileged_create | if (target_is_directory) create_directory else 0;
+    if (CreateSymbolicLinkW(destination_w.ptr, target_w.ptr, flags).toBool()) return;
+
+    var win_error = std.os.windows.GetLastError();
+    // Windows versions older than the Developer Mode flag can still create a
+    // link for a process holding the traditional privilege. Retry only for the
+    // unsupported-flag result; never turn an access failure into a copy.
+    if (win_error == .INVALID_PARAMETER and CreateSymbolicLinkW(destination_w.ptr, target_w.ptr, flags & ~allow_unprivileged_create).toBool()) return;
+    win_error = std.os.windows.GetLastError();
+    std.log.err("archive symlink creation failed for entry '{s}' (target '{s}', destination '{s}'): Windows error {t} ({d})", .{
+        entry_path,
+        target,
+        destination_path,
+        win_error,
+        @intFromEnum(win_error),
+    });
+    return switch (win_error) {
+        .ACCESS_DENIED => error.AccessDenied,
+        .PRIVILEGE_NOT_HELD => error.PermissionDenied,
+        .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
+        .FILE_EXISTS, .ALREADY_EXISTS => error.PathAlreadyExists,
+        .FILENAME_EXCED_RANGE => error.NameTooLong,
+        .INVALID_NAME => error.BadPathName,
+        .NOT_ENOUGH_MEMORY, .OUTOFMEMORY => error.SystemResources,
+        else => error.Unexpected,
+    };
 }
 
 pub fn copyTreeAbsolute(

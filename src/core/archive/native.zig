@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const path_validation = @import("path_validation.zig");
 const permissions = @import("permissions.zig");
+const platform_fs = @import("../platform/fs.zig");
 
 pub const ExtractOptions = struct {
     strip_components: u32 = 0,
@@ -30,6 +31,102 @@ pub const ArchiveError = error{
     UnsupportedZipStripComponents,
     ArchivePermissionRestoreFailed,
 } || std.mem.Allocator.Error || std.Io.Dir.OpenError || std.Io.Dir.CreateFileError || std.Io.File.ReadError || std.Io.File.WriteError;
+
+const PendingArchiveSymlink = struct {
+    entry_path: []const u8,
+    target: []const u8,
+
+    fn deinit(self: PendingArchiveSymlink, allocator: std.mem.Allocator) void {
+        allocator.free(self.entry_path);
+        allocator.free(self.target);
+    }
+};
+
+fn queueArchiveSymlink(
+    allocator: std.mem.Allocator,
+    pending_symlinks: *std.ArrayList(PendingArchiveSymlink),
+    entry_path: []const u8,
+    target: []const u8,
+) !void {
+    const owned_entry_path = try allocator.dupe(u8, entry_path);
+    errdefer allocator.free(owned_entry_path);
+    const owned_target = try allocator.dupe(u8, target);
+    errdefer allocator.free(owned_target);
+    try pending_symlinks.append(allocator, .{
+        .entry_path = owned_entry_path,
+        .target = owned_target,
+    });
+}
+
+/// Archive symlinks are intentionally created only after every regular entry.
+/// Windows needs the directory flag at creation time, while a missing target is
+/// a valid dangling file link. Deferral makes a forward-referenced directory
+/// observable without changing relative link targets or copying their data.
+fn materializeArchiveSymlinks(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    destination_root: []const u8,
+    pending_symlinks: []const PendingArchiveSymlink,
+) !void {
+    for (pending_symlinks) |pending| {
+        // Each target was validated before it was queued. Create implicit
+        // parents before classifying: a link to its own parent (`.`) is a
+        // directory symlink even when that parent was otherwise absent.
+        if (std.fs.path.dirname(pending.entry_path)) |parent| {
+            if (parent.len > 0) try destination_dir.createDirPath(io, parent);
+        }
+
+        const target_is_directory = if (comptime builtin.os.tag == .windows)
+            try archiveSymlinkTargetIsDirectory(
+                allocator,
+                io,
+                destination_dir,
+                pending.target,
+                pending.entry_path,
+            )
+        else
+            false;
+
+        destination_dir.deleteFile(io, pending.entry_path) catch {};
+        try platform_fs.createArchiveSymlink(
+            allocator,
+            io,
+            destination_dir,
+            destination_root,
+            pending.target,
+            pending.entry_path,
+            target_is_directory,
+        );
+    }
+}
+
+/// Classify an already-validated target after regular archive entries have
+/// been extracted. Backslashes are archive path separators for Windows target
+/// semantics, so normalize only for the local lookup; the created target stays
+/// byte-for-byte relative apart from the Win32 representation conversion.
+fn archiveSymlinkTargetIsDirectory(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    destination_dir: std.Io.Dir,
+    target: []const u8,
+    entry_path: []const u8,
+) !bool {
+    const normalized_target = try allocator.dupe(u8, target);
+    defer allocator.free(normalized_target);
+    std.mem.replaceScalar(u8, normalized_target, '\\', '/');
+
+    const parent = std.fs.path.dirname(entry_path) orelse ".";
+    const target_path = try std.fs.path.resolve(allocator, &.{ parent, normalized_target });
+    defer allocator.free(target_path);
+
+    var target_dir = destination_dir.openDir(io, target_path, .{}) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return false,
+        else => return err,
+    };
+    target_dir.close(io);
+    return true;
+}
 
 // ============================================================================
 // Zstandard Compression & Decompression
@@ -183,6 +280,9 @@ pub fn extractTarStream(
     dest_dir: std.Io.Dir,
     options: ExtractOptions,
 ) !void {
+    const dest_path = try dest_dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(dest_path);
+
     var file_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var link_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var it: std.tar.Iterator = .init(reader, .{
@@ -194,6 +294,12 @@ pub fn extractTarStream(
     defer {
         for (pending_dirs.items) |p| allocator.free(p.path);
         pending_dirs.deinit(allocator);
+    }
+
+    var pending_symlinks = std.ArrayList(PendingArchiveSymlink).empty;
+    defer {
+        for (pending_symlinks.items) |pending| pending.deinit(allocator);
+        pending_symlinks.deinit(allocator);
     }
 
     while (it.next() catch |err| switch (err) {
@@ -280,19 +386,12 @@ pub fn extractTarStream(
                 if (!options.allow_symlinks) return error.SymlinkTargetEscapesDestination;
 
                 try path_validation.validateSymlinkTarget(file.link_name, sanitized_rel_path);
-
-                if (std.fs.path.dirname(sanitized_rel_path)) |parent| {
-                    if (parent.len > 0) {
-                        try dest_dir.createDirPath(io, parent);
-                    }
-                }
-
-                dest_dir.deleteFile(io, sanitized_rel_path) catch {};
-                try dest_dir.symLink(io, file.link_name, sanitized_rel_path, .{});
-                // Note: We deliberately do NOT change permissions on symlinks to prevent following targets.
+                try queueArchiveSymlink(allocator, &pending_symlinks, sanitized_rel_path, file.link_name);
             },
         }
     }
+
+    try materializeArchiveSymlinks(allocator, io, dest_dir, dest_path, pending_symlinks.items);
 
     // Deferred/post-order directory permission restoration (deepest-first)
     if (pending_dirs.items.len > 0) {
@@ -515,6 +614,9 @@ pub fn extractZip(
     var dest_dir = try std.Io.Dir.cwd().openDir(io, dest_path, .{});
     defer dest_dir.close(io);
 
+    const dest_real_path = try dest_dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(dest_real_path);
+
     var file_buf: [32768]u8 = undefined;
     var file_reader = file.reader(io, &file_buf);
 
@@ -529,6 +631,12 @@ pub fn extractZip(
     defer {
         for (pending_dirs.items) |p| allocator.free(p.path);
         pending_dirs.deinit(allocator);
+    }
+
+    var pending_symlinks = std.ArrayList(PendingArchiveSymlink).empty;
+    defer {
+        for (pending_symlinks.items) |pending| pending.deinit(allocator);
+        pending_symlinks.deinit(allocator);
     }
 
     while (iter.next() catch |err| switch (err) {
@@ -602,16 +710,7 @@ pub fn extractZip(
             defer allocator.free(target_link);
 
             try path_validation.validateSymlinkTarget(target_link, sanitized);
-
-            if (std.fs.path.dirname(sanitized)) |parent| {
-                if (parent.len > 0) {
-                    try dest_dir.createDirPath(io, parent);
-                }
-            }
-
-            dest_dir.deleteFile(io, sanitized) catch {};
-            try dest_dir.symLink(io, target_link, sanitized, .{});
-            // Deliberately do NOT mutate permissions on symlinks
+            try queueArchiveSymlink(allocator, &pending_symlinks, sanitized, target_link);
             continue;
         }
 
@@ -662,6 +761,8 @@ pub fn extractZip(
         // Apply sanitized permissions through open file handle
         try permissions.applyFilePermissions(io, out_file, sanitized_mode.mode);
     }
+
+    try materializeArchiveSymlinks(allocator, io, dest_dir, dest_real_path, pending_symlinks.items);
 
     // Deferred/post-order directory permission restoration (deepest-first)
     if (pending_dirs.items.len > 0) {

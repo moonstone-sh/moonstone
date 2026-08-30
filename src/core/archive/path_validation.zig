@@ -73,7 +73,7 @@ pub fn validateSymlinkTarget(link_target: []const u8, entry_relative_path: []con
 
     // Trace link target relative to entry dir
     var target_depth = dir_depth;
-    var target_it = std.mem.splitScalar(u8, link_target, '/');
+    var target_it = std.mem.splitAny(u8, link_target, "/\\");
     while (target_it.next()) |comp| {
         const c = std.mem.trim(u8, comp, " \t\r\\");
         if (c.len == 0 or std.mem.eql(u8, c, ".")) continue;

@@ -66,6 +66,7 @@ test "Symlink validation: Prevents escaping extraction root" {
     try std.testing.expectError(error.SymlinkTargetEscapesDestination, path_validation.validateSymlinkTarget("/etc/passwd", "link.txt"));
     try std.testing.expectError(error.SymlinkTargetEscapesDestination, path_validation.validateSymlinkTarget("\\etc\\passwd", "link.txt"));
     try std.testing.expectError(error.SymlinkTargetEscapesDestination, path_validation.validateSymlinkTarget("C:\\Windows\\System32", "link.txt"));
+    try std.testing.expectError(error.SymlinkTargetEscapesDestination, path_validation.validateSymlinkTarget("..\\..\\escape.txt", "sub/link.txt"));
 }
 
 test "Permission sanitization: Strips setuid, setgid, and sticky bits" {
