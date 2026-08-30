@@ -124,7 +124,7 @@ for line in rows:
         raise SystemExit("ERROR: package progress row wrapped its 80-column PTY")
 if len(set(positions)) != 1:
     raise SystemExit("ERROR: package name column jittered across concurrent frames: %r" % positions)
-if "Packages:" not in clean or "total)" not in clean:
+if "Synchronized 3 packages" not in clean:
     raise SystemExit("ERROR: fancy PTY omitted derived package aggregate")
 PY
 
@@ -172,14 +172,14 @@ if LC_ALL=C grep -q $'\033' "${WORKDIR}/plain.stderr"; then
     exit 1
 fi
 for package_name in fakebin fakealt; do
-    grep -Eq "^  preparing realize:[^:]+:rocks:${package_name}@1\.0-1: ${package_name}@1\.0-1$" "${WORKDIR}/plain.stderr"
+    grep -Eq "^  prepared realize:[^:]+:rocks:${package_name}@1\.0-1: ${package_name}@1\.0-1$" "${WORKDIR}/plain.stderr"
     grep -Eq "^  materializing realize:[^:]+:rocks:${package_name}@1\.0-1: ${package_name}@1\.0-1$" "${WORKDIR}/plain.stderr"
     grep -Eq "^  completed realize:[^:]+:rocks:${package_name}@1\.0-1:" "${WORKDIR}/plain.stderr"
 done
 
 awk '
-    /^  preparing realize:[^:]+:rocks:fakebin@1\.0-1:/ && !fakebin_started { fakebin_started = NR }
-    /^  preparing realize:[^:]+:rocks:fakealt@1\.0-1:/ && !fakealt_started { fakealt_started = NR }
+    /^  prepared realize:[^:]+:rocks:fakebin@1\.0-1:/ && !fakebin_started { fakebin_started = NR }
+    /^  prepared realize:[^:]+:rocks:fakealt@1\.0-1:/ && !fakealt_started { fakealt_started = NR }
     /^  (completed|failed) realize:[^:]+:rocks:(fakebin|fakealt)@1\.0-1:/ && !first_terminal { first_terminal = NR }
     END {
         exit !(fakebin_started && fakealt_started && first_terminal &&

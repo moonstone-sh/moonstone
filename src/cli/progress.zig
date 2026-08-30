@@ -979,6 +979,7 @@ pub const ProgressUi = struct {
     package_layout: PackageLayout,
 
     // render state
+    cursor_hidden: bool = false,
     spinner_frame: usize = 0,
     current_phase: []const u8 = "",
     current_package: ?[]const u8 = null,
@@ -1046,12 +1047,15 @@ pub const ProgressUi = struct {
             .package_storage = std.Io.Writer.Allocating.init(std.heap.page_allocator),
             .download_label_storage = std.Io.Writer.Allocating.init(std.heap.page_allocator),
         };
-        if (is_tty) ui.rawWrite("\x1b[?25l");
+        if (is_tty) {
+            ui.cursor_hidden = true;
+            ui.rawWrite("\x1b[?25l");
+        }
         return ui;
     }
 
     pub fn deinit(self: *ProgressUi) void {
-        if (self.is_tty) self.rawWrite("\x1b[?25h");
+        self.restoreCursor();
         for (self.completed_phases.items) |p| std.heap.page_allocator.free(@constCast(p));
         self.completed_phases.deinit(std.heap.page_allocator);
         self.warnings.deinit(std.heap.page_allocator);
@@ -1063,6 +1067,12 @@ pub const ProgressUi = struct {
         self.phase_storage.deinit();
         self.package_storage.deinit();
         self.download_label_storage.deinit();
+    }
+
+    fn restoreCursor(self: *ProgressUi) void {
+        if (!self.cursor_hidden) return;
+        self.cursor_hidden = false;
+        self.rawWrite("\x1b[?25h");
     }
 
     /// Write directly to stderr, bypassing the buffered Threaded I/O writer.
@@ -1905,7 +1915,7 @@ pub const ProgressUi = struct {
         if (self.is_tty) {
             self.clearRenderedRows();
             self.rawWrite("\x1b[2K\r");
-            self.rawWrite("\x1b[?25h");
+            self.restoreCursor();
         }
 
         for (self.warnings.items) |msg| {
@@ -1942,7 +1952,7 @@ pub const ProgressUi = struct {
             self.content_writer.writer.print("⠿ Stopped {d} process(es).", .{n}) catch {};
             self.renderBoundedLine(self.content_writer.writer.buffered());
             self.rawWrite("\n");
-            self.rawWrite("\x1b[?25h");
+            self.restoreCursor();
         } else {
             self.writer.print("Stopped {d} process(es).\n", .{n}) catch {};
         }
@@ -1974,13 +1984,10 @@ pub fn runWithProgress(
 ) !void {
     const is_tty = std.Io.File.stderr().isTty(io) catch false;
 
-    errdefer if (is_tty) {
-        if (builtin.is_test) {
-            progress_writer.writeAll("\x1b[?25h") catch {};
-        } else {
-            std.Io.File.stderr().writeStreamingAll(io, "\x1b[?25h") catch {};
-        }
-    };
+    // Initialize the UI before any fallible setup so it owns cursor cleanup
+    // even when queue or worker initialization fails.
+    var ui = ProgressUi.init(progress_writer, is_tty, io, terminalColumns(io, env, true), env);
+    defer ui.deinit();
 
     var queue = try ProgressQueue.init(allocator, io);
     defer queue.deinit(allocator);
@@ -2007,9 +2014,6 @@ pub fn runWithProgress(
     defer thread.join();
 
     // Run UI loop on the main thread.
-    var ui = ProgressUi.init(progress_writer, is_tty, io, terminalColumns(io, env, true), env);
-    defer ui.deinit();
-
     const poll_sleep = std.Io.Duration.fromMilliseconds(16);
     var cancellation_shown = false;
     while (true) {
@@ -3255,15 +3259,15 @@ test "apply deduplicates phase_done and resets rendered_lines on durable print" 
     try std.testing.expectEqualStrings("LuaRocks manifest synced\n", writer.buffered());
 }
 
-test "cursor is hidden at TTY init and restored at deinit and renderFinal" {
+test "cursor is hidden at TTY init and restored once by renderFinal and deinit" {
     var bytes: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
     {
         var ui = ProgressUi.init(&writer, true, std.testing.io, 80, null);
         try std.testing.expectEqualStrings("\x1b[?25l", writer.buffered());
         ui.renderFinal();
-        try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\x1b[?25h") != null);
     }
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, writer.buffered(), "\x1b[?25h"));
 }
 
 test "progress keeps identical package versions in distinct task scopes separate" {
