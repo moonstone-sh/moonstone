@@ -100,6 +100,33 @@ pub const Candidate = struct {
     }
 };
 
+/// A local artifact selected by an executable provision rather than a package
+/// name. It carries the target and store path needed to validate the declared
+/// executable payload.
+pub const ProvisionCandidate = struct {
+    artifact_hash: []const u8,
+    name: []const u8,
+    version: []const u8,
+    kind: manifest.Kind,
+    target: []const u8,
+    lua_abi: ?[]const u8 = null,
+    runtime: ?[]const u8 = null,
+    path: []const u8,
+    manifest_path: []const u8,
+
+    pub fn deinit(self: *ProvisionCandidate, allocator: std.mem.Allocator) void {
+        allocator.free(self.artifact_hash);
+        allocator.free(self.name);
+        allocator.free(self.version);
+        allocator.free(self.target);
+        if (self.lua_abi) |value| allocator.free(value);
+        if (self.runtime) |value| allocator.free(value);
+        allocator.free(self.path);
+        allocator.free(self.manifest_path);
+        self.* = undefined;
+    }
+};
+
 pub const ArtifactQuery = struct {
     name: []const u8,
     case_insensitive_name: bool = false,
@@ -173,6 +200,19 @@ pub const StoreDriver = struct {
         try self.exec("PRAGMA synchronous=NORMAL;", .{});
 
         return self;
+    }
+
+    /// Opens an existing index without creating it, migrating it, or changing
+    /// journal settings. Inspection commands use this path so a lookup cannot
+    /// materialize state as a side effect.
+    pub fn initReadOnly(allocator: std.mem.Allocator, db_path: [:0]const u8) !StoreDriver {
+        var db: ?*c.sqlite3 = null;
+        const rc = c.sqlite3_open_v2(db_path, &db, c.SQLITE_OPEN_READONLY, null);
+        if (rc != c.SQLITE_OK) {
+            if (db) |handle| _ = c.sqlite3_close(handle);
+            return sqliteError(rc);
+        }
+        return .{ .db = db, .allocator = allocator };
     }
 
     fn run_migrations(self: StoreDriver) !void {
@@ -528,6 +568,59 @@ pub const StoreDriver = struct {
                 .abi = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 3))),
             };
         }
+        return null;
+    }
+
+    /// Finds locally indexed artifacts that declare an executable provision
+    /// with this exact logical name. Callers must still inspect the provision
+    /// and verify the payload path before treating it as runnable.
+    pub fn find_candidates_providing_bin(self: StoreDriver, name: []const u8) ![]const ProvisionCandidate {
+        var candidates = std.ArrayList(ProvisionCandidate).empty;
+        errdefer {
+            for (candidates.items) |*candidate| candidate.deinit(self.allocator);
+            candidates.deinit(self.allocator);
+        }
+
+        const sql =
+            \\SELECT DISTINCT a.artifact_hash, a.name, a.version, a.kind, a.target, a.lua_abi, a.runtime, a.path, a.manifest_path
+            \\FROM artifacts a
+            \\JOIN (
+            \\  SELECT artifact_hash FROM provides_bin WHERE name = ?
+            \\  UNION
+            \\  SELECT artifact_hash FROM provides_bin_lua WHERE name = ?
+            \\) p ON p.artifact_hash = a.artifact_hash
+            \\ORDER BY a.artifact_hash ASC;
+        ;
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
+        defer _ = c.sqlite3_finalize(stmt);
+
+        const transient = moonstone_sqlite_transient_ptr;
+        _ = c.sqlite3_bind_text(stmt, 1, name.ptr, @intCast(name.len), transient);
+        _ = c.sqlite3_bind_text(stmt, 2, name.ptr, @intCast(name.len), transient);
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            try candidates.append(self.allocator, .{
+                .artifact_hash = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
+                .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                .version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 2))),
+                .kind = try manifest.Kind.from_string(std.mem.span(c.sqlite3_column_text(stmt, 3))),
+                .target = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 4))),
+                .lua_abi = if (c.sqlite3_column_text(stmt, 5)) |value| try self.allocator.dupe(u8, std.mem.span(value)) else null,
+                .runtime = if (c.sqlite3_column_text(stmt, 6)) |value| try self.allocator.dupe(u8, std.mem.span(value)) else null,
+                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 7))),
+                .manifest_path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 8))),
+            });
+        }
+        return candidates.toOwnedSlice(self.allocator);
+    }
+
+    pub fn get_artifact_target(self: StoreDriver, artifact_hash: []const u8) !?[]const u8 {
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.db, "SELECT target FROM artifacts WHERE artifact_hash = ? LIMIT 1;", -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
+        defer _ = c.sqlite3_finalize(stmt);
+        const transient = moonstone_sqlite_transient_ptr;
+        _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
+        if (c.sqlite3_step(stmt) == c.SQLITE_ROW) return try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
         return null;
     }
 

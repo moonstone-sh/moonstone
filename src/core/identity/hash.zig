@@ -9,6 +9,12 @@ pub fn blake3_hex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return try allocator.dupe(u8, &hex);
 }
 
+/// Format an already-computed BLAKE3 digest in Moonstone's transport form.
+pub fn blake3Digest(allocator: std.mem.Allocator, digest: [32]u8) ![]u8 {
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return try std.fmt.allocPrint(allocator, "b3:{s}", .{&hex});
+}
+
 pub fn source_hash(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return blake3_hex(allocator, data);
 }
@@ -179,7 +185,7 @@ test "blake3_hex works" {
 pub fn blake3_file(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
     const file_content = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(50 * 1024 * 1024));
     defer allocator.free(file_content);
-    const hex = try blake3_hex(allocator, file_content);
-    defer allocator.free(hex);
-    return try std.fmt.allocPrint(allocator, "b3:{s}", .{hex});
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.Blake3.hash(file_content, &digest, .{});
+    return blake3Digest(allocator, digest);
 }

@@ -103,6 +103,7 @@ pub const project = struct {
     pub const manifest_editor = @import("project/manifest_editor.zig");
     pub const manifest_tidy = @import("project/manifest_tidy.zig");
     pub const tool_lua = @import("project/tool_lua.zig");
+    pub const tool_resolve = @import("project/tool_resolve.zig");
     pub const discovery = @import("project/discovery.zig");
     pub const orbits = @import("project/orbits.zig");
 };

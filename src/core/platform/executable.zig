@@ -24,10 +24,41 @@ pub fn resolveInDirectory(
     directory: []const u8,
     name: []const u8,
 ) !?[]u8 {
-    if (comptime builtin.os.tag == .windows) {
-        return resolveWindows(allocator, io, directory, name);
-    }
+    return resolveInDirectoryForTarget(allocator, io, directory, name, comptime hostTargetLiteral());
+}
+
+/// Resolves an executable using the naming rules of `target`, not the host
+/// running Moonstone. This permits inspection of an already-realized foreign
+/// artifact without pretending that it can be executed by the host.
+pub fn resolveInDirectoryForTarget(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    directory: []const u8,
+    name: []const u8,
+    target: []const u8,
+) !?[]u8 {
+    if (targetIsWindows(target)) return resolveWindows(allocator, io, directory, name);
     return resolveUnix(allocator, io, directory, name);
+}
+
+/// Whether a provision's physical filename is a valid projection of its
+/// logical executable name for `target`.
+pub fn targetExecutableNameMatches(target: []const u8, name: []const u8, physical_name: []const u8) bool {
+    if (!targetIsWindows(target)) return std.mem.eql(u8, name, physical_name);
+    if (std.ascii.eqlIgnoreCase(name, physical_name)) return true;
+    const extension = windowsExecutableExtension(physical_name) orelse return false;
+    return std.ascii.eqlIgnoreCase(name, physical_name[0 .. physical_name.len - extension.len]);
+}
+
+fn targetIsWindows(target: []const u8) bool {
+    return std.mem.indexOf(u8, target, "-windows-") != null;
+}
+
+fn hostTargetLiteral() []const u8 {
+    return switch (builtin.os.tag) {
+        .windows => "host-windows",
+        else => "host-unix",
+    };
 }
 
 fn resolveUnix(
@@ -86,4 +117,11 @@ test "Windows resolution recognizes executable, command, and batch suffixes" {
 
     try std.testing.expect(windowsExecutableExtension("tool.CMD") != null);
     try std.testing.expect(windowsExecutableExtension("tool.ps1") == null);
+}
+
+test "target executable naming follows the requested target, not the host" {
+    try std.testing.expect(targetExecutableNameMatches("x86_64-windows-gnu", "tool", "tool.cmd"));
+    try std.testing.expect(targetExecutableNameMatches("aarch64-windows-msvc", "tool", "tool.EXE"));
+    try std.testing.expect(!targetExecutableNameMatches("x86_64-linux-gnu", "tool", "tool.exe"));
+    try std.testing.expect(!targetExecutableNameMatches("x86_64-macos", "tool", "other"));
 }

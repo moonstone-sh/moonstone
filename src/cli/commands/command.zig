@@ -39,6 +39,14 @@ pub const doctor = @import("doctor.zig").DoctorCommand;
 pub const version = @import("version.zig").VersionCommand;
 pub const env = @import("env.zig").EnvCommand;
 
+pub const artifact = struct {
+    pub const create = @import("artifact_create.zig").ArtifactCreateCommand;
+};
+
+pub const tool = struct {
+    pub const resolve = @import("tool_resolve.zig").ToolResolveCommand;
+};
+
 // Self group
 pub const self_cmd = struct {
     pub const install = @import("self_install.zig").SelfInstallCommand;
