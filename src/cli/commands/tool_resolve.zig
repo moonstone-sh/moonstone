@@ -13,7 +13,7 @@ pub const ToolResolveCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon tool resolve <executable> [--target <triple>] [--global] [--json]
+            \\Usage: moon provision resolve <executable> [--target <triple>] [--global] [--json]
             \\
             \\Return a versioned JSON record for an executable already provisioned by
             \\a synchronized project/global-tools environment or the local CAS.
@@ -135,7 +135,7 @@ fn writeResult(stdout: *std.Io.Writer, result: moonstone.project.tool_resolve.Re
     try stdout.writeAll("\n");
 }
 
-test "tool resolve emits the v1 JSON contract and no wrapper events" {
+test "provision resolve emits the v1 JSON contract and no wrapper events" {
     var bytes: [512]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
     const result = moonstone.project.tool_resolve.Result{
@@ -151,7 +151,7 @@ test "tool resolve emits the v1 JSON contract and no wrapper events" {
     );
 }
 
-test "tool resolve target mismatch diagnostic is explicit and offline-only" {
+test "provision resolve target mismatch diagnostic is explicit and offline-only" {
     var stdout_bytes: [1]u8 = undefined;
     var stderr_bytes: [1]u8 = undefined;
     var stdout = std.Io.Writer.fixed(&stdout_bytes);

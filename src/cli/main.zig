@@ -142,8 +142,8 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.artifact.create),
         }),
 
-        router.CommandNode.group("tool", "Inspect already-provisioned tool executables", &.{
-            router.CommandNode.from(command_mod.tool.resolve),
+        router.CommandNode.group("provision", "Inspect already-provisioned tool executables", &.{
+            router.CommandNode.from(command_mod.provision.resolve),
         }),
 
         router.CommandNode.group("index", "Manage metadata index", &.{

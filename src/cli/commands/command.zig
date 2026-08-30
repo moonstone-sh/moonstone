@@ -43,7 +43,7 @@ pub const artifact = struct {
     pub const create = @import("artifact_create.zig").ArtifactCreateCommand;
 };
 
-pub const tool = struct {
+pub const provision = struct {
     pub const resolve = @import("tool_resolve.zig").ToolResolveCommand;
 };
 
