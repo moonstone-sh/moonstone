@@ -254,9 +254,9 @@ fn runtimeBinPathFromHash(
     index: driver_mod.StoreDriver,
     runtime_hash: []const u8,
 ) !?[]const u8 {
-    const runtime_path = try index.get_artifact_path(runtime_hash) orelse return null;
-    defer allocator.free(runtime_path);
-    return try std.fs.path.join(allocator, &.{ runtime_path, "files", "bin" });
+    const runtime_payload_path = try index.getArtifactPayloadPath(runtime_hash) orelse return null;
+    defer allocator.free(runtime_payload_path);
+    return try std.fs.path.join(allocator, &.{ runtime_payload_path, "bin" });
 }
 
 fn appendUniqueOwnedPath(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), path: []const u8) !void {
@@ -1712,14 +1712,16 @@ pub fn link_project_env_at(
         }
     }
 
-    // 6b. Link non-metadata store artifacts into libexec/ for stable references.
+    // 6b. Mount non-metadata store packages into libexec/ for stable references.
     for (projected_artifacts) |pa2| {
         const pa_policy = pa2.role.getProjectionPolicy();
         if (pa_policy.metadata_only) continue;
-        const pa_path = try index.get_artifact_path(pa2.artifact_hash) orelse continue;
-        defer allocator.free(pa_path);
+        const payload_path = try index.getArtifactPayloadPath(pa2.artifact_hash) orelse continue;
+        defer allocator.free(payload_path);
         const pa_local = packageLocalName(pa2.name);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, pa_path);
+        const libexec_source = try storePackageLibexecRoot(allocator, io, payload_path, pa_local);
+        defer allocator.free(libexec_source);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, libexec_source);
     }
 
     // 7. Generate env.toml
@@ -1877,6 +1879,53 @@ fn linkPackageIntoLibexec(
     src_path: []const u8,
 ) !void {
     try projectDirectory(allocator, io, libexec_dir, src_path, local_name);
+}
+
+/// Resolve the root mounted at `.moonstone/env/libexec/<package>`.
+///
+/// A Ballad executable artifact keeps its self-contained runtime beneath
+/// `<payload>/libexec/<package>`.  Other package layouts expose their payload
+/// directly.  Normalize that difference here rather than making callers infer
+/// the CAS or archive layout themselves.
+fn storePackageLibexecRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    payload_root: []const u8,
+    local_name: []const u8,
+) ![]const u8 {
+    const layout_root = try std.fs.path.join(allocator, &.{ payload_root, "libexec", local_name });
+    if (std.Io.Dir.openDirAbsolute(io, layout_root, .{})) |dir| {
+        dir.close(io);
+        return layout_root;
+    } else |err| {
+        if (err != error.FileNotFound) {
+            allocator.free(layout_root);
+            return err;
+        }
+    }
+    allocator.free(layout_root);
+    return try allocator.dupe(u8, payload_root);
+}
+
+test "store package libexec mount prefers the executable layout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "payload/libexec/valua");
+    const payload_root = try tmp.dir.realPathAlloc(io, allocator, "payload");
+    defer allocator.free(payload_root);
+
+    const executable_root = try storePackageLibexecRoot(allocator, io, payload_root, "valua");
+    defer allocator.free(executable_root);
+    const expected = try std.fs.path.join(allocator, &.{ payload_root, "libexec", "valua" });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, executable_root);
+
+    const fallback_root = try storePackageLibexecRoot(allocator, io, payload_root, "plain-library");
+    defer allocator.free(fallback_root);
+    try std.testing.expectEqualStrings(payload_root, fallback_root);
 }
 
 test "link_project_env basic" {

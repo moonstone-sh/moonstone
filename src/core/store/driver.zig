@@ -970,4 +970,15 @@ pub const StoreDriver = struct {
         }
         return null;
     }
+
+    /// Returns the consumable package payload, never the CAS metadata root.
+    ///
+    /// Store entries contain `manifest.toml`, provenance, and the immutable
+    /// package payload beneath `files/`.  Projection and execution code must
+    /// use this method when it needs a package root visible to consumers.
+    pub fn getArtifactPayloadPath(self: StoreDriver, artifact_hash: []const u8) !?[]const u8 {
+        const root = try self.get_artifact_path(artifact_hash) orelse return null;
+        defer self.allocator.free(root);
+        return try std.fs.path.join(self.allocator, &.{ root, "files" });
+    }
 };
