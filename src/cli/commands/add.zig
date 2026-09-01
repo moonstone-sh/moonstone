@@ -1096,11 +1096,8 @@ pub const add_command = struct {
 
             const sync = @import("sync.zig").sync_command{
                 .json = self.json,
-                // `add` has just changed the manifest and invalidated the
-                // active profile. Re-resolve rather than replaying the
-                // partially rewritten lock, otherwise remote descriptor
-                // dependencies disappear from the new closure.
-                .update = true,
+                .update = self.update,
+                .reconcile = true,
                 .jobs_arg = self.jobs_arg,
                 .progress_arg = self.progress_arg,
             };

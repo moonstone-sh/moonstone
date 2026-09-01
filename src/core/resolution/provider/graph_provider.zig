@@ -1065,6 +1065,111 @@ pub const RegistryProvider = struct {
                 return try terms.toOwnedSlice(self.allocator);
             }
 
+            // A materialized registry package carries the canonical descriptor
+            // dependency list in its store manifest.  Prefer that metadata
+            // when normal reconciliation selects a local-store candidate: a
+            // store hit must retain the same transitive graph as a remote
+            // descriptor fetch, otherwise `moon add` can write a partial
+            // closure and only `--update` happens to repair it.
+            if (art.location == .local_store and
+                !std.mem.eql(u8, art.artifact_hash, "link") and
+                !std.mem.eql(u8, art.artifact_hash, "path"))
+            {
+                if (art.local_path) |local_path| {
+                    const manifest_path = try std.fs.path.join(self.allocator, &.{ local_path, "manifest.toml" });
+                    defer self.allocator.free(manifest_path);
+                    const content = std.Io.Dir.cwd().readFileAlloc(self.io, manifest_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| switch (err) {
+                        error.FileNotFound => null,
+                        else => return err,
+                    };
+                    if (content) |store_content| {
+                        defer self.allocator.free(store_content);
+                        var store_manifest = try manifest.StoreManifest.parse(self.allocator, store_content);
+                        defer store_manifest.deinit(self.allocator);
+                        for (store_manifest.dependencies) |dep| {
+                            const raw_spec = try dep.toSpecString(arena);
+                            const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
+                            defer spec.deinit(self.allocator);
+                            const child_resolver = try resolverForPackageSpec(self.registries, spec);
+
+                            try self.store_dependency_origins.append(self.allocator, .{
+                                .child_name = try self.allocator.dupe(u8, spec.name),
+                                .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
+                                .child_resolver = child_resolver,
+                                .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                                .child_role = dep.role,
+                                .parent_name = try self.allocator.dupe(u8, art.name),
+                                .parent_version = try self.allocator.dupe(u8, art.version),
+                                .parent_resolver = .moonstone,
+                                .parent_manifest_path = try self.allocator.dupe(u8, manifest_path),
+                            });
+
+                            try terms.append(self.allocator, .{
+                                .name = try arena.dupe(u8, spec.name),
+                                .range = if (child_resolver == .rocks)
+                                    try semver.VersionRange.parseLuaRocks(arena, spec.constraint orelse "*")
+                                else
+                                    try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                                .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                                .resolver = child_resolver,
+                                .role = dep.role,
+                            });
+                        }
+
+                        // Older store manifests predate dependency persistence.
+                        // Preserve their selected local version, but hydrate its
+                        // exact registry descriptor when online so a cache made
+                        // by that older client cannot produce a partial lock.
+                        if (store_manifest.dependencies.len == 0 and !self.options.offline) {
+                            for (self.registries) |reg| {
+                                if (!std.mem.eql(u8, reg.resolver, "moonstone")) continue;
+                                var client = registry.RegistryClient.init(self.allocator, self.io, reg.url, reg.token, self.env);
+                                defer client.deinit();
+                                const index = client.fetch_index() catch continue;
+                                defer index.deinit(self.allocator);
+
+                                for (index.package) |pkg| {
+                                    if (!packageNamesMatch(pkg.name, art.name) or !std.mem.eql(u8, pkg.version, art.version)) continue;
+                                    var descriptor = client.fetch_descriptor(pkg.descriptor) catch continue;
+                                    defer descriptor.deinit(self.allocator);
+                                    for (descriptor.dependencies) |dep| {
+                                        const raw_spec = try dep.toSpecString(arena);
+                                        const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
+                                        defer spec.deinit(self.allocator);
+                                        const child_resolver = try resolverForPackageSpec(self.registries, spec);
+
+                                        try self.store_dependency_origins.append(self.allocator, .{
+                                            .child_name = try self.allocator.dupe(u8, spec.name),
+                                            .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
+                                            .child_resolver = child_resolver,
+                                            .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                                            .child_role = dep.role,
+                                            .parent_name = try self.allocator.dupe(u8, art.name),
+                                            .parent_version = try self.allocator.dupe(u8, art.version),
+                                            .parent_resolver = .moonstone,
+                                            .parent_manifest_path = try self.allocator.dupe(u8, pkg.descriptor),
+                                        });
+                                        try terms.append(self.allocator, .{
+                                            .name = try arena.dupe(u8, spec.name),
+                                            .range = if (child_resolver == .rocks)
+                                                try semver.VersionRange.parseLuaRocks(arena, spec.constraint orelse "*")
+                                            else
+                                                try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                                            .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                                            .resolver = child_resolver,
+                                            .role = dep.role,
+                                        });
+                                    }
+                                    break;
+                                }
+                                if (terms.items.len > 0) break;
+                            }
+                        }
+                    }
+                }
+                return try terms.toOwnedSlice(self.allocator);
+            }
+
             if (std.mem.eql(u8, art.artifact_hash, "link") or std.mem.eql(u8, art.artifact_hash, "path")) {
                 if (art.local_path) |lp| {
                     const manifest_path = try std.fs.path.join(self.allocator, &.{ lp, "moonstone.toml" });

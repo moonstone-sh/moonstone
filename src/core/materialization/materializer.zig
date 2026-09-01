@@ -351,7 +351,12 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
+                    const dependencies = try descriptorDependencies(self.allocator, desc);
+                    defer {
+                        for (dependencies) |*dependency| dependency.deinit(self.allocator);
+                        self.allocator.free(dependencies);
+                    }
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, dependencies, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "cmake")) {
@@ -426,7 +431,12 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
+                    const dependencies = try descriptorDependencies(self.allocator, desc);
+                    defer {
+                        for (dependencies) |*dependency| dependency.deinit(self.allocator);
+                        self.allocator.free(dependencies);
+                    }
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, dependencies, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "command")) {
@@ -517,7 +527,12 @@ pub const Materializer = struct {
                     final_art.recipe_hash = recipe_hash;
                     final_art.hash = art_hash;
 
-                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, &.{}, source_payloads);
+                    const dependencies = try descriptorDependencies(self.allocator, desc);
+                    defer {
+                        for (dependencies) |*dependency| dependency.deinit(self.allocator);
+                        self.allocator.free(dependencies);
+                    }
+                    const final_path = try store.commit_to_store_with_sources(self.allocator, self.io, self.environ_map, build_out_path, desc, final_art, "moonstone", source_origin, dependencies, source_payloads);
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             }

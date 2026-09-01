@@ -1819,6 +1819,11 @@ pub const SyncCommand = struct {
     positionals: []const []const u8 = &.{},
     locked: bool = false,
     update: bool = false,
+    // Internal callers that have changed the manifest need a new closure, but
+    // must retain normal version-selection policy.  This deliberately differs
+    // from `--update`: it disables lock replay without preferring newer remote
+    // candidates over compatible store candidates.
+    reconcile: bool = false,
     check: bool = false,
     offline: bool = false,
     json: bool = false,
@@ -2499,7 +2504,7 @@ pub const SyncCommand = struct {
             if (!lock_runtime_matches) profiler.mark("sync.lock.replay.skip.runtime_mismatch");
             if (!lock_deps_match) profiler.mark("sync.lock.replay.skip.dependencies_changed");
         }
-        const can_replay_lock = !self.update and existing_lock.version == 3 and selected_profile != null and replay_entries.items.len > 0 and lock_runtime_matches and lock_deps_match and lock_target_state == .compatible;
+        const can_replay_lock = !self.update and !self.reconcile and existing_lock.version == 3 and selected_profile != null and replay_entries.items.len > 0 and lock_runtime_matches and lock_deps_match and lock_target_state == .compatible;
         const replay_lock = self.locked or can_replay_lock;
 
         if (replay_lock) {
@@ -2637,6 +2642,8 @@ pub const SyncCommand = struct {
         } else {
             if (replay_entries.items.len > 0 and !lock_deps_match and !self.json) {
                 backend.phase("moonstone.toml changed; resolving a new lockfile...", .{});
+            } else if (self.reconcile and !self.json) {
+                backend.phase("Reconciling dependency closure...", .{});
             } else if (self.update and !self.json) {
                 backend.phase("Updating lockfile within declared constraints...", .{});
             }
