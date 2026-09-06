@@ -4,6 +4,7 @@ const registry = @import("../registry/registry.zig");
 const driver_mod = @import("../store/driver.zig");
 const semver = @import("../domain/semver.zig");
 const fs = @import("../platform/fs.zig");
+const platform_target = @import("../platform/target.zig");
 
 const root = @import("root.zig");
 const options_mod = @import("options.zig");
@@ -140,7 +141,7 @@ pub const Coordinator = struct {
             .name = pkg_name,
             .case_insensitive_name = kind == .rocks,
             .resolver = if (kind == .rocks) resolver_str else null,
-            .target = options.target,
+            .target = options.target orelse platform_target.hostTargetLiteral(),
         };
         var candidates = try index.findCandidates(query);
         if (candidates.len == 0 and kind == .moonstone and std.mem.startsWith(u8, pkg_name, "moonstone/")) {

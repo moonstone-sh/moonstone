@@ -96,7 +96,9 @@ fn resolverForPackageSpec(
     if (std.mem.eql(u8, identity, "moonstone")) return .moonstone;
     if (std.mem.eql(u8, identity, "rocks")) return .rocks;
 
-    const config = mt.registries.get(identity) orelse return error.RegistryNotFound;
+    const config = mt.registries.get(identity) orelse {
+        return error.RegistryNotFound;
+    };
     return moonstone.resolution.coordinator.CoordinatorKind.fromString(config.resolver);
 }
 
@@ -2977,7 +2979,10 @@ pub const SyncCommand = struct {
                     for (child_specs.items) |child_raw_spec| {
                         const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
                         defer child_spec.deinit(allocator);
-                        const child_resolver = try resolverForPackageSpec(&mt, child_spec);
+                        const child_resolver = resolverForPackageSpec(&mt, child_spec) catch |err| switch (err) {
+                            error.RegistryNotFound => .moonstone,
+                            else => return err,
+                        };
                         const child_name = child_spec.name;
                         if (solutionContainsPackage(&solution, child_name)) continue;
 
@@ -4541,6 +4546,7 @@ fn resolveAndMaterializeRuntime(
     const rt_res_iso = coordinator.resolve(runtime_name, runtime_constraint, index, registries, .{
         .offline = offline,
         .prefer_local = true,
+        .target = target,
         .runtime = target_abi,
         .on_event = on_resolve_cb,
         .on_event_context = on_resolve_ctx,

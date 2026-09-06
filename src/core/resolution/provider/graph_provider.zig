@@ -238,6 +238,7 @@ pub const RegistryProvider = struct {
                         const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse return null;
                         const selected_artifact = desc.artifact[selected_artifact_idx];
                         art.artifact_idx = selected_artifact_idx;
+                        art.origin.moonstone_registry.artifact_idx = selected_artifact_idx;
                         art.artifact_hash = try arena.dupe(u8, selected_artifact.hash);
                         art.lua_abi = try arena.dupe(u8, selected_artifact.lua_abi);
                         art.lua_api = try arena.dupe(u8, selected_artifact.lua_api);
@@ -570,7 +571,7 @@ pub const RegistryProvider = struct {
             if (res_constraint) |rc| {
                 resolver_filter = resolverKindToStoreString(rc);
             }
-            const query = storeQueryForName(name, resolver_filter, self.options.target);
+            const query = storeQueryForName(name, resolver_filter, self.options.target orelse platform_target.hostTargetLiteral());
             const local_candidates = self.index.findCandidates(query) catch |err| blk: {
                 if (err == error.SQLitePrepareError) break :blk @as([]driver_mod.Candidate, &.{});
                 return err;
@@ -891,6 +892,7 @@ pub const RegistryProvider = struct {
                     const selected_artifact_idx = selectArtifactForRuntime(desc, self.options) orelse continue;
                     const selected_artifact = desc.artifact[selected_artifact_idx];
                     art.artifact_idx = selected_artifact_idx;
+                    art.origin.moonstone_registry.artifact_idx = selected_artifact_idx;
                     art.artifact_hash = try arena.dupe(u8, selected_artifact.hash);
                     art.lua_abi = try arena.dupe(u8, selected_artifact.lua_abi);
                     art.lua_api = try arena.dupe(u8, selected_artifact.lua_api);
@@ -1024,7 +1026,19 @@ pub const RegistryProvider = struct {
                     const raw_spec = try dep.toSpecString(arena);
                     const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                     defer spec.deinit(self.allocator);
-                    const child_resolver = try resolverForPackageSpec(self.registries, spec);
+                    const child_resolver = resolverForPackageSpec(self.registries, spec) catch |err| switch (err) {
+                        error.RegistryNotFound => null,
+                        else => return err,
+                    };
+                    const child_registry: ?[]const u8 = if (spec.registry) |registry_name| blk: {
+                        if (std.mem.eql(u8, registry_name, "moonstone") or std.mem.eql(u8, registry_name, "rocks")) {
+                            break :blk registry_name;
+                        }
+                        for (self.registries) |r| {
+                            if (std.mem.eql(u8, r.name, registry_name)) break :blk registry_name;
+                        }
+                        break :blk null;
+                    } else null;
 
                     // PubGrub asks for available versions by package name, so
                     // retain the resolver selected by this remote descriptor.
@@ -1035,7 +1049,7 @@ pub const RegistryProvider = struct {
                         .child_name = try self.allocator.dupe(u8, spec.name),
                         .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
                         .child_resolver = child_resolver,
-                        .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                        .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
                         .child_role = dep.role,
                         .parent_name = try self.allocator.dupe(u8, art.name),
                         .parent_version = try self.allocator.dupe(u8, art.version),
@@ -1098,13 +1112,25 @@ pub const RegistryProvider = struct {
                             const raw_spec = try dep.toSpecString(arena);
                             const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                             defer spec.deinit(self.allocator);
-                            const child_resolver = try resolverForPackageSpec(self.registries, spec);
+                            const child_resolver = resolverForPackageSpec(self.registries, spec) catch |err| switch (err) {
+                                error.RegistryNotFound => null,
+                                else => return err,
+                            };
+                            const child_registry: ?[]const u8 = if (spec.registry) |registry_name| blk: {
+                                if (std.mem.eql(u8, registry_name, "moonstone") or std.mem.eql(u8, registry_name, "rocks")) {
+                                    break :blk registry_name;
+                                }
+                                for (self.registries) |reg| {
+                                    if (std.mem.eql(u8, reg.name, registry_name)) break :blk registry_name;
+                                }
+                                break :blk null;
+                            } else null;
 
                             try self.store_dependency_origins.append(self.allocator, .{
                                 .child_name = try self.allocator.dupe(u8, spec.name),
                                 .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
                                 .child_resolver = child_resolver,
-                                .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                                .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
                                 .child_role = dep.role,
                                 .parent_name = try self.allocator.dupe(u8, art.name),
                                 .parent_version = try self.allocator.dupe(u8, art.version),
@@ -1118,7 +1144,7 @@ pub const RegistryProvider = struct {
                                     try semver.VersionRange.parseLuaRocks(arena, spec.constraint orelse "*")
                                 else
                                     try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
-                                .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                                .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                                 .resolver = child_resolver,
                                 .role = dep.role,
                             });
@@ -1144,13 +1170,25 @@ pub const RegistryProvider = struct {
                                         const raw_spec = try dep.toSpecString(arena);
                                         const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                                         defer spec.deinit(self.allocator);
-                                        const child_resolver = try resolverForPackageSpec(self.registries, spec);
+                                        const child_resolver = resolverForPackageSpec(self.registries, spec) catch |err| switch (err) {
+                                            error.RegistryNotFound => null,
+                                            else => return err,
+                                        };
+                                        const child_registry: ?[]const u8 = if (spec.registry) |registry_name| blk: {
+                                            if (std.mem.eql(u8, registry_name, "moonstone") or std.mem.eql(u8, registry_name, "rocks")) {
+                                                break :blk registry_name;
+                                            }
+                                            for (self.registries) |r| {
+                                                if (std.mem.eql(u8, r.name, registry_name)) break :blk registry_name;
+                                            }
+                                            break :blk null;
+                                        } else null;
 
                                         try self.store_dependency_origins.append(self.allocator, .{
                                             .child_name = try self.allocator.dupe(u8, spec.name),
                                             .child_constraint = try self.allocator.dupe(u8, spec.constraint orelse "*"),
                                             .child_resolver = child_resolver,
-                                            .child_registry = if (spec.registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
+                                            .child_registry = if (child_registry) |registry_name| try self.allocator.dupe(u8, registry_name) else null,
                                             .child_role = dep.role,
                                             .parent_name = try self.allocator.dupe(u8, art.name),
                                             .parent_version = try self.allocator.dupe(u8, art.version),
@@ -1163,7 +1201,7 @@ pub const RegistryProvider = struct {
                                                 try semver.VersionRange.parseLuaRocks(arena, spec.constraint orelse "*")
                                             else
                                                 try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
-                                            .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
+                                            .registry = if (child_registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                                             .resolver = child_resolver,
                                             .role = dep.role,
                                         });
@@ -1211,7 +1249,10 @@ pub const RegistryProvider = struct {
                         defer self.allocator.free(raw_spec);
                         const spec = try package_spec.parsePackageSpec(self.allocator, raw_spec);
                         defer spec.deinit(self.allocator);
-                        const child_resolver = try resolverForPackageSpec(self.registries, spec);
+                        const child_resolver = resolverForPackageSpec(self.registries, spec) catch |err| switch (err) {
+                            error.RegistryNotFound => null,
+                            else => return err,
+                        };
 
                         var child_name = dep.name;
                         var child_constraint = dep.constraint;
@@ -1371,6 +1412,13 @@ fn storeQueryForName(name: []const u8, resolver: ?[]const u8, target: ?[]const u
 }
 
 fn storeCandidateCompatible(candidate: driver_mod.Candidate, options: root.ResolveOptions) bool {
+    const required_target = options.target orelse platform_target.hostTargetLiteral();
+    if (candidate.target) |cand_target| {
+        if (cand_target.len > 0 and !std.mem.eql(u8, cand_target, "any") and !std.mem.eql(u8, cand_target, required_target)) {
+            return false;
+        }
+    }
+
     if (options.runtime) |active_abi| {
         if (candidate.kind != .runtime) {
             const has_isolated_runtime = if (candidate.runtime) |runtime| runtime.len > 0 else false;
