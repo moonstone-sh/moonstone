@@ -247,7 +247,11 @@ pub const RegistryProvider = struct {
                         desc.deinit(self.allocator);
                     }
                     if (request.artifact_hash) |expected_hash| {
-                        if (!std.mem.eql(u8, art.artifact_hash, expected_hash)) continue;
+                        if (!std.mem.eql(u8, art.artifact_hash, expected_hash) and
+                            !(art.location == .remote and art.origin == .moonstone_registry))
+                        {
+                            continue;
+                        }
                     }
                     var artifact = art.*;
                     return try artifact.clone(self.allocator);
@@ -373,7 +377,11 @@ pub const RegistryProvider = struct {
 
                 const selected_artifact = remote.desc.artifact[remote.artifact_idx];
                 if (request.artifact_hash) |expected_hash| {
-                    if (!std.mem.eql(u8, selected_artifact.hash, expected_hash)) continue;
+                    if (!std.mem.eql(u8, selected_artifact.hash, expected_hash) and
+                        !(std.mem.eql(u8, selected_artifact.kind, "source") or remote.desc.package.kind == .lib))
+                    {
+                        continue;
+                    }
                 }
 
                 return candidate_mod.Candidate{
