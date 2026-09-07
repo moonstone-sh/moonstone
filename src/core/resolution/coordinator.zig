@@ -60,7 +60,7 @@ pub const Coordinator = struct {
     ) !candidate_mod.Candidate {
 
         // 1. Try local store first
-        if (try self.tryResolveFromStore(pkg_name, constraint, .moonstone, index, options)) |cand| {
+        if (try self.tryResolveFromStore(pkg_name, constraint, .moonstone, index, options, registries)) |cand| {
             return cand;
         }
 
@@ -120,6 +120,45 @@ pub const Coordinator = struct {
         return error.PackageNotFound;
     }
 
+    fn storeCandidateDependenciesValid(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        cand_path: []const u8,
+        registries: []const registry.ResolvedRegistry,
+    ) !bool {
+        const manifest_path = try std.fs.path.join(allocator, &.{ cand_path, "manifest.toml" });
+        defer allocator.free(manifest_path);
+        const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => return err,
+        };
+        defer allocator.free(content);
+
+        var sm = manifest.StoreManifest.parse(allocator, content) catch return false;
+        defer sm.deinit(allocator);
+        if (!sm.hasCompleteDependencies() and std.mem.eql(u8, sm.origin.resolver, "moonstone")) return false;
+
+        for (sm.dependencies) |dep| {
+            const raw_spec = try dep.toSpecString(allocator);
+            defer allocator.free(raw_spec);
+            const spec = try @import("../domain/package_spec.zig").parsePackageSpec(allocator, raw_spec);
+            defer spec.deinit(allocator);
+
+            if (spec.registry) |identity| {
+                if (std.mem.eql(u8, identity, "moonstone") or std.mem.eql(u8, identity, "rocks")) continue;
+                var found = false;
+                for (registries) |reg| {
+                    if (std.mem.eql(u8, reg.name, identity)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+        }
+        return true;
+    }
+
     /// Check the local artifact store for a compatible candidate.
     /// Returns null if no compatible artifact is found.
     pub fn tryResolveFromStore(
@@ -129,6 +168,7 @@ pub const Coordinator = struct {
         kind: CoordinatorKind,
         index: driver_mod.StoreDriver,
         options: options_mod.ResolveOptions,
+        registries: []const registry.ResolvedRegistry,
     ) !?candidate_mod.Candidate {
         const resolver_str: ?[]const u8 = switch (kind) {
             .moonstone => "moonstone",
@@ -154,6 +194,9 @@ pub const Coordinator = struct {
             self.allocator.free(candidates);
         }
 
+        var best_candidate: ?driver_mod.Candidate = null;
+        var best_version: ?semver.Version = null;
+
         for (candidates) |cand| {
             if (resolver_str) |rs| {
                 if (cand.resolver) |cr| {
@@ -163,7 +206,12 @@ pub const Coordinator = struct {
                     continue;
                 }
             }
-            if (!semver.matches(cand.version, constraint)) continue;
+            const is_rocks = kind == .rocks or (if (cand.resolver) |cr| std.mem.eql(u8, cr, "rocks") else false);
+            if (is_rocks) {
+                if (!semver.matchesScheme(cand.version, constraint, .luarocks)) continue;
+            } else {
+                if (!semver.matches(cand.version, constraint)) continue;
+            }
 
             // 2. ABI compatibility (if applicable)
             if (options.runtime) |active_abi| {
@@ -197,18 +245,42 @@ pub const Coordinator = struct {
                 return err;
             };
 
-            const origin: candidate_mod.Origin = .{ .artifact_hash = try self.allocator.dupe(u8, cand.artifact_hash) };
+            const deps_valid = try storeCandidateDependenciesValid(self.allocator, self.io, cand.path, registries);
+            if (!deps_valid) continue;
+
+            const cand_version = if (is_rocks)
+                semver.Version.parseLuaRocks(cand.version) catch continue
+            else
+                semver.Version.parse(cand.version) catch (semver.Version.parseLuaRocks(cand.version) catch continue);
+
+            if (best_candidate == null) {
+                best_candidate = cand;
+                best_version = cand_version;
+            } else {
+                const cmp = if (is_rocks)
+                    cand_version.compareLuaRocks(best_version.?)
+                else
+                    cand_version.compare(best_version.?);
+                if (cmp > 0) {
+                    best_candidate = cand;
+                    best_version = cand_version;
+                }
+            }
+        }
+
+        if (best_candidate) |best| {
+            const origin: candidate_mod.Origin = .{ .artifact_hash = try self.allocator.dupe(u8, best.artifact_hash) };
 
             return candidate_mod.Candidate{
-                .name = try self.allocator.dupe(u8, cand.name),
-                .version = try self.allocator.dupe(u8, cand.version),
-                .kind = cand.kind,
-                .artifact_hash = try self.allocator.dupe(u8, cand.artifact_hash),
-                .lua_abi = if (cand.lua_abi) |a| try self.allocator.dupe(u8, a) else null,
-                .lua_api = if (cand.lua_api) |a| try self.allocator.dupe(u8, a) else null,
-                .runtime = if (cand.runtime) |r| try self.allocator.dupe(u8, r) else null,
-                .runtime_artifact_hash = if (cand.runtime_artifact_hash) |h| try self.allocator.dupe(u8, h) else "",
-                .local_path = try self.allocator.dupe(u8, cand.path),
+                .name = try self.allocator.dupe(u8, best.name),
+                .version = try self.allocator.dupe(u8, best.version),
+                .kind = best.kind,
+                .artifact_hash = try self.allocator.dupe(u8, best.artifact_hash),
+                .lua_abi = if (best.lua_abi) |a| try self.allocator.dupe(u8, a) else null,
+                .lua_api = if (best.lua_api) |a| try self.allocator.dupe(u8, a) else null,
+                .runtime = if (best.runtime) |r| try self.allocator.dupe(u8, r) else null,
+                .runtime_artifact_hash = if (best.runtime_artifact_hash) |h| try self.allocator.dupe(u8, h) else "",
+                .local_path = try self.allocator.dupe(u8, best.path),
                 .origin = origin,
                 .location = .local_store,
             };
@@ -273,7 +345,7 @@ pub const Coordinator = struct {
         registry_identity: ?[]const u8,
     ) !candidate_mod.Candidate {
         // Check local store first for resolvers that can produce cached artifacts
-        if (try self.tryResolveFromStore(pkg_name, constraint, kind, index, options)) |cand| {
+        if (try self.tryResolveFromStore(pkg_name, constraint, kind, index, options, registries)) |cand| {
             return cand;
         }
 
@@ -309,3 +381,40 @@ pub const Coordinator = struct {
 
 // Legacy alias for compatibility during transition
 pub const Resolver = Coordinator;
+
+test "tryResolveFromStore selects maximal SemVer version" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.allocator;
+    _ = io;
+
+    var driver = try driver_mod.StoreDriver.init(allocator, ":memory:");
+    defer driver.deinit();
+
+    // Create dummy directories for path access check
+    try tmp.dir.makePath("pkg_2_0_0");
+    try tmp.dir.makePath("pkg_10_0_0");
+    const path_2_0 = try tmp.dir.realpathAlloc(allocator, "pkg_2_0_0");
+    defer allocator.free(path_2_0);
+    const path_10_0 = try tmp.dir.realpathAlloc(allocator, "pkg_10_0_0");
+    defer allocator.free(path_10_0);
+
+    // Insert 2.0.0 and 10.0.0
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:hash_2", "mypkg", "2.0.0", "lib", "any", "5.4", "", path_2_0, "/tmp/2/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:hash_10", "mypkg", "10.0.0", "lib", "any", "5.4", "", path_10_0, "/tmp/10/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+
+    const coordinator = Coordinator.init(allocator, std.Io.getOsIo());
+    var resolved = try coordinator.tryResolveFromStore("mypkg", ">=1.0.0", .moonstone, driver, .{}, &.{});
+    try std.testing.expect(resolved != null);
+    defer if (resolved) |*c| c.deinit(allocator);
+
+    try std.testing.expectEqualStrings("10.0.0", resolved.?.version);
+}

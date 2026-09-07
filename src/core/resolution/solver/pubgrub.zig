@@ -135,11 +135,17 @@ pub const Solver = struct {
                             .name = as.term.name,
                             .version = v_str,
                             .resolver = as.term.resolver,
+                            .registry = as.term.registry,
                         };
                         if (try self.provider.getArtifact(req)) |art| {
-                            var cloned = try art.clone(self.allocator);
-                            errdefer cloned.deinit(self.allocator);
-                            try sol.put(self.allocator, try self.allocator.dupe(u8, as.term.name), cloned);
+                            errdefer art.deinit(self.allocator);
+                            const key = try self.allocator.dupe(u8, as.term.name);
+                            errdefer self.allocator.free(key);
+                            const previous = try sol.fetchPut(self.allocator, key, art);
+                            if (previous) |old| {
+                                self.allocator.free(old.key);
+                                old.value.deinit(self.allocator);
+                            }
                         } else {
                             return error.ArtifactNotFound;
                         }

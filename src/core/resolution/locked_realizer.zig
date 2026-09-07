@@ -30,6 +30,7 @@ pub const ReplayPolicy = struct {
 
 pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.MaterializerCapability {
     if (std.mem.eql(u8, source_kind, "copy_lua") or
+        std.mem.eql(u8, source_kind, "archive") or
         std.mem.eql(u8, source_kind, "builtin") or
         std.mem.eql(u8, source_kind, "luarocks_src_rock") or
         std.mem.eql(u8, source_kind, "upstream_archive"))
@@ -119,11 +120,41 @@ pub fn ensureLockedArtifact(
             .version = entry.version,
             .resolver = if (entry.resolver.len > 0) coordinator_mod.CoordinatorKind.fromString(entry.resolver) catch null else null,
             .artifact_hash = requested_artifact_hash,
+            .registry = if (entry.registry.len > 0) entry.registry else null,
             .runtime = if (entry.runtime.len > 0) entry.runtime else null,
             .lua_abi = if (entry.lua_abi.len > 0) entry.lua_abi else null,
         };
 
-        if (try provider.get_artifact(req)) |cand| {
+        if (try provider.get_artifact(req)) |resolved_candidate| {
+            var cand = resolved_candidate;
+            errdefer cand.deinit(allocator);
+            if (cand.location == .remote) {
+                if (!policy.allow_remote_artifacts or policy.offline) return error.LockedArtifactMissing;
+                const desc = cand.remote_desc orelse return error.ReplayProvenanceMissing;
+                const artifact_index = cand.artifact_idx orelse return error.ReplayProvenanceMissing;
+                const origin = switch (cand.origin) {
+                    .moonstone_registry => |value| value,
+                    else => return error.ReplayProvenanceMissing,
+                };
+                var materializer = @import("../materialization/materializer.zig").Materializer{
+                    .allocator = allocator,
+                    .io = io,
+                    .environ_map = env,
+                    .runtime_path = provider.options.runtime_path,
+                    .on_event = provider.options.on_event,
+                    .on_event_context = provider.options.on_event_context,
+                };
+                const materialized = try materializer.materialize_remote(origin.url, origin.token, origin.descriptor_path, desc, artifact_index);
+                defer materialized.deinit(allocator);
+                if (!std.mem.eql(u8, materialized.artifact_hash, exact_artifact_hash)) return error.ArtifactHashMismatch;
+                allocator.free(cand.artifact_hash);
+                cand.artifact_hash = try allocator.dupe(u8, materialized.artifact_hash);
+                if (cand.local_path) |path| allocator.free(path);
+                cand.local_path = try allocator.dupe(u8, materialized.path);
+                cand.location = .local_store;
+                return .{ .candidate = cand, .method = .remote_artifact };
+            }
+
             var cand_valid = true;
             if (cand.local_path) |cand_path| {
                 std.Io.Dir.cwd().access(io, cand_path, .{}) catch {
@@ -143,8 +174,7 @@ pub fn ensureLockedArtifact(
                     .method = .local_cas,
                 };
             } else {
-                var mut_cand = cand;
-                mut_cand.deinit(allocator);
+                cand.deinit(allocator);
             }
         }
     }
@@ -190,6 +220,70 @@ pub fn ensureLockedArtifact(
     // 5. Source rematerialization
     if (!policy.allow_source_rematerialization) {
         return error.LockedArtifactMissing;
+    }
+
+    // A source archive and its realized output have different identities.
+    // Retrieve the pinned input explicitly, then verify the realized output;
+    // never weaken an exact output lookup based on package kind.
+    if (std.mem.eql(u8, entry.resolver, "moonstone")) {
+        if (policy.offline or entry.source_hash.len == 0 or entry.recipe_hash.len == 0) {
+            error_context.setFmt(allocator, "Locked source replay for {s}@{s} requires a source hash and recipe hash.", .{ entry.name, entry.version });
+            return error.ReplayProvenanceMissing;
+        }
+        var source = try provider.get_artifact(.{
+            .name = entry.name,
+            .version = entry.version,
+            .resolver = .moonstone,
+            .artifact_hash = entry.source_hash,
+            .registry = if (entry.registry.len > 0) entry.registry else null,
+        }) orelse return error.LockedArtifactMissing;
+        errdefer source.deinit(allocator);
+        const desc = source.remote_desc orelse {
+            error_context.setFmt(allocator, "Registry source metadata for locked package {s}@{s} is incomplete.", .{ entry.name, entry.version });
+            return error.ReplayProvenanceMissing;
+        };
+        const artifact_index = source.artifact_idx orelse {
+            error_context.setFmt(allocator, "Registry source selection for locked package {s}@{s} is incomplete.", .{ entry.name, entry.version });
+            return error.ReplayProvenanceMissing;
+        };
+        if (!std.mem.eql(u8, desc.artifact[artifact_index].kind, "source")) {
+            error_context.setFmt(allocator, "Locked source hash for {s}@{s} resolved to a {s} artifact.", .{ entry.name, entry.version, desc.artifact[artifact_index].kind });
+            return error.ReplayProvenanceMissing;
+        }
+        const origin = switch (source.origin) {
+            .moonstone_registry => |value| value,
+            else => {
+                error_context.setFmt(allocator, "Locked source for {s}@{s} did not resolve through its recorded registry.", .{ entry.name, entry.version });
+                return error.ReplayProvenanceMissing;
+            },
+        };
+        var materializer = @import("../materialization/materializer.zig").Materializer{
+            .allocator = allocator,
+            .io = io,
+            .environ_map = env,
+            .runtime_path = provider.options.runtime_path,
+            .on_event = provider.options.on_event,
+            .on_event_context = provider.options.on_event_context,
+        };
+        const realized = try materializer.materialize_remote(origin.url, origin.token, origin.descriptor_path, desc, artifact_index);
+        defer realized.deinit(allocator);
+        if (!std.mem.eql(u8, realized.artifact_hash, exact_artifact_hash)) return error.ArtifactHashMismatch;
+        const manifest_path = try std.fs.path.join(allocator, &.{ realized.path, "manifest.toml" });
+        defer allocator.free(manifest_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024));
+        defer allocator.free(content);
+        var stored = try @import("../domain/manifest.zig").StoreManifest.parse(allocator, content);
+        defer stored.deinit(allocator);
+        if (!std.mem.eql(u8, stored.artifact.source_hash, entry.source_hash) or
+            !std.mem.eql(u8, stored.artifact.recipe_hash, entry.recipe_hash)) return error.LockfileOutOfSync;
+        allocator.free(source.artifact_hash);
+        source.artifact_hash = "";
+        source.artifact_hash = try allocator.dupe(u8, realized.artifact_hash);
+        if (source.local_path) |path| allocator.free(path);
+        source.local_path = null;
+        source.local_path = try allocator.dupe(u8, realized.path);
+        source.location = .local_store;
+        return .{ .candidate = source, .method = .source_rematerialization };
     }
 
     // Must have a valid source URL, rockspec URL, or package identity

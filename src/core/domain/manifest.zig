@@ -1000,7 +1000,56 @@ pub const StoreDependency = struct {
     }
 };
 
+// Store manifests contain only values, optional values, structs, and slices.
+// Clone all slices out of the parser arena, including default-valued fields.
+fn cloneStoreValue(comptime T: type, allocator: std.mem.Allocator, value: T) std.mem.Allocator.Error!T {
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| {
+            var result: T = undefined;
+            inline for (info.fields, 0..) |field, i| {
+                @field(result, field.name) = cloneStoreValue(field.type, allocator, @field(value, field.name)) catch |err| {
+                    inline for (info.fields[0..i]) |prior| freeStoreValue(prior.type, allocator, @field(result, prior.name));
+                    return err;
+                };
+            }
+            return result;
+        },
+        .optional => |info| return if (value) |v| try cloneStoreValue(info.child, allocator, v) else null,
+        .pointer => |info| {
+            comptime std.debug.assert(info.size == .slice);
+            const result = try allocator.alloc(info.child, value.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (result[0..initialized]) |item| freeStoreValue(info.child, allocator, item);
+                allocator.free(result);
+            }
+            for (value, 0..) |item, i| {
+                result[i] = try cloneStoreValue(info.child, allocator, item);
+                initialized += 1;
+            }
+            return result;
+        },
+        else => return value,
+    }
+}
+
+fn freeStoreValue(comptime T: type, allocator: std.mem.Allocator, value: T) void {
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| inline for (info.fields) |field| freeStoreValue(field.type, allocator, @field(value, field.name)),
+        .optional => |info| if (value) |v| {
+            freeStoreValue(info.child, allocator, v);
+        },
+        .pointer => |info| {
+            for (value) |item| freeStoreValue(info.child, allocator, item);
+            allocator.free(value);
+        },
+        else => {},
+    }
+}
+
 pub const StoreManifest = struct {
+    /// Older manifests omitted dependency metadata, including empty closures.
+    dependencies_complete: bool = false,
     artifact: struct {
         name: []const u8,
         version: []const u8,
@@ -1022,19 +1071,32 @@ pub const StoreManifest = struct {
     } = .{},
     compat: struct {
         runtime_version: []const u8 = "", // e.g. lua@5.4.7
+        runtime_bundled: bool = false,
+        interpreter_version: []const u8 = "", // legacy serialized spelling
         lua_abi: []const u8 = "", // e.g. lua-5.4
         lua_api: []const u8 = "", // e.g. lua54
         runtime_artifact_hash: []const u8 = "", // exact binary identity
+        interpreter_artifact_hash: []const u8 = "", // legacy serialized spelling
     } = .{},
 
     provides: Provides = .{},
     dependencies: []const StoreDependency = &.{},
 
+    pub fn hasCompleteDependencies(self: StoreManifest) bool {
+        return self.dependencies_complete;
+    }
+
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !StoreManifest {
         var parser = toml.Parser(StoreManifest).init(allocator);
         defer parser.deinit();
         const res = try parser.parseString(content);
-        return res.value;
+        defer res.deinit();
+        // TOML parsing owns an arena. Return independently owned fields to
+        // match the mutable manifest API and its field-by-field deinit.
+        var value = res.value;
+        if (value.compat.runtime_version.len == 0) value.compat.runtime_version = value.compat.interpreter_version;
+        if (value.compat.runtime_artifact_hash.len == 0) value.compat.runtime_artifact_hash = value.compat.interpreter_artifact_hash;
+        return cloneStoreValue(StoreManifest, allocator, value);
     }
 
     pub fn deinit(self: *StoreManifest, allocator: std.mem.Allocator) void {
@@ -1053,9 +1115,11 @@ pub const StoreManifest = struct {
         allocator.free(self.origin.rockspec_hash);
         allocator.free(self.origin.rockspec_payload);
         allocator.free(self.compat.runtime_version);
+        allocator.free(self.compat.interpreter_version);
         allocator.free(self.compat.lua_abi);
         allocator.free(self.compat.lua_api);
         allocator.free(self.compat.runtime_artifact_hash);
+        allocator.free(self.compat.interpreter_artifact_hash);
         self.provides.deinit(allocator);
         for (self.dependencies) |dep| {
             var mut_dep = dep;
@@ -1071,6 +1135,7 @@ pub const StoreManifest = struct {
     /// the library's expected structure more closely if automated serialization is desired.
     pub fn serialize(self: StoreManifest, allocator: std.mem.Allocator, writer: anytype) !void {
         _ = allocator;
+        try writer.print("dependencies_complete = {}\n\n", .{self.dependencies_complete});
         try writer.print("[artifact]\n", .{});
         try writer.print("name = \"{s}\"\n", .{self.artifact.name});
         try writer.print("version = \"{s}\"\n", .{self.artifact.version});
@@ -1091,9 +1156,11 @@ pub const StoreManifest = struct {
         if (self.origin.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{self.origin.rockspec_payload});
 
         try writer.print("\n[compat]\n", .{});
-        try writer.print("interpreter_version = \"{s}\"\n", .{self.compat.runtime_version});
+        try writer.print("runtime_bundled = {}\n", .{self.compat.runtime_bundled});
+        try writer.print("runtime_version = \"{s}\"\n", .{self.compat.runtime_version});
         try writer.print("lua_abi = \"{s}\"\n", .{self.compat.lua_abi});
-        try writer.print("interpreter_artifact_hash = \"{s}\"\n", .{self.compat.runtime_artifact_hash});
+        try writer.print("lua_api = \"{s}\"\n", .{self.compat.lua_api});
+        try writer.print("runtime_artifact_hash = \"{s}\"\n", .{self.compat.runtime_artifact_hash});
 
         try writer.print("\n[provides]\n", .{});
         try self.serializeProvides(self.provides, writer);
@@ -1103,6 +1170,7 @@ pub const StoreManifest = struct {
             try writer.print("name = \"{s}\"\n", .{dep.name});
             try writer.print("constraint = \"{s}\"\n", .{dep.constraint});
             if (dep.resolver) |r| try writer.print("resolver = \"{s}\"\n", .{r});
+            if (dep.registry) |r| try writer.print("registry = \"{s}\"\n", .{r});
             try writer.print("role = \"{s}\"\n", .{@tagName(dep.role)});
             if (dep.optional) try writer.print("optional = true\n", .{});
         }

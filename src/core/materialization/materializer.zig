@@ -47,6 +47,7 @@ fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePac
             .name = try allocator.dupe(u8, dep.name),
             .constraint = try allocator.dupe(u8, dep.constraint),
             .resolver = if (dep.resolver) |r| try allocator.dupe(u8, r) else null,
+            .registry = if (dep.registry) |r| try allocator.dupe(u8, r) else null,
             .role = dep.role,
             .optional = dep.optional,
         });
@@ -114,7 +115,7 @@ pub const Materializer = struct {
 
         if (std.mem.eql(u8, art.kind, "source") or art.materialize != null) {
             return .{
-                .source_kind = art.kind,
+                .source_kind = if (art.materialize) |config| config.kind else art.kind,
                 .source_payload_path = blob_path,
                 .source_url = art.source_url,
             };
@@ -539,6 +540,22 @@ pub const Materializer = struct {
         }
 
         // 5. Move to sharded store (Default prebuilt path)
+        const default_recipe_hash = if (final_art.recipe_hash.len == 0)
+            try store.computeRecipeHash(self.allocator, .{
+                .kind = @tagName(desc.package.kind),
+                .name = desc.package.name,
+                .version = desc.package.version,
+                .source_hash = source_hash,
+                .materializer = if (art.materialize) |config| config.kind else "prebuilt",
+                .strategy = if (art.materialize) |config| config.strategy orelse "default" else "registry",
+                .lua_abi = art.lua_abi,
+                .target = art.target,
+            })
+        else
+            null;
+        defer if (default_recipe_hash) |recipe_hash| self.allocator.free(recipe_hash);
+        if (default_recipe_hash) |recipe_hash| final_art.recipe_hash = recipe_hash;
+
         const dependencies = try descriptorDependencies(self.allocator, desc);
         defer {
             for (dependencies) |*dependency| dependency.deinit(self.allocator);

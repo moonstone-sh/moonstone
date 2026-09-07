@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
     const system_tools_tests = createMoonTest(b, "tests/unit/system_tools_test.zig", target, optimize, build_options_mod);
     const doctor_archive_tests = createMoonTest(b, "tests/unit/doctor_archive_test.zig", target, optimize, build_options_mod);
     const canonical_artifact_tests = createMoonTest(b, "tests/unit/canonical_artifact_test.zig", target, optimize, build_options_mod);
+    const adversarial_tests = createMoonTest(b, "tests/unit/adversarial_store_resolution_test.zig", target, optimize, build_options_mod);
 
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_cli_tests = b.addRunArtifact(cli_tests);
@@ -103,6 +104,7 @@ pub fn build(b: *std.Build) void {
     const run_system_tools_tests = b.addRunArtifact(system_tools_tests);
     const run_doctor_archive_tests = b.addRunArtifact(doctor_archive_tests);
     const run_canonical_artifact_tests = b.addRunArtifact(canonical_artifact_tests);
+    const run_adversarial_tests = b.addRunArtifact(adversarial_tests);
 
     const canonical_artifact_test_step = b.step("canonical-artifact-test", "Run canonical artifact tests");
     canonical_artifact_test_step.dependOn(&run_canonical_artifact_tests.step);
@@ -123,6 +125,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_system_tools_tests.step);
     test_step.dependOn(&run_doctor_archive_tests.step);
     test_step.dependOn(&run_canonical_artifact_tests.step);
+    test_step.dependOn(&run_adversarial_tests.step);
 
     // 4. Official Release Matrix (`zig build release`)
     // -------------------------------------------------------------------------

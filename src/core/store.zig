@@ -540,11 +540,13 @@ pub fn commit_to_store_with_sources(
         },
         .compat = .{
             .runtime_version = runtime_version,
+            .runtime_bundled = remote_desc.runtime_bundled != null,
             .lua_abi = remote_art.lua_abi,
             .lua_api = remote_art.lua_api,
             .runtime_artifact_hash = runtime_artifact_hash,
         },
         .provides = remote_art.provides,
+        .dependencies_complete = true,
         .dependencies = dependencies,
     };
 

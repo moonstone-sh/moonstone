@@ -69,6 +69,58 @@ test "findCandidates can match a stored recipe hash" {
     try std.testing.expectEqualStrings("b3:recipe", candidates[0].recipe_hash.?);
 }
 
+test "findCandidates target-weighted deterministic ordering" {
+    const allocator = std.testing.allocator;
+    var driver = try StoreDriver.init(allocator, ":memory:");
+    defer driver.deinit();
+
+    // Insert artifacts with same version but different targets and hashes
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:hash_z", "mylib", "1.0.0", "lib", "any", "5.4", "", "/tmp/any", "/tmp/any/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:hash_a", "mylib", "1.0.0", "lib", "x86_64-linux", "5.4", "", "/tmp/native", "/tmp/native/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+
+    const candidates = try driver.findCandidates(.{ .name = "mylib", .target = "x86_64-linux" });
+    defer {
+        for (candidates) |*candidate| candidate.deinit(allocator);
+        allocator.free(candidates);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), candidates.len);
+    // Exact target x86_64-linux should be first, then 'any'
+    try std.testing.expectEqualStrings("x86_64-linux", candidates[0].target.?);
+    try std.testing.expectEqualStrings("any", candidates[1].target.?);
+}
+
+test "findCandidates strictly matches target for runtime kind" {
+    const allocator = std.testing.allocator;
+    var driver = try StoreDriver.init(allocator, ":memory:");
+    defer driver.deinit();
+
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:rt_any", "lua", "5.4.7", "runtime", "any", "5.4", "", "/tmp/rt_any", "/tmp/rt_any/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+    try driver.exec(
+        "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        .{ "b3:rt_linux", "lua", "5.4.7", "runtime", "x86_64-linux", "5.4", "", "/tmp/rt_linux", "/tmp/rt_linux/manifest.toml", "5.4", "", "moonstone", "", "0" },
+    );
+
+    // Query for runtime with specific target - must NOT match 'any'
+    const candidates = try driver.findCandidates(.{ .name = "lua", .kind = .runtime, .target = "x86_64-linux" });
+    defer {
+        for (candidates) |*candidate| candidate.deinit(allocator);
+        allocator.free(candidates);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), candidates.len);
+    try std.testing.expectEqualStrings("x86_64-linux", candidates[0].target.?);
+}
+
 pub const Candidate = struct {
     name: []const u8,
     version: []const u8,
@@ -187,6 +239,7 @@ pub const StoreDriver = struct {
             if (db) |handle| _ = c.sqlite3_close(handle);
             return sqliteError(rc);
         }
+        errdefer _ = c.sqlite3_close(db);
 
         var self = StoreDriver{
             .db = db,
@@ -214,6 +267,9 @@ pub const StoreDriver = struct {
             if (db) |handle| _ = c.sqlite3_close(handle);
             return sqliteError(rc);
         }
+        errdefer _ = c.sqlite3_close(db);
+        const timeout_rc = c.sqlite3_busy_timeout(db, 5000);
+        if (timeout_rc != c.SQLITE_OK) return sqliteError(timeout_rc);
         return .{ .db = db, .allocator = allocator };
     }
 
@@ -497,9 +553,12 @@ pub const StoreDriver = struct {
         inline for (std.meta.fields(@TypeOf(args)), 0..) |f, i| {
             const val = @field(args, f.name);
             const idx = @as(c_int, @intCast(i + 1));
-            switch (@typeInfo(@TypeOf(val))) {
+            const T = @TypeOf(val);
+            switch (@typeInfo(T)) {
                 .pointer => |p| {
                     if (p.size == .slice and p.child == u8) {
+                        _ = c.sqlite3_bind_text(stmt, idx, val.ptr, @intCast(val.len), transient);
+                    } else if (p.size == .one and @typeInfo(p.child) == .array and @typeInfo(p.child).array.child == u8) {
                         _ = c.sqlite3_bind_text(stmt, idx, val.ptr, @intCast(val.len), transient);
                     }
                 },
@@ -511,6 +570,9 @@ pub const StoreDriver = struct {
                             _ = c.sqlite3_bind_null(stmt, idx);
                         }
                     }
+                },
+                .int => {
+                    _ = c.sqlite3_bind_int64(stmt, idx, @intCast(val));
                 },
                 else => {},
             }
@@ -647,6 +709,27 @@ pub const StoreDriver = struct {
         var assets = std.ArrayList(manifest.FeatureProvision).empty;
         var ballad_plugins = std.ArrayList(manifest.FeatureProvision).empty;
 
+        errdefer {
+            for (bins.items) |p| p.deinit(self.allocator);
+            bins.deinit(self.allocator);
+            for (bin_luas.items) |p| p.deinit(self.allocator);
+            bin_luas.deinit(self.allocator);
+            for (headers.items) |p| p.deinit(self.allocator);
+            headers.deinit(self.allocator);
+            for (libs.items) |p| p.deinit(self.allocator);
+            libs.deinit(self.allocator);
+            for (lua_modules.items) |p| p.deinit(self.allocator);
+            lua_modules.deinit(self.allocator);
+            for (lua_cmodules.items) |p| p.deinit(self.allocator);
+            lua_cmodules.deinit(self.allocator);
+            for (scripts.items) |p| p.deinit(self.allocator);
+            scripts.deinit(self.allocator);
+            for (assets.items) |p| p.deinit(self.allocator);
+            assets.deinit(self.allocator);
+            for (ballad_plugins.items) |p| p.deinit(self.allocator);
+            ballad_plugins.deinit(self.allocator);
+        }
+
         const transient = moonstone_sqlite_transient_ptr;
 
         // Bins
@@ -656,10 +739,17 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+                    const entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null;
+                    errdefer if (entry_point) |ep| self.allocator.free(ep);
+
                     try bins.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                        .entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null,
+                        .name = name,
+                        .path = path,
+                        .entry_point = entry_point,
                     });
                 }
             }
@@ -671,10 +761,17 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+                    const entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null;
+                    errdefer if (entry_point) |ep| self.allocator.free(ep);
+
                     try bin_luas.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                        .entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null,
+                        .name = name,
+                        .path = path,
+                        .entry_point = entry_point,
                     });
                 }
             }
@@ -686,9 +783,14 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+
                     try headers.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .name = name,
+                        .path = path,
                     });
                 }
             }
@@ -700,9 +802,14 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+
                     try libs.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .name = name,
+                        .path = path,
                         .linkage = std.meta.stringToEnum(manifest.NativeLibraryLinkage, std.mem.span(c.sqlite3_column_text(stmt, 2))) orelse .unknown,
                     });
                 }
@@ -715,9 +822,14 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+
                     try lua_modules.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .name = name,
+                        .path = path,
                     });
                 }
             }
@@ -729,9 +841,14 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+
                     try lua_cmodules.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .name = name,
+                        .path = path,
                     });
                 }
             }
@@ -744,10 +861,17 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+                    const entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null;
+                    errdefer if (entry_point) |ep| self.allocator.free(ep);
+
                     try scripts.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                        .entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null,
+                        .name = name,
+                        .path = path,
+                        .entry_point = entry_point,
                     });
                 }
             }
@@ -759,9 +883,14 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+
                     try assets.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
+                        .name = name,
+                        .path = path,
                     });
                 }
             }
@@ -773,11 +902,20 @@ pub const StoreDriver = struct {
                 defer _ = c.sqlite3_finalize(stmt);
                 _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
                 while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+                    const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+                    errdefer self.allocator.free(name);
+                    const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+                    errdefer self.allocator.free(path);
+                    const entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null;
+                    errdefer if (entry_point) |ep| self.allocator.free(ep);
+                    const module = if (c.sqlite3_column_text(stmt, 3)) |m| try self.allocator.dupe(u8, std.mem.span(m)) else null;
+                    errdefer if (module) |m| self.allocator.free(m);
+
                     try ballad_plugins.append(self.allocator, .{
-                        .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                        .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                        .entry_point = if (c.sqlite3_column_text(stmt, 2)) |ep| try self.allocator.dupe(u8, std.mem.span(ep)) else null,
-                        .module = if (c.sqlite3_column_text(stmt, 3)) |m| try self.allocator.dupe(u8, std.mem.span(m)) else null,
+                        .name = name,
+                        .path = path,
+                        .entry_point = entry_point,
+                        .module = module,
                     });
                 }
             }
@@ -825,11 +963,12 @@ pub const StoreDriver = struct {
 
         inline for (&.{ sql_bin, sql_bin_lua, sql_headers, sql_native, sql_lua_module, sql_lua_cmodule, sql_script, sql_asset, sql_ballad_plugin, sql_runtime, sql_trigrams, sql_artifacts }) |sql| {
             var stmt: ?*c.sqlite3_stmt = null;
-            if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) == c.SQLITE_OK) {
-                defer _ = c.sqlite3_finalize(stmt);
-                _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
-                _ = c.sqlite3_step(stmt);
-            }
+            if (c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
+            defer _ = c.sqlite3_finalize(stmt);
+
+            _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
+            const rc = c.sqlite3_step(stmt);
+            if (rc != c.SQLITE_DONE) return sqliteError(rc);
         }
     }
 
@@ -843,20 +982,46 @@ pub const StoreDriver = struct {
         _ = c.sqlite3_bind_text(stmt, 1, artifact_hash.ptr, @intCast(artifact_hash.len), transient);
 
         if (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const hash = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+            errdefer self.allocator.free(hash);
+            const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+            errdefer self.allocator.free(name);
+            const version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 2)));
+            errdefer self.allocator.free(version);
+            const kind = try manifest.Kind.from_string(std.mem.span(c.sqlite3_column_text(stmt, 3)));
+            const target = if (c.sqlite3_column_text(stmt, 4)) |t| try self.allocator.dupe(u8, std.mem.span(t)) else null;
+            errdefer if (target) |t| self.allocator.free(t);
+            const lua_abi = if (c.sqlite3_column_text(stmt, 5)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null;
+            errdefer if (lua_abi) |a| self.allocator.free(a);
+            const lua_api = if (c.sqlite3_column_text(stmt, 6)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null;
+            errdefer if (lua_api) |a| self.allocator.free(a);
+            const runtime = if (c.sqlite3_column_text(stmt, 7)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null;
+            errdefer if (runtime) |r| self.allocator.free(r);
+            const runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 8)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null;
+            errdefer if (runtime_artifact_hash) |h| self.allocator.free(h);
+            const resolver = if (c.sqlite3_column_text(stmt, 9)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null;
+            errdefer if (resolver) |r| self.allocator.free(r);
+            const source = if (c.sqlite3_column_text(stmt, 10)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null;
+            errdefer if (source) |s| self.allocator.free(s);
+            const recipe_hash = if (c.sqlite3_column_text(stmt, 11)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null;
+            errdefer if (recipe_hash) |h| self.allocator.free(h);
+            const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 12)));
+            errdefer self.allocator.free(path);
+
             return Candidate{
-                .artifact_hash = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                .version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 2))),
-                .kind = try manifest.Kind.from_string(std.mem.span(c.sqlite3_column_text(stmt, 3))),
-                .target = if (c.sqlite3_column_text(stmt, 4)) |t| try self.allocator.dupe(u8, std.mem.span(t)) else null,
-                .lua_abi = if (c.sqlite3_column_text(stmt, 5)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null,
-                .lua_api = if (c.sqlite3_column_text(stmt, 6)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null,
-                .runtime = if (c.sqlite3_column_text(stmt, 7)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
-                .runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 8)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
-                .resolver = if (c.sqlite3_column_text(stmt, 9)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
-                .source = if (c.sqlite3_column_text(stmt, 10)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null,
-                .recipe_hash = if (c.sqlite3_column_text(stmt, 11)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
-                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 12))),
+                .artifact_hash = hash,
+                .name = name,
+                .version = version,
+                .kind = kind,
+                .target = target,
+                .lua_abi = lua_abi,
+                .lua_api = lua_api,
+                .runtime = runtime,
+                .runtime_artifact_hash = runtime_artifact_hash,
+                .resolver = resolver,
+                .source = source,
+                .recipe_hash = recipe_hash,
+                .path = path,
             };
         }
 
@@ -865,6 +1030,10 @@ pub const StoreDriver = struct {
 
     pub fn findCandidates(self: StoreDriver, query: ArtifactQuery) ![]Candidate {
         var candidates = std.ArrayList(Candidate).empty;
+        errdefer {
+            for (candidates.items) |*candidate| candidate.deinit(self.allocator);
+            candidates.deinit(self.allocator);
+        }
 
         // Build dynamic WHERE clause
         var where_parts = std.ArrayList([]const u8).empty;
@@ -872,18 +1041,29 @@ pub const StoreDriver = struct {
         try where_parts.append(self.allocator, if (query.case_insensitive_name) "lower(name) = lower(?)" else "name = ?");
         if (query.resolver) |_| try where_parts.append(self.allocator, "resolver = ?");
         if (query.kind) |_| try where_parts.append(self.allocator, "kind = ?");
-        if (query.target) |_| try where_parts.append(self.allocator, "(target = ? OR target = 'any' OR target = '')");
+        if (query.target) |_| {
+            if (query.kind != null and query.kind.? == .runtime) {
+                try where_parts.append(self.allocator, "target = ?");
+            } else {
+                try where_parts.append(self.allocator, "(target = ? OR target = 'any' OR target = '')");
+            }
+        }
         if (query.lua_abi) |_| try where_parts.append(self.allocator, "lua_abi = ?");
         if (query.lua_api) |_| try where_parts.append(self.allocator, "lua_api = ?");
         if (query.runtime) |_| try where_parts.append(self.allocator, "runtime = ?");
-        if (query.runtime_artifact_hash) |_| try where_parts.append(self.allocator, "interpreter_artifact_hash = ?");
+        if (query.runtime_artifact_hash) |_| try where_parts.append(self.allocator, "runtime_artifact_hash = ?");
         if (query.native_compat_required) |_| try where_parts.append(self.allocator, "native_compat_required = ?");
         if (query.recipe_hash) |_| try where_parts.append(self.allocator, "recipe_hash = ?");
 
         const where_clause = try std.mem.join(self.allocator, " AND ", where_parts.items);
         defer self.allocator.free(where_clause);
 
-        const sql_text = try std.fmt.allocPrint(self.allocator, "SELECT artifact_hash, name, version, kind, target, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, recipe_hash, path FROM artifacts WHERE {s} ORDER BY version DESC;", .{where_clause});
+        const order_by = if (query.target != null)
+            "ORDER BY version DESC, (CASE WHEN target = ? THEN 1 WHEN target = 'any' THEN 2 ELSE 3 END) ASC, artifact_hash ASC"
+        else
+            "ORDER BY version DESC, artifact_hash ASC";
+
+        const sql_text = try std.fmt.allocPrint(self.allocator, "SELECT artifact_hash, name, version, kind, target, lua_abi, lua_api, runtime, runtime_artifact_hash, resolver, source, recipe_hash, path FROM artifacts WHERE {s} {s};", .{ where_clause, order_by });
         defer self.allocator.free(sql_text);
         const sql = try self.allocator.dupeZ(u8, sql_text);
         defer self.allocator.free(sql);
@@ -933,22 +1113,52 @@ pub const StoreDriver = struct {
             _ = c.sqlite3_bind_text(stmt, param_idx, h.ptr, @intCast(h.len), transient);
             param_idx += 1;
         }
+        if (query.target) |t| {
+            _ = c.sqlite3_bind_text(stmt, param_idx, t.ptr, @intCast(t.len), transient);
+            param_idx += 1;
+        }
 
         while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const hash = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0)));
+            errdefer self.allocator.free(hash);
+            const name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1)));
+            errdefer self.allocator.free(name);
+            const version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 2)));
+            errdefer self.allocator.free(version);
+            const kind = try manifest.Kind.from_string(std.mem.span(c.sqlite3_column_text(stmt, 3)));
+            const target = if (c.sqlite3_column_text(stmt, 4)) |t| try self.allocator.dupe(u8, std.mem.span(t)) else null;
+            errdefer if (target) |t| self.allocator.free(t);
+            const lua_abi = if (c.sqlite3_column_text(stmt, 5)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null;
+            errdefer if (lua_abi) |a| self.allocator.free(a);
+            const lua_api = if (c.sqlite3_column_text(stmt, 6)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null;
+            errdefer if (lua_api) |a| self.allocator.free(a);
+            const runtime = if (c.sqlite3_column_text(stmt, 7)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null;
+            errdefer if (runtime) |r| self.allocator.free(r);
+            const runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 8)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null;
+            errdefer if (runtime_artifact_hash) |h| self.allocator.free(h);
+            const resolver = if (c.sqlite3_column_text(stmt, 9)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null;
+            errdefer if (resolver) |r| self.allocator.free(r);
+            const source = if (c.sqlite3_column_text(stmt, 10)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null;
+            errdefer if (source) |s| self.allocator.free(s);
+            const recipe_hash = if (c.sqlite3_column_text(stmt, 11)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null;
+            errdefer if (recipe_hash) |h| self.allocator.free(h);
+            const path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 12)));
+            errdefer self.allocator.free(path);
+
             try candidates.append(self.allocator, .{
-                .artifact_hash = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 0))),
-                .name = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 1))),
-                .version = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 2))),
-                .kind = try manifest.Kind.from_string(std.mem.span(c.sqlite3_column_text(stmt, 3))),
-                .target = if (c.sqlite3_column_text(stmt, 4)) |t| try self.allocator.dupe(u8, std.mem.span(t)) else null,
-                .lua_abi = if (c.sqlite3_column_text(stmt, 5)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null,
-                .lua_api = if (c.sqlite3_column_text(stmt, 6)) |a| try self.allocator.dupe(u8, std.mem.span(a)) else null,
-                .runtime = if (c.sqlite3_column_text(stmt, 7)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
-                .runtime_artifact_hash = if (c.sqlite3_column_text(stmt, 8)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
-                .resolver = if (c.sqlite3_column_text(stmt, 9)) |r| try self.allocator.dupe(u8, std.mem.span(r)) else null,
-                .source = if (c.sqlite3_column_text(stmt, 10)) |s| try self.allocator.dupe(u8, std.mem.span(s)) else null,
-                .recipe_hash = if (c.sqlite3_column_text(stmt, 11)) |h| try self.allocator.dupe(u8, std.mem.span(h)) else null,
-                .path = try self.allocator.dupe(u8, std.mem.span(c.sqlite3_column_text(stmt, 12))),
+                .artifact_hash = hash,
+                .name = name,
+                .version = version,
+                .kind = kind,
+                .target = target,
+                .lua_abi = lua_abi,
+                .lua_api = lua_api,
+                .runtime = runtime,
+                .runtime_artifact_hash = runtime_artifact_hash,
+                .resolver = resolver,
+                .source = source,
+                .recipe_hash = recipe_hash,
+                .path = path,
             });
         }
 

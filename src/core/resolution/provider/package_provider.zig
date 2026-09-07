@@ -11,6 +11,7 @@ pub const ArtifactRequest = struct {
     name: []const u8,
     version: []const u8,
     resolver: ?root.ResolverKind = null,
+    registry: ?[]const u8 = null,
     artifact_hash: ?[]const u8 = null,
     runtime: ?[]const u8 = null,
     lua_abi: ?[]const u8 = null,
@@ -37,6 +38,7 @@ pub const PackageProvider = struct {
         return self.vtable.getDependencies(self.ptr, name, version);
     }
 
+    /// The returned candidate is owned by the caller.
     pub fn getArtifact(self: PackageProvider, request: ArtifactRequest) !?root.ResolveResult {
         return self.vtable.getArtifact(self.ptr, request);
     }

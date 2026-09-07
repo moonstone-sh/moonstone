@@ -12,7 +12,12 @@ if [[ -z "${MOONSTONE_HOME:-}" ]]; then
 fi
 
 WORKDIR="$(mktemp -d /tmp/moonstone-add-transitive-closure.XXXXXX)"
-trap 'rm -rf "${WORKDIR}"' EXIT
+cleanup() {
+    if [[ "${MOONSTONE_KEEP_TEST_WORKDIR:-0}" != "1" ]]; then
+        rm -rf "${WORKDIR}"
+    fi
+}
+trap cleanup EXIT
 REGISTRY="${WORKDIR}/registry"
 PROJECT="${WORKDIR}/project"
 
@@ -74,21 +79,28 @@ grep -q 'name = "example/root"' moonstone.lock
 grep -q 'name = "example/middle"' moonstone.lock
 grep -q 'name = "example/leaf"' moonstone.lock
 
-# Simulate a cache created by the pre-contract store-manifest writer. The next
-# add must hydrate the exact remote descriptor rather than silently locking
-# only the direct package.
+# Locked replay must retrieve the exact recorded registry artifact after its
+# CAS directory disappears and reproduce the same output identity.
 root_manifest="$(find "${MOONSTONE_HOME}/data/store" -path '*example/root-1.0.0/manifest.toml' -print -quit)"
 test -n "${root_manifest}"
-perl -0pi -e 's/\n\[\[dependencies\]\][\s\S]*\z/\n/' "${root_manifest}"
+locked_root_hash="$(awk '/name = "example\/root"/{found=1} found && /artifact_hash =/{gsub(/[\" ]/, "", $3); print $3; exit}' moonstone.lock)"
+rm -rf "$(dirname "${root_manifest}")" .moonstone/env
+moon sync --locked
+restored_manifest="$(find "${MOONSTONE_HOME}/data/store" -path '*example/root-1.0.0/manifest.toml' -print -quit)"
+grep -q "^artifact_hash = \"${locked_root_hash}\"$" "${restored_manifest}"
 
-LEGACY_PROJECT="${WORKDIR}/legacy-project"
-mkdir -p "${LEGACY_PROJECT}"
-cd "${LEGACY_PROJECT}"
-moon init . --name legacy-transitive-registry-closure --no-git --no-sync
+# A fresh consumer must see the same closure from the now-populated store.
+# Incomplete legacy metadata is covered by provider unit fixtures, without
+# mutating admitted CAS artifacts.
+CACHED_PROJECT="${WORKDIR}/cached-project"
+mkdir -p "${CACHED_PROJECT}"
+cd "${CACHED_PROJECT}"
+moon init . --name cached-transitive-registry-closure --no-git --no-sync
 moon interpreter set lua@5.4 --no-sync
 moon registry add local "file://${REGISTRY}"
 moon add "local:example/root@1.0.0" --jobs 1
 grep -q 'name = "example/middle"' moonstone.lock
 grep -q 'name = "example/leaf"' moonstone.lock
+moon sync --offline
 
 echo "✓ moon add reconciles complete transitive registry closure"

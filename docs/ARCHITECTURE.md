@@ -68,11 +68,13 @@ The lifecycle of a mutating command (like `moon sync` or `moon add`) is strictly
   2. The **Link Store** (packages registered via `moon link`).
   3. **Remote Registries** (querying HTTP endpoints for `package.toml` or `manifest-5.4.json` descriptors).
 - **Solving:** PubGrub evaluates these constraints mathematically, resolving conflicts and settling on a single, perfectly compatible graph of package versions.
+- **Single Graph Authority:** Registry, LuaRocks, path, link, artifact-hash, and cached-store candidates all expose their dependencies to PubGrub. Materialization consumes the solver result and does not append packages afterward.
 
 ### Phase 3: Materialization
 - **Artifact Resolution:** With the final versions decided, Moonstone iterates through the solution graph to locate the physical artifacts.
 - **Downloading & Compilation:** If a package is missing from the local CAS, Moonstone downloads the source or tarball. If it is a native module, it dispatches to the appropriate materializer (e.g., `zig-cc` for C source files, `cmake` for complex builds, or `luarocks` build types).
 - **Store Admission:** Successfully materialized packages are cryptographically hashed and permanently written into the immutable CAS store, and their provisions (binaries, lua modules, C libraries) are indexed in SQLite.
+- **Complete Cached Metadata:** Each admitted package records whether its dependency closure is complete. Cached descriptors retain dependency roles and registry identities, so offline solving sees the same constraints as online solving. Legacy entries without that marker must be reconciled online before they can participate in a new solution.
 
 ### Phase 4: Environment Linking
 - **Project Isolation:** Instead of copying files, the `Linker` creates the isolated `.moonstone/env` directory.

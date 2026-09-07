@@ -110,7 +110,8 @@ fn registryIdentityForPackageSpec(
     if (spec.resolver != null) {
         return switch (resolver) {
             .path => try allocator.dupe(u8, spec.name),
-            .link, .artifact => null,
+            .artifact => if (spec.constraint) |hash| try allocator.dupe(u8, hash) else return error.MissingArtifactHash,
+            .link => null,
             else => null,
         };
     }
@@ -529,6 +530,21 @@ fn mergeDependencyNames(
     return names.toOwnedSlice(allocator);
 }
 
+fn versionsMatch(a: []const u8, b: []const u8) bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    if (moonstone.domain.semver.Version.parseLuaRocks(a)) |va| {
+        if (moonstone.domain.semver.Version.parseLuaRocks(b)) |vb| {
+            if (va.compareLuaRocks(vb) == 0) return true;
+        } else |_| {}
+    } else |_| {}
+    if (moonstone.domain.semver.Version.parse(a)) |va| {
+        if (moonstone.domain.semver.Version.parse(b)) |vb| {
+            if (va.compare(vb) == 0) return true;
+        } else |_| {}
+    } else |_| {}
+    return false;
+}
+
 fn collectSolvedRocksDependencyNames(
     allocator: std.mem.Allocator,
     origins: []const moonstone.resolution.provider.graph_provider.StoreDependencyOrigin,
@@ -542,8 +558,16 @@ fn collectSolvedRocksDependencyNames(
         names.deinit(allocator);
     }
 
+    const parent_pkg = blk: {
+        for (solution.keys(), solution.values()) |candidate_name, *artifact| {
+            if (std.ascii.eqlIgnoreCase(candidate_name, parent_name)) break :blk artifact;
+        }
+        break :blk null;
+    } orelse return names.toOwnedSlice(allocator);
+
     for (origins) |origin| {
         if (!std.ascii.eqlIgnoreCase(origin.parent_name, parent_name)) continue;
+        if (!versionsMatch(origin.parent_version, parent_pkg.version)) continue;
         if (!solutionContainsPackage(solution, origin.child_name)) continue;
         if (!include_runtime and origin.child_role != .build) continue;
 
@@ -1526,7 +1550,7 @@ const LockedReplayPool = struct {
             .error_name = @errorName(err),
         });
 
-        var worker_index = moonstone.store.driver.StoreDriver.init(self.allocator, self.index_db_path_z) catch |err| {
+        var worker_index = moonstone.store.driver.StoreDriver.initReadOnly(self.allocator, self.index_db_path_z) catch |err| {
             job.err = err;
             return;
         };
@@ -2069,7 +2093,15 @@ pub const SyncCommand = struct {
                 defer allocator.free(raw_spec);
                 const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                 defer spec.deinit(allocator);
-                if (try resolverForPackageSpec(&mt, spec) == .rocks) {
+                const resolver = resolverForPackageSpec(&mt, spec) catch |err| switch (err) {
+                    error.RegistryNotFound => {
+                        if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                        ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "dependency '{s}' specifies unknown registry '{s}'", .{ dep.name, spec.registry orelse "" }) } };
+                        return error.RegistryNotFound;
+                    },
+                    else => return err,
+                };
+                if (resolver == .rocks) {
                     break :blk true;
                 }
             }
@@ -2382,11 +2414,20 @@ pub const SyncCommand = struct {
             const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
             defer spec.deinit(allocator);
 
-            const selected_resolver = try resolverForPackageSpec(&mt, spec);
+            const selected_resolver = resolverForPackageSpec(&mt, spec) catch |err| switch (err) {
+                error.RegistryNotFound => {
+                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "dependency '{s}' specifies unknown registry '{s}'", .{ dep.name, spec.registry orelse "" }) } };
+                    return error.RegistryNotFound;
+                },
+                else => return err,
+            };
 
             try targets.append(allocator, .{
                 .name = try allocator.dupe(u8, if (selected_resolver == .rocks) spec.name else dep.name),
-                .range = if (selected_resolver == .rocks)
+                .range = if (selected_resolver == .artifact)
+                    try moonstone.domain.semver.VersionRange.parse(allocator, "*")
+                else if (selected_resolver == .rocks)
                     try moonstone.domain.semver.VersionRange.parseLuaRocks(allocator, spec.constraint orelse "*")
                 else
                     try moonstone.domain.semver.VersionRange.parse(allocator, spec.constraint orelse "*"),
@@ -2729,8 +2770,12 @@ pub const SyncCommand = struct {
                 backend.phase("Solving dependencies...", .{});
             }
             profile_span = profiler.now();
-            solution = solver.solve(targets.items) catch |err| blk: {
-                if (err == error.ArtifactNotFound) break :blk std.StringArrayHashMapUnmanaged(moonstone.resolution.candidate.ResolvedArtifact).empty;
+            solution = solver.solve(targets.items) catch |err| {
+                if (err == error.StoreDependencyMetadataIncomplete) {
+                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                    ctx.error_detail = .{ .message = .{ .msg = try allocator.dupe(u8, "A cached package lacks complete dependency metadata. Reconcile online with 'moon sync --update' before resolving offline; exact lock replay remains available.") } };
+                    return err;
+                }
                 if (err == error.NoSolution) {
                     if (provider_impl.offline_diagnostic) |diag| {
                         if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
@@ -2777,259 +2822,19 @@ pub const SyncCommand = struct {
             };
             profiler.spanCount("sync.pubgrub.solve", profile_span, "packages", solution.count());
             if (!self.json) backend.phaseDone("Resolved {d} dependencies.", .{solution.count()});
-            profile_span = profiler.now();
-            for (mt.dependencies.items) |dep| {
-                const raw_spec = try dep.toSpecString(allocator);
-                defer allocator.free(raw_spec);
-                const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
-                defer spec.deinit(allocator);
-
-                const selected_resolver = try resolverForPackageSpec(&mt, spec);
-                const dep_name = if (selected_resolver == .rocks) spec.name else dep.name;
-
-                // LuaRocks source candidates must remain in the post-solve
-                // realization pool so their build-only closure can be
-                // materialized and projected before the parent build. Other
-                // explicit resolvers retain the legacy direct path below.
-                const force_direct = selected_resolver != .rocks and (spec.resolver != null or spec.registry != null);
-                if (solutionContainsPackage(&solution, dep_name) and !force_direct) continue;
-
-                var resolved_direct_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
-                const resolver_query_name = switch (selected_resolver) {
-                    .path, .link, .artifact => spec.name,
-                    else => dep_name,
-                };
-                if (selected_resolver != .moonstone and selected_resolver != .rocks) {
-                    resolved_direct_opt = blk: {
-                        break :blk coordinator.resolveWithKind(resolver_query_name, spec.constraint orelse "*", idx, registries, .{
-                            .offline = self.offline,
-                            .prefer_local = !self.update,
-                            .runtime = active_lua_abi,
-                            .runtime_c_api = runtime_c_api,
-                            .runtime_artifact_hash = rt_res.artifact_hash,
-                            .runtime_path = rt_mat_res.path,
-                            .on_event = on_resolve_cb,
-                            .on_event_context = on_resolve_ctx,
-                            .build_env = build_env,
-                        }, selected_resolver, env, spec.registry) catch |err| {
-                            if (err == error.UnsupportedLuaRocksBuildType and (spec.resolver != null or spec.registry != null)) return err;
-                            if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) break :blk null;
-                            return err;
-                        };
-                    };
-                }
-                if (resolved_direct_opt == null and selected_resolver == .moonstone) {
-                    const registry_name = spec.registry orelse "moonstone";
-                    for (registries) |reg| {
-                        if (!std.mem.eql(u8, reg.name, registry_name)) continue;
-                        const remote = coordinator.resolve_remote(dep_name, spec.constraint orelse "*", reg.url, reg.token, .{
-                            .offline = self.offline,
-                            .prefer_local = !self.update,
-                            .runtime = active_lua_abi,
-                            .runtime_artifact_hash = rt_res.artifact_hash,
-                            .runtime_path = rt_mat_res.path,
-                            .on_event = on_resolve_cb,
-                            .on_event_context = on_resolve_ctx,
-                            .build_env = build_env,
-                        }, env) catch continue;
-                        resolved_direct_opt = .{
-                            .name = try allocator.dupe(u8, dep_name),
-                            .version = try allocator.dupe(u8, remote.desc.package.version),
-                            .kind = remote.desc.package.kind,
-                            .artifact_hash = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].hash),
-                            .lua_abi = try allocator.dupe(u8, remote.desc.artifact[remote.artifact_idx].lua_abi),
-                            .remote_desc = remote.desc,
-                            .registry_name = try allocator.dupe(u8, reg.name),
-                            .registry_url = try allocator.dupe(u8, reg.url),
-                            .registry_token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
-                            .descriptor_path = remote.descriptor_path,
-                            .artifact_idx = remote.artifact_idx,
-                            .origin = .{ .moonstone_registry = .{
-                                .url = try allocator.dupe(u8, reg.url),
-                                .token = if (reg.token) |t| try allocator.dupe(u8, t) else null,
-                                .descriptor_path = try allocator.dupe(u8, remote.descriptor_path),
-                                .artifact_idx = remote.artifact_idx,
-                            } },
-                        };
-                        break;
-                    }
-                }
-                var resolved_direct = resolved_direct_opt orelse {
-                    if (spec.resolver) |resolver_kind| switch (resolver_kind) {
-                        .path, .link, .artifact => if (solutionContainsPackage(&solution, dep_name)) continue,
-                        else => {},
-                    };
-                    return error.PackageNotFound;
-                };
-                errdefer resolved_direct.deinit(allocator);
-
-                if (solutionFetchSwapRemovePackage(&solution, dep_name)) |old| {
-                    allocator.free(old.key);
-                    old.value.deinit(allocator);
-                }
-                try solution.put(allocator, try allocator.dupe(u8, dep_name), resolved_direct);
-
-                if (resolved_direct.local_path) |linked_path| {
-                    if (std.mem.eql(u8, resolved_direct.artifact_hash, "link") or std.mem.eql(u8, resolved_direct.artifact_hash, "path")) {
-                        const manifest_path = try std.fs.path.join(allocator, &.{ linked_path, "moonstone.toml" });
-                        defer allocator.free(manifest_path);
-                        const linked_content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
-                            if (err == error.FileNotFound) continue;
-                            return err;
-                        };
-                        defer allocator.free(linked_content);
-                        var linked_mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, linked_content);
-                        defer linked_mt.deinit(allocator);
-
-                        for (linked_mt.dependencies.items) |child_dep| {
-                            const child_raw_spec = try child_dep.toSpecString(allocator);
-                            defer allocator.free(child_raw_spec);
-                            const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
-                            defer child_spec.deinit(allocator);
-                            const child_resolver = try resolverForPackageSpec(&linked_mt, child_spec);
-                            const child_name = if (child_resolver == .rocks) child_spec.name else child_dep.name;
-                            if (solutionContainsPackage(&solution, child_name)) continue;
-
-                            var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
-                            var child_kinds_len: usize = 0;
-                            child_kinds_buf[child_kinds_len] = child_resolver;
-                            child_kinds_len += 1;
-
-                            const child_query_name = switch (child_resolver) {
-                                .path, .link, .artifact => child_spec.name,
-                                else => child_name,
-                            };
-                            var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
-                            for (child_kinds_buf[0..child_kinds_len]) |kind| {
-                                resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
-                                    .offline = self.offline,
-                                    .runtime = active_lua_abi,
-                                    .runtime_artifact_hash = rt_res.artifact_hash,
-                                    .runtime_path = rt_mat_res.path,
-                                    .on_event = on_resolve_cb,
-                                    .on_event_context = on_resolve_ctx,
-                                    .build_env = build_env,
-                                }, kind, env, child_spec.registry) catch |err| {
-                                    if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
-                                    return err;
-                                };
-                                if (resolved_child_opt != null) break;
-                            }
-                            var resolved_child = resolved_child_opt orelse return error.PackageNotFound;
-                            errdefer resolved_child.deinit(allocator);
-                            try solution.put(allocator, try allocator.dupe(u8, child_name), resolved_child);
-                        }
-                    }
-                }
-            }
-
-            // Direct path/link dependencies are resolved outside PubGrub so their
-            // local manifests can participate in the project closure. A linked
-            // project can introduce a registry package whose descriptor has
-            // further dependencies (for example Meteorite -> Ballad -> dkjson).
-            // Expand discovered descriptors to a fixed point before scope linking.
-            var expanded_descriptors = std.StringArrayHashMapUnmanaged(void).empty;
-            defer {
-                var expanded_it = expanded_descriptors.iterator();
-                while (expanded_it.next()) |entry| allocator.free(entry.key_ptr.*);
-                expanded_descriptors.deinit(allocator);
-            }
-            while (expanded_descriptors.count() < solution.count()) {
-                var package_names = std.ArrayList([]const u8).empty;
-                defer {
-                    for (package_names.items) |package_name| allocator.free(package_name);
-                    package_names.deinit(allocator);
-                }
-                for (solution.keys()) |package_name| {
-                    try package_names.append(allocator, try allocator.dupe(u8, package_name));
-                }
-
-                for (package_names.items) |parent_name| {
-                    if (expanded_descriptors.contains(parent_name)) continue;
-                    try expanded_descriptors.put(allocator, try allocator.dupe(u8, parent_name), {});
-
-                    const parent = solution.getPtr(parent_name) orelse continue;
-                    var child_specs = std.ArrayList([]const u8).empty;
-                    defer {
-                        for (child_specs.items) |child_spec| allocator.free(child_spec);
-                        child_specs.deinit(allocator);
-                    }
-
-                    if (parent.remote_desc) |remote_desc| {
-                        for (remote_desc.dependencies) |child_dep| {
-                            try child_specs.append(allocator, try child_dep.toSpecString(allocator));
-                        }
-                    } else if (parent.local_path) |local_path| {
-                        const manifest_path = try std.fs.path.join(allocator, &.{ local_path, "manifest.toml" });
-                        defer allocator.free(manifest_path);
-                        const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| switch (err) {
-                            error.FileNotFound => null,
-                            else => return err,
-                        };
-                        if (content) |store_content| {
-                            defer allocator.free(store_content);
-                            var store_manifest = try moonstone.domain.manifest.StoreManifest.parse(allocator, store_content);
-                            defer store_manifest.deinit(allocator);
-                            for (store_manifest.dependencies) |child_dep| {
-                                try child_specs.append(allocator, try child_dep.toSpecString(allocator));
-                            }
-                        }
-                    }
-
-                    for (child_specs.items) |child_raw_spec| {
-                        const child_spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, child_raw_spec);
-                        defer child_spec.deinit(allocator);
-                        const child_resolver = resolverForPackageSpec(&mt, child_spec) catch |err| switch (err) {
-                            error.RegistryNotFound => .moonstone,
-                            else => return err,
-                        };
-                        const child_name = child_spec.name;
-                        if (solutionContainsPackage(&solution, child_name)) continue;
-
-                        var child_kinds_buf: [4]moonstone.resolution.coordinator.CoordinatorKind = undefined;
-                        var child_kinds_len: usize = 0;
-                        child_kinds_buf[child_kinds_len] = child_resolver;
-                        child_kinds_len += 1;
-
-                        const child_query_name = switch (child_resolver) {
-                            .path, .link, .artifact => child_spec.name,
-                            else => child_name,
-                        };
-                        var resolved_child_opt: ?moonstone.resolution.candidate.ResolvedArtifact = null;
-                        for (child_kinds_buf[0..child_kinds_len]) |kind| {
-                            resolved_child_opt = coordinator.resolveWithKind(child_query_name, child_spec.constraint orelse "*", idx, registries, .{
-                                .offline = self.offline,
-                                .prefer_local = !self.update,
-                                .runtime = active_lua_abi,
-                                .runtime_c_api = runtime_c_api,
-                                .runtime_artifact_hash = rt_res.artifact_hash,
-                                .runtime_path = rt_mat_res.path,
-                                .on_event = on_resolve_cb,
-                                .on_event_context = on_resolve_ctx,
-                                .build_env = build_env,
-                            }, kind, env, child_spec.registry) catch |err| {
-                                if (err == error.PackageNotFound or err == error.ArtifactNotFound or err == error.RockspecNotFound or err == error.UnsupportedLuaRocksBuildType) continue;
-                                return err;
-                            };
-                            if (resolved_child_opt != null) break;
-                        }
-                        var resolved_child = resolved_child_opt orelse return error.PackageNotFound;
-                        errdefer resolved_child.deinit(allocator);
-                        try solution.put(allocator, try allocator.dupe(u8, resolved_child.name), resolved_child);
-                    }
-                }
-            }
-            profiler.spanCount("sync.direct.resolve", profile_span, "packages", solution.count());
+            // The solver owns the complete dependency closure. Materialization
+            // consumes its candidates without replacing or extending the graph.
 
             report.requested_targets = targets.items.len;
             report.resolved_packages = solution.count();
             report.resolve_ms = elapsedMs(io, resolve_started_ns);
             if (emitter) |e| {
-                try e.emit(io, .STATUS, name, "resolution.complete", .{
-                    .requested_targets = report.requested_targets,
-                    .resolved_packages = report.resolved_packages,
-                    .elapsed_ms = report.resolve_ms,
-                });
+                if (!self.check) {
+                    try e.emit(io, .PROGRESS, name, "sync.resolved", .{
+                        .dependencies = solution.count(),
+                        .elapsed_ms = report.resolve_ms,
+                    });
+                }
             }
         }
         report.requested_targets = targets.items.len;
@@ -3080,7 +2885,14 @@ pub const SyncCommand = struct {
             defer allocator.free(raw_spec);
             const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
             defer spec.deinit(allocator);
-            const selected_resolver = try resolverForPackageSpec(&mt, spec);
+            const selected_resolver = resolverForPackageSpec(&mt, spec) catch |err| switch (err) {
+                error.RegistryNotFound => {
+                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                    ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "dependency '{s}' specifies unknown registry '{s}'", .{ dep.name, spec.registry orelse "" }) } };
+                    return error.RegistryNotFound;
+                },
+                else => return err,
+            };
             const dep_pkg_name = if (selected_resolver == .rocks) spec.name else dep.name;
             const group_name = @tagName(dep.role);
             try group_ctx.addGroup(dep_pkg_name, group_name);
@@ -3142,7 +2954,14 @@ pub const SyncCommand = struct {
                                     defer allocator.free(raw_spec);
                                     const dspec = try moonstone.domain.package_spec.parsePackageSpec(allocator, raw_spec);
                                     defer dspec.deinit(allocator);
-                                    const selected_resolver = try resolverForPackageSpec(&mt, dspec);
+                                    const selected_resolver = resolverForPackageSpec(&mt, dspec) catch |err| switch (err) {
+                                        error.RegistryNotFound => {
+                                            if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                                            ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "dependency '{s}' specifies unknown registry '{s}'", .{ dep.name, dspec.registry orelse "" }) } };
+                                            return error.RegistryNotFound;
+                                        },
+                                        else => return err,
+                                    };
                                     const dname = if (selected_resolver == .rocks) dspec.name else dep.name;
                                     try deps.append(allocator, .{
                                         .name = try allocator.dupe(u8, dname),
@@ -3187,7 +3006,14 @@ pub const SyncCommand = struct {
         // manifest cannot yet provide edges above. Preserve the role-aware
         // metadata captured by the graph provider during PubGrub discovery.
         for (provider_impl.store_dependency_origins.items) |origin| {
-            if (!solutionContainsPackage(&solution, origin.parent_name) or !solutionContainsPackage(&solution, origin.child_name)) continue;
+            const parent_art = blk: {
+                for (solution.keys(), solution.values()) |k, *v| {
+                    if (std.ascii.eqlIgnoreCase(k, origin.parent_name)) break :blk v;
+                }
+                break :blk null;
+            } orelse continue;
+            if (!versionsMatch(origin.parent_version, parent_art.version)) continue;
+            if (!solutionContainsPackage(&solution, origin.child_name)) continue;
             const gop = try dep_graph.getOrPut(allocator, origin.parent_name);
             if (!gop.found_existing) {
                 gop.key_ptr.* = try allocator.dupe(u8, origin.parent_name);

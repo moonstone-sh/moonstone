@@ -763,6 +763,19 @@ registry.toml -> index.toml -> package.toml -> artifact blob
 recipe_hash is always required because every artifact came from some plan,
 even if that plan is trivial ("unpack this prebuilt blob").
 
+Exact replay does not treat these hashes as interchangeable. A registry may
+publish a source blob whose `source_hash` differs from the realized
+`artifact_hash`. Moonstone may rebuild from that pinned source only when the
+lock also records the materialization recipe. The rebuilt output must equal the
+locked `artifact_hash` before it is admitted or linked.
+
+Each admitted store `manifest.toml` also records
+`dependencies_complete = true`. This distinguishes a package with no
+dependencies from a legacy manifest that never recorded its closure. The
+manifest preserves dependency constraints, roles, resolver identities, and
+custom registry identities. Resolution rejects incomplete cached metadata;
+offline resolution reports that the package must first be reconciled online.
+
 ---
 
 ## Client Resolution Flow
@@ -774,7 +787,11 @@ When the user runs `moon add inspect` or `moon sync`:
 2. `registry:package` selects exactly that registry identity; a bare package
    selects the built-in `moonstone` identity. `path:`, `link:`, and `artifact:`
    are local-source forms, not registries.
-3. For the Moonstone resolver:
+3. Feed every direct dependency, including `path:`, `link:`, and `artifact:`,
+   into PubGrub. Dependencies discovered from registry descriptors, linked
+   manifests, and complete store manifests become constraints in that same
+   solve. The resulting map is the only package graph passed to materialization.
+4. For the Moonstone resolver:
    a. Read moonstone.toml → find registry URLs / paths.
    b. Fetch registry.toml from each registry.
    c. Fetch index.toml (or use local cache if revision matches).
@@ -786,25 +803,26 @@ When the user runs `moon add inspect` or `moon sync`:
    i. Verify blob hash.
    j. Unpack blob into store/artifacts/{hash}/.
    k. Write store/manifests/{hash}.toml.
-4. For rocks resolver:
+5. For rocks resolver:
    a. Fetch LuaRocks manifest (e.g. manifest-5.4.json) for the active runtime.
    b. Look up package name and select the newest version with a source rockspec.
    c. Fetch rockspec from LuaRocks.
    d. Parse and normalize into Moonstone descriptor.
    e. Download .src.rock, unpack, and materialize Lua modules.
    f. Store artifact in Moonstone store.
-5. For path resolver:
+6. For path resolver:
    a. Read moonstone.toml at the target path.
    b. Return local-path candidate (no download).
-6. For link resolver:
+7. For link resolver:
    a. Look up global link registry.
    b. Return registered path candidate (no download).
-7. Rebuild local index from store manifests.
-8. Generate .moonstone/env symlinks.
+8. Rebuild local index from store manifests.
+9. Generate .moonstone/env symlinks.
 ```
 
-For linked dependencies (`path:`, `link:`), steps 3–4 are skipped; the env
-symlinks point directly to the source project.
+For linked dependencies (`path:`, `link:`), PubGrub reads dependencies from the
+source project's manifest. Materialization then projects the source path
+directly instead of copying it into the CAS.
 
 ### Resolver Kinds
 
