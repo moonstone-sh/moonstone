@@ -398,7 +398,15 @@ local function cmd_fetch_registry_artifacts(args)
       local dest = join(cache_dir, name .. "-" .. version .. ".tar.gz")
       if opts.force or not exists(dest) then
         print(string.format("[fetch] %s@%s from %s", name, version, url))
-        run("curl -fL --retry 3 --connect-timeout 20 --max-time 120 -o " .. q(dest) .. " " .. q(url))
+        local curl = "curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 120 -o " .. q(dest) .. " " .. q(url)
+        local ok = os.execute(curl)
+        if ok ~= true and ok ~= 0 then
+          local owner, repo, tag = url:match("^https://github%.com/([^/]+)/([^/]+)/archive/refs/tags/(.+)%.tar%.gz$")
+          if not owner then die("command failed: " .. curl) end
+          local fallback = "https://codeload.github.com/" .. owner .. "/" .. repo .. "/tar.gz/refs/tags/" .. tag
+          print("[fetch] retrying through codeload: " .. fallback)
+          run("curl -fL --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 120 -o " .. q(dest) .. " " .. q(fallback))
+        end
         print("[fetch] cached: " .. dest)
       end
     end

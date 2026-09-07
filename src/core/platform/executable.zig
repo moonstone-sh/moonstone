@@ -51,7 +51,10 @@ pub fn targetExecutableNameMatches(target: []const u8, name: []const u8, physica
 }
 
 fn targetIsWindows(target: []const u8) bool {
-    return std.mem.indexOf(u8, target, "-windows-") != null;
+    // `resolveInDirectory` uses this sentinel for the executable's own host
+    // target. It is not a full target triple, so accept it alongside triples
+    // such as `x86_64-windows-gnu` and `aarch64-windows-msvc`.
+    return std.mem.eql(u8, target, "host-windows") or std.mem.indexOf(u8, target, "-windows-") != null;
 }
 
 fn hostTargetLiteral() []const u8 {
@@ -120,6 +123,7 @@ test "Windows resolution recognizes executable, command, and batch suffixes" {
 }
 
 test "target executable naming follows the requested target, not the host" {
+    try std.testing.expect(targetIsWindows("host-windows"));
     try std.testing.expect(targetExecutableNameMatches("x86_64-windows-gnu", "tool", "tool.cmd"));
     try std.testing.expect(targetExecutableNameMatches("aarch64-windows-msvc", "tool", "tool.EXE"));
     try std.testing.expect(!targetExecutableNameMatches("x86_64-linux-gnu", "tool", "tool.exe"));

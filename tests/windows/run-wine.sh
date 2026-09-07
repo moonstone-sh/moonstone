@@ -102,6 +102,8 @@ mkdir -p "${runtime_store}/files/bin"
 cp /opt/wine-probes/native-loader-probe.exe "${runtime_store}/files/bin/lua.exe"
 cp /opt/wine-probes/nativeprobe.dll "${runtime_store}/files/bin/nativeprobe.dll"
 cat >"${runtime_store}/manifest.toml" <<TOML
+dependencies_complete = true
+
 [artifact]
 name = "moonstone/lua"
 version = "5.4.9"

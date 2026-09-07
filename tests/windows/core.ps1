@@ -106,6 +106,8 @@ if ($LASTEXITCODE -ne 0) { throw 'failed to compile runtime sibling DLL' }
 if ($LASTEXITCODE -ne 0) { throw 'failed to compile Windows runtime launcher' }
 
 @"
+dependencies_complete = true
+
 [artifact]
 name = "moonstone/lua"
 version = "5.4.9"
