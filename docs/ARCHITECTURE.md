@@ -79,7 +79,8 @@ The lifecycle of a mutating command (like `moon sync` or `moon add`) is strictly
 ### Phase 4: Environment Linking
 - **Project Isolation:** Instead of copying files, the `Linker` creates the isolated `.moonstone/env` directory.
 - **Symlink Generation:** It iterates over the materialized hashes and projects exact symlinks from the CAS store into standard UNIX paths inside the environment (`env/bin`, `env/share/lua/5.4`, `env/lib/lua/5.4`).
-- **Live Link Injection:** If a package originated from a live link (e.g., `path:` or `link:`), the linker skips the immutable store and symlinks the source code directly into the environment, enabling immediate local development feedback.
+- **Live Link Injection:** If a package originated from a live link (e.g., `path:` or `link:`), the linker skips the immutable store and symlinks the source code directly into the environment, enabling immediate local development feedback. A linked package may also declare its own native libraries in its `moonstone.toml` (`[[provides.native_lib]]`); those are projected into `env/lib/native` like artifact provisions.
+- **Package Roots:** Because projection is by symlink, `debug.getinfo(1, "S").source` inside a projected module reports the link inside `.moonstone/env`, not the package's real directory. The linker therefore records each projected package's real root in `env.toml`, and the run environment exports it as `MOONSTONE_PACKAGE_ROOT_<NAME>`. See [`PROJECT_ENVIRONMENT.md`](PROJECT_ENVIRONMENT.md).
 - **Lockfile Synchronization:** Finally, the exact resolved graph, including artifact hashes and ABI configurations, is serialized into `moonstone.lock` to guarantee future reproducibility.
 
 ## 8. Cross-Compilation Mastery

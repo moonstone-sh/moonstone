@@ -175,6 +175,63 @@ This is deliberately a domain and serialization change before a LuaRocks
 parser change. It gives ordinary registry artifacts and LuaRocks-derived
 artifacts the same honest native-library contract.
 
+## Amendment 2026-09-08: linked working trees
+
+Contract v1 above covers artifacts only. A `path:`/`link:` dependency has no
+artifact manifest and no registry descriptor, so until now it had no way to
+express a native library at all: `src/core/resolution/sources/path.zig` reads
+only `name`/`version`/`kind`, and the live-link branch of
+`src/core/project/linker.zig` projected only Lua modules and `bin/` entries.
+Any locally developed FFI binding hit that on its first day.
+
+A linked package now declares its own libraries in its `moonstone.toml`:
+
+```toml
+[[provides.native_lib]]
+name = "yogacore"
+path = "native/dist/aarch64-macos/libyogacore.dylib"
+linkage = "shared"   # default; "static" is retained but never projected
+```
+
+This reuses `manifest.FeatureProvision` and `NativeLibraryLinkage` rather than
+introducing a parallel schema. `src/core/project/linked_native_library.zig`
+reads and validates the declarations; the linker merges them into the same
+`native_lib_map` that artifact provisions populate, so the loader-visible
+basename remains the single project-wide conflict key across both origins.
+
+What stays identical to v1: the `.moonstone/env/lib/native/<basename>` layout,
+the host-loader environment table, `static` exclusion from the loader path, and
+every explicit non-goal — no rpath rewriting, no dependency scanning, no
+conversion into `lua_cmodule`.
+
+What is deliberately different:
+
+1. **No target matrix.** A published artifact is selected out of a target
+   matrix; a `path:` dependency is already one directory on this host, and
+   `moon sync` refuses live sources for a foreign target profile
+   (`ForeignTargetLiveSourceUnsupported`). The declaration is read as-is. A
+   package that ships several builds selects among them itself, by declaring
+   the path it wants.
+2. **Host filename vocabulary.** Because the projection is host-only, the
+   accepted filename check uses `builtin.os.tag` rather than
+   `platform/target.zig`'s persisted target identity — the same compile-time
+   host branch the loader variable itself uses.
+3. **Declared, not swept.** Only declared paths are projected, and a declared
+   path that is absolute, escapes the package, is not a regular file, or does
+   not exist fails the sync with a diagnostic naming it. Nothing is discovered
+   by scanning the working tree.
+4. **`linkage` defaults to `shared`.** A registry descriptor without the field
+   stays `unknown` for backwards compatibility; this declaration surface is
+   new, and its only purpose is loader visibility, so the default states that
+   intent and `unknown` is rejected outright.
+
+Certification: `tests/e2e/commands/path_dependency_native_library.sh` builds a
+real shared library and a real executable with no rpath inside a `path:`
+dependency, and proves that `moon exec` resolves the library only through
+Moonstone's projected loader environment — the live-source equivalent of step 4
+of the sequence above. It also asserts that a `static` declaration stays out of
+`lib/native` and that a declared-but-unbuilt library fails the sync.
+
 ## Windows Certification Boundary
 
 Moonstone uses three deliberately distinct checks for Windows behavior:

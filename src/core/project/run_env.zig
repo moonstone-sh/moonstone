@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const manifest = @import("../domain/manifest.zig");
 const environment = @import("environment.zig");
+const package_root_mod = @import("package_root.zig");
+
+pub const PackageRoot = package_root_mod.PackageRoot;
 
 pub const RunEnv = struct {
     env_map: std.process.Environ.Map,
@@ -14,6 +17,7 @@ pub const RunEnv = struct {
     native_lib_path: ?[]const u8,
     lua_ver_suffix: []const u8, // e.g. "5_4"
     lua_ver_dot: []const u8, // e.g. "5.4"
+    package_roots: []const PackageRoot,
 
     pub fn deinit(self: *RunEnv) void {
         self.env_map.deinit();
@@ -23,8 +27,61 @@ pub const RunEnv = struct {
         if (self.native_lib_path) |native_lib_path| self.allocator.free(native_lib_path);
         self.allocator.free(self.lua_ver_suffix);
         self.allocator.free(self.lua_ver_dot);
+        for (self.package_roots) |entry| entry.deinit(self.allocator);
+        self.allocator.free(self.package_roots);
     }
 };
+
+fn deinitPackageRoots(allocator: std.mem.Allocator, roots: []const PackageRoot) void {
+    for (roots) |entry| entry.deinit(allocator);
+    allocator.free(roots);
+}
+
+/// Read the `[[package]]` roots the linker recorded in `env.toml`.
+///
+/// The table is advisory metadata about a derived environment, not a trust
+/// boundary: a malformed or truncated entry is skipped rather than blocking
+/// `moon exec`.
+fn parsePackageRoots(allocator: std.mem.Allocator, env_toml: @import("toml").Table) ![]const PackageRoot {
+    const packages_value = env_toml.get("package") orelse return &.{};
+    if (packages_value != .array) return &.{};
+
+    var roots = std.ArrayList(PackageRoot).empty;
+    errdefer {
+        for (roots.items) |entry| entry.deinit(allocator);
+        roots.deinit(allocator);
+    }
+
+    for (packages_value.array.items) |package_value| {
+        if (package_value != .table) continue;
+        const entry = package_value.table;
+        const name_value = entry.get("name") orelse continue;
+        const root_value = entry.get("root") orelse continue;
+        if (name_value != .string or root_value != .string) continue;
+
+        const projection = if (entry.get("projection")) |projection_value| blk: {
+            if (projection_value != .string) break :blk package_root_mod.Projection.store;
+            break :blk package_root_mod.Projection.fromString(projection_value.string) orelse .store;
+        } else .store;
+
+        const key = if (entry.get("env")) |key_value| blk: {
+            if (key_value != .string) break :blk try package_root_mod.environmentKey(allocator, name_value.string);
+            break :blk try allocator.dupe(u8, key_value.string);
+        } else try package_root_mod.environmentKey(allocator, name_value.string);
+        errdefer allocator.free(key);
+
+        const name = try allocator.dupe(u8, name_value.string);
+        errdefer allocator.free(name);
+        try roots.append(allocator, .{
+            .name = name,
+            .root = try allocator.dupe(u8, root_value.string),
+            .key = key,
+            .projection = projection,
+        });
+    }
+
+    return try roots.toOwnedSlice(allocator);
+}
 
 pub fn get_run_env(
     allocator: std.mem.Allocator,
@@ -133,7 +190,10 @@ fn getRunEnv(
             const native_lib_path = try std.fs.path.join(allocator, &.{ pr, ".moonstone", "env", "lib", "native" });
             defer allocator.free(native_lib_path);
 
-            return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, native_lib_path, lua_ver_dot);
+            const package_roots = try parsePackageRoots(allocator, res.value);
+            defer deinitPackageRoots(allocator, package_roots);
+
+            return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, native_lib_path, lua_ver_dot, package_roots);
         }
     }
 
@@ -194,7 +254,9 @@ fn getRunEnv(
         const env_share_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "share", "lua", lua_ver_dot });
         const env_lib_path = try std.fs.path.join(allocator, &.{ rt_path, "files", "lib", "lua", lua_ver_dot });
 
-        return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, null, lua_ver_dot);
+        // The global fallback is a runtime, not a project: it projects no
+        // package trees and therefore records no package roots.
+        return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, null, lua_ver_dot, &.{});
     }
 
     return error.NoActiveEnvironment;
@@ -209,6 +271,7 @@ fn build_run_env(
     lib_path: []const u8,
     native_lib_path: ?[]const u8,
     lua_ver_dot: []const u8,
+    package_roots: []const PackageRoot,
 ) !RunEnv {
     const ver_suffix = try allocator.dupe(u8, lua_ver_dot);
     errdefer allocator.free(ver_suffix);
@@ -283,6 +346,28 @@ fn build_run_env(
     try final_env.put("LUA_PATH", lua_path_val);
     try final_env.put("LUA_CPATH", lua_cpath_val);
 
+    // Real package roots. A projected module is a symlink, so a package that
+    // asks `debug.getinfo` where it lives is told about the consumer's
+    // environment; this answers the question it actually meant.
+    var owned_roots = std.ArrayList(PackageRoot).empty;
+    errdefer {
+        for (owned_roots.items) |entry| entry.deinit(allocator);
+        owned_roots.deinit(allocator);
+    }
+    for (package_roots) |entry| {
+        try final_env.put(entry.key, entry.root);
+        const name = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(name);
+        const root = try allocator.dupe(u8, entry.root);
+        errdefer allocator.free(root);
+        try owned_roots.append(allocator, .{
+            .name = name,
+            .root = root,
+            .key = try allocator.dupe(u8, entry.key),
+            .projection = entry.projection,
+        });
+    }
+
     return RunEnv{
         .env_map = final_env,
         .allocator = allocator,
@@ -292,6 +377,7 @@ fn build_run_env(
         .native_lib_path = if (active_native_lib_path) |path| try allocator.dupe(u8, path) else null,
         .lua_ver_suffix = ver_suffix,
         .lua_ver_dot = lua_ver_dot,
+        .package_roots = try owned_roots.toOwnedSlice(allocator),
     };
 }
 
@@ -385,7 +471,7 @@ test "build_run_env projects an existing native library directory" {
     defer base_env.deinit();
     try base_env.put("PATH", "/host/bin");
 
-    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4");
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4", &.{});
     defer run_env.deinit();
 
     try std.testing.expectEqualStrings(native_lib_path, run_env.native_lib_path.?);
@@ -424,11 +510,92 @@ test "build_run_env omits absent native library directory" {
     defer base_env.deinit();
     try base_env.put("PATH", "/host/bin");
 
-    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4");
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4", &.{});
     defer run_env.deinit();
 
     try std.testing.expect(run_env.native_lib_path == null);
     if (comptime builtin.os.tag != .windows) {
         try std.testing.expect(run_env.env_map.get(environment.nativeLibraryEnvironmentVariable().?) == null);
     }
+}
+
+test "recorded package roots become exported environment variables" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "share/lua/5.1");
+    try tmp.dir.createDirPath(io, "lib/lua/5.1");
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const bin_path = try std.fs.path.join(allocator, &.{ root, "bin" });
+    defer allocator.free(bin_path);
+    const share_path = try std.fs.path.join(allocator, &.{ root, "share/lua/5.1" });
+    defer allocator.free(share_path);
+    const lib_path = try std.fs.path.join(allocator, &.{ root, "lib/lua/5.1" });
+    defer allocator.free(lib_path);
+
+    var base_env = std.process.Environ.Map.init(allocator);
+    defer base_env.deinit();
+    try base_env.put("PATH", "/host/bin");
+
+    const declared = [_]PackageRoot{.{
+        .name = "hydronium-ink",
+        .root = "/workspace/hydronium/ink",
+        .key = "MOONSTONE_PACKAGE_ROOT_HYDRONIUM_INK",
+        .projection = .live,
+    }};
+
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, null, "5.1", &declared);
+    defer run_env.deinit();
+
+    try std.testing.expectEqualStrings(
+        "/workspace/hydronium/ink",
+        run_env.env_map.get("MOONSTONE_PACKAGE_ROOT_HYDRONIUM_INK").?,
+    );
+    try std.testing.expectEqual(@as(usize, 1), run_env.package_roots.len);
+    try std.testing.expectEqual(package_root_mod.Projection.live, run_env.package_roots[0].projection);
+}
+
+test "package roots are read back from a linker-written env.toml" {
+    const allocator = std.testing.allocator;
+    const env_toml =
+        \\[runtime]
+        \\name = "luajit"
+        \\version = "2.1.0"
+        \\abi = "lua51"
+        \\
+        \\[[package]]
+        \\name = "hydronium-ink"
+        \\root = "/workspace/hydronium/ink"
+        \\projection = "live"
+        \\env = "MOONSTONE_PACKAGE_ROOT_HYDRONIUM_INK"
+        \\
+        \\[[package]]
+        \\name = "moonstone/ballad"
+        \\root = "/store/b3/aa/files"
+        \\projection = "store"
+        \\env = "MOONSTONE_PACKAGE_ROOT_MOONSTONE_BALLAD"
+        \\
+        \\[[package]]
+        \\root = "/store/b3/bb/files"
+    ;
+
+    var parser = @import("toml").Parser(@import("toml").Table).init(allocator);
+    defer parser.deinit();
+    var res = try parser.parseString(env_toml);
+    defer res.deinit();
+
+    const roots = try parsePackageRoots(allocator, res.value);
+    defer deinitPackageRoots(allocator, roots);
+
+    // The nameless third entry is skipped rather than treated as fatal.
+    try std.testing.expectEqual(@as(usize, 2), roots.len);
+    try std.testing.expectEqualStrings("hydronium-ink", roots[0].name);
+    try std.testing.expectEqualStrings("/workspace/hydronium/ink", roots[0].root);
+    try std.testing.expectEqualStrings("MOONSTONE_PACKAGE_ROOT_HYDRONIUM_INK", roots[0].key);
+    try std.testing.expectEqual(package_root_mod.Projection.live, roots[0].projection);
+    try std.testing.expectEqual(package_root_mod.Projection.store, roots[1].projection);
 }

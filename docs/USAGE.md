@@ -297,6 +297,13 @@ Roles prevent contamination. Moonstone does not dump every dependency into one g
 - **Helper scope** — `helper` executables available to the runtime package
 - **External/Optional slots** — metadata only; not linked into the output closure
 
+Projected modules are symlinks into the store or into a linked working tree, so
+a package cannot locate its own installation directory with
+`debug.getinfo(1, "S").source`. Moonstone exports each projected package's real
+root as `MOONSTONE_PACKAGE_ROOT_<NAME>`; a locally developed package can also
+declare its own native libraries with `[[provides.native_lib]]`. Both are
+described in [`PROJECT_ENVIRONMENT.md`](PROJECT_ENVIRONMENT.md).
+
 ## Semantic Manifest Edits
 
 The canonical storage form is explicit `[[dependencies]]` records. Tools that

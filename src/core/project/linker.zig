@@ -6,6 +6,9 @@ const package_spec = @import("../domain/package_spec.zig");
 const driver_mod = @import("../store/driver.zig");
 const semver = @import("../domain/semver.zig");
 const executable = @import("../platform/executable.zig");
+const linked_native_library = @import("linked_native_library.zig");
+const package_root_mod = @import("package_root.zig");
+const error_context = @import("../diagnostics/error_context.zig");
 
 pub const ProjectEnv = struct {
     bin_map: std.array_hash_map.String(struct { path: []const u8, artifact_hash: []const u8 }),
@@ -804,6 +807,80 @@ fn projectDirectory(
     };
 }
 
+/// Resolve a projected package's real directory.
+///
+/// `debug.getinfo`-style self-location is only useful if the recorded root is
+/// the real one, so the projected path is resolved through any symlink on the
+/// way to it. A path that cannot be resolved (a link target removed between
+/// resolution and projection) is recorded verbatim rather than failing the
+/// sync: the caller has already accepted that directory as the dependency.
+fn resolveRealPackageRoot(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => try allocator.dupe(u8, path),
+    };
+}
+
+fn appendPackageRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    roots: *std.ArrayList(package_root_mod.PackageRoot),
+    package_name: []const u8,
+    package_path: []const u8,
+    projection: package_root_mod.Projection,
+) !void {
+    const key = try package_root_mod.environmentKey(allocator, package_name);
+    errdefer allocator.free(key);
+    const root = try resolveRealPackageRoot(allocator, io, package_path);
+    errdefer allocator.free(root);
+
+    for (roots.items, 0..) |existing, index| {
+        if (!std.mem.eql(u8, existing.key, key)) continue;
+
+        if (existing.root.len == 0 or std.mem.eql(u8, existing.root, root)) {
+            // Already ambiguous, or the same package seen twice — e.g. as a
+            // live link and again through a fallback projection.
+            allocator.free(key);
+            allocator.free(root);
+            return;
+        }
+
+        if (std.mem.eql(u8, existing.name, package_name)) {
+            // One coordinate projected from two directories. Which one owns
+            // the name is genuinely unanswerable, so record it as ambiguous
+            // and export neither rather than exporting a path that is wrong
+            // half the time. This stays additive: dropping a convenience
+            // variable must not fail a closure the rest of the linker accepts.
+            // An empty slice is a safe replacement: `Allocator.free` returns
+            // early for a zero-length slice, so the entry still deinits.
+            allocator.free(roots.items[index].root);
+            roots.items[index].root = "";
+            allocator.free(key);
+            allocator.free(root);
+            return;
+        }
+
+        // Two distinct coordinates normalizing onto one variable name. That is
+        // a naming problem in the project, not an ambiguity Moonstone can
+        // resolve. `key` and `root` are released by this function's errdefers.
+        error_context.setFmt(
+            allocator,
+            "Packages '{s}' and '{s}' both map to environment variable '{s}'. Rename one package so its projected root is unambiguous.",
+            .{ existing.name, package_name, key },
+        );
+        return error.PackageRootConflict;
+    }
+
+    const name = try allocator.dupe(u8, package_name);
+    errdefer allocator.free(name);
+    try roots.append(allocator, .{
+        .name = name,
+        .root = root,
+        .key = key,
+        .projection = projection,
+    });
+}
+
 fn packageLocalName(pkg_name: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, pkg_name, '/')) |pos| return pkg_name[pos + 1 ..];
     return pkg_name;
@@ -1202,6 +1279,69 @@ pub fn link_project_env_at(
                 .role = pa.role,
             });
         }
+    }
+
+    // 2b. Collect native libraries a linked working tree declares for itself.
+    //
+    // A `path:`/`link:` dependency has no artifact manifest and no target
+    // matrix: it is one concrete directory on this host, so its own
+    // `moonstone.toml` is the declaration site. The entries join the same
+    // loader-visible map as artifact provisions, keyed by the same basename,
+    // so a collision between a live tree and a store artifact is still an
+    // explicit conflict. A live link's owner identity is its source root
+    // rather than an artifact hash.
+    for (live_links) |live_link| {
+        const live_policy = live_link.role.getProjectionPolicy();
+        if (live_policy.metadata_only or !live_policy.link_cmodules_to_root) continue;
+
+        const declared = try linked_native_library.collect(allocator, io, live_link.pkg_name, live_link.source_path);
+        defer declared.deinit(allocator);
+
+        for (declared.items) |library| {
+            // Static archives stay inspectable in the package tree but never
+            // enter the loader path, exactly as for artifact provisions.
+            if (library.linkage == .static) continue;
+
+            if (native_lib_map.get(library.file_name)) |existing| {
+                if (!std.mem.eql(u8, existing.artifact_hash, live_link.source_path)) {
+                    error_context.setFmt(
+                        allocator,
+                        "Native library '{s}' is provided by more than one selected dependency ('{s}' declares '{s}'). Rename one library or drop one of the dependencies, then run 'moon sync'.",
+                        .{ library.file_name, live_link.pkg_name, library.source_path },
+                    );
+                    return error.NativeLibraryConflict;
+                }
+                continue;
+            }
+
+            const projected_name = try allocator.dupe(u8, library.file_name);
+            errdefer allocator.free(projected_name);
+            const projected_path = try allocator.dupe(u8, library.source_path);
+            errdefer allocator.free(projected_path);
+            try native_lib_map.put(allocator, projected_name, .{
+                .path = projected_path,
+                .artifact_hash = try allocator.dupe(u8, live_link.source_path),
+                .role = live_link.role,
+            });
+        }
+    }
+
+    // 2c. Record every projected package's real root before the environment is
+    // rebuilt, so `run_env` can export it. See `package_root.zig`.
+    var package_roots = std.ArrayList(package_root_mod.PackageRoot).empty;
+    defer {
+        for (package_roots.items) |entry| entry.deinit(allocator);
+        package_roots.deinit(allocator);
+    }
+    for (live_links) |live_link| {
+        if (live_link.role.getProjectionPolicy().metadata_only) continue;
+        try appendPackageRoot(allocator, io, &package_roots, live_link.pkg_name, live_link.source_path, .live);
+    }
+    for (projected_artifacts) |pa| {
+        if (pa.role.getProjectionPolicy().metadata_only) continue;
+        const payload_path = try index.getArtifactPayloadPath(pa.artifact_hash) orelse continue;
+        defer allocator.free(payload_path);
+        try appendPackageRoot(allocator, io, &package_roots, pa.name, payload_path, .store);
     }
 
     if (runtime_info == null) {
@@ -1742,6 +1882,22 @@ pub fn link_project_env_at(
         try aw.writer.print("abi = \"unknown\"\n", .{});
     }
 
+    // Real package roots, exported by `run_env` so a projected package can
+    // find its own non-Lua assets without resolving symlinks itself.
+    for (package_roots.items) |entry| {
+        // An ambiguous root was recorded with no value; it is not exported.
+        if (entry.root.len == 0) continue;
+        try aw.writer.print("\n[[package]]\nname = ", .{});
+        try writeTomlString(&aw.writer, entry.name);
+        try aw.writer.print("\nroot = ", .{});
+        try writeTomlString(&aw.writer, entry.root);
+        try aw.writer.print("\nprojection = ", .{});
+        try writeTomlString(&aw.writer, entry.projection.asString());
+        try aw.writer.print("\nenv = ", .{});
+        try writeTomlString(&aw.writer, entry.key);
+        try aw.writer.print("\n", .{});
+    }
+
     try aw.writer.flush();
     try env_toml_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
 
@@ -1926,6 +2082,82 @@ test "store package libexec mount prefers the executable layout" {
     const fallback_root = try storePackageLibexecRoot(allocator, io, payload_root, "plain-library");
     defer allocator.free(fallback_root);
     try std.testing.expectEqualStrings(payload_root, fallback_root);
+}
+
+test "package roots deduplicate and refuse ambiguous variable names" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var roots = std.ArrayList(package_root_mod.PackageRoot).empty;
+    defer {
+        for (roots.items) |entry| entry.deinit(allocator);
+        roots.deinit(allocator);
+    }
+
+    // A path that does not exist keeps its declared spelling rather than
+    // failing the projection.
+    try appendPackageRoot(allocator, io, &roots, "hydronium-ink", "/workspace/hydronium/ink", .live);
+    try std.testing.expectEqual(@as(usize, 1), roots.items.len);
+    try std.testing.expectEqualStrings("MOONSTONE_PACKAGE_ROOT_HYDRONIUM_INK", roots.items[0].key);
+    try std.testing.expectEqualStrings("/workspace/hydronium/ink", roots.items[0].root);
+
+    // The same package seen twice (live link plus fallback projection) is one
+    // entry, not a conflict.
+    try appendPackageRoot(allocator, io, &roots, "hydronium-ink", "/workspace/hydronium/ink", .live);
+    try std.testing.expectEqual(@as(usize, 1), roots.items.len);
+
+    try appendPackageRoot(allocator, io, &roots, "moonstone/ballad", "/store/b3/aa/files", .store);
+    try std.testing.expectEqual(@as(usize, 2), roots.items.len);
+
+    // One coordinate projected from two directories is ambiguous: the entry is
+    // retained with no root and is never exported, and a later occurrence does
+    // not resurrect it.
+    try appendPackageRoot(allocator, io, &roots, "moonstone/ballad", "/store/b3/bb/files", .store);
+    try std.testing.expectEqual(@as(usize, 2), roots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), roots.items[1].root.len);
+    try appendPackageRoot(allocator, io, &roots, "moonstone/ballad", "/store/b3/cc/files", .store);
+    try std.testing.expectEqual(@as(usize, 2), roots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), roots.items[1].root.len);
+
+    // `a-b/c` and `a/b-c` normalize onto one variable name.
+    try appendPackageRoot(allocator, io, &roots, "a-b/c", "/workspace/left", .live);
+    try std.testing.expectError(
+        error.PackageRootConflict,
+        appendPackageRoot(allocator, io, &roots, "a/b-c", "/workspace/right", .live),
+    );
+    const diagnostic = error_context.take(allocator).?;
+    defer allocator.free(diagnostic);
+    try std.testing.expect(std.mem.indexOf(u8, diagnostic, "both map to environment variable") != null);
+}
+
+test "package roots resolve through symlinked directories" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "real/package");
+    const tmp_root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    defer allocator.free(tmp_root);
+    const real_package = try std.fs.path.join(allocator, &.{ tmp_root, "real", "package" });
+    defer allocator.free(real_package);
+    tmp.dir.symLink(io, real_package, "linked-package", .{ .is_directory = true }) catch |err| switch (err) {
+        // Windows may refuse a directory symlink without the privilege; the
+        // resolution behavior under test is then unobservable.
+        error.AccessDenied, error.PermissionDenied, error.Unexpected => return,
+        else => return err,
+    };
+    const linked_package = try std.fs.path.join(allocator, &.{ tmp_root, "linked-package" });
+    defer allocator.free(linked_package);
+
+    var roots = std.ArrayList(package_root_mod.PackageRoot).empty;
+    defer {
+        for (roots.items) |entry| entry.deinit(allocator);
+        roots.deinit(allocator);
+    }
+
+    try appendPackageRoot(allocator, io, &roots, "linked", linked_package, .live);
+    try std.testing.expectEqualStrings(real_package, roots.items[0].root);
 }
 
 test "link_project_env basic" {

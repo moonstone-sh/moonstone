@@ -97,7 +97,10 @@ pub const realization = struct {
 
 pub const project = struct {
     pub const build_scope = @import("project/build_scope.zig");
+    pub const environment = @import("project/environment.zig");
     pub const linker = @import("project/linker.zig");
+    pub const linked_native_library = @import("project/linked_native_library.zig");
+    pub const package_root = @import("project/package_root.zig");
     pub const run_env = @import("project/run_env.zig");
     pub const script_executor = @import("project/script_executor.zig");
     pub const manifest_editor = @import("project/manifest_editor.zig");

@@ -1238,6 +1238,18 @@ pub const MoonstoneToml = struct {
         }
     };
 
+    /// Provisions a package declares about its own working tree.
+    ///
+    /// A published artifact declares its provisions in the registry descriptor
+    /// and they are persisted into the store manifest. A package consumed as a
+    /// `path:` dependency is never published, so its own `moonstone.toml` is
+    /// the only declaration site available. Only `native_lib` is accepted here:
+    /// Lua modules already have a conventional `src/` layout that the project
+    /// linker discovers, while a native library has no discoverable location.
+    pub const DeclaredProvides = struct {
+        native_lib: []const FeatureProvision = &.{},
+    };
+
     manifest_version: u32 = 2,
     package: struct {
         name: []const u8,
@@ -1252,6 +1264,7 @@ pub const MoonstoneToml = struct {
         abi: []const u8,
     },
     origin: ?Origin = null,
+    provides: DeclaredProvides = .{},
     dependencies: std.ArrayListUnmanaged(StoreDependency) = .empty,
     scripts: std.ArrayListUnmanaged(script_mod.ScriptDefinition) = .empty,
     tidy: Tidy = .{},
@@ -1342,6 +1355,50 @@ pub const MoonstoneToml = struct {
         return &.{};
     }
 
+    /// Parse `[[provides.native_lib]]` (or its inline-array spelling).
+    ///
+    /// `linkage` defaults to `shared` rather than to `FeatureProvision`'s
+    /// `unknown`: a registry descriptor may predate the field, but this
+    /// declaration surface is new, and its only purpose is asking Moonstone to
+    /// make a library visible to the host loader. `static` remains available
+    /// for an archive that must be retained but never projected.
+    fn parseDeclaredNativeLibraries(allocator: std.mem.Allocator, value: toml.Value) ![]const FeatureProvision {
+        if (value != .array) return error.InvalidProvidesNativeLibrary;
+
+        var provisions = std.ArrayList(FeatureProvision).empty;
+        errdefer {
+            for (provisions.items) |provision| provision.deinit(allocator);
+            provisions.deinit(allocator);
+        }
+
+        for (value.array.items) |entry_value| {
+            if (entry_value != .table) return error.InvalidProvidesNativeLibrary;
+            const entry = entry_value.table;
+
+            const name_value = entry.get("name") orelse return error.MissingProvidesNativeLibraryName;
+            if (name_value != .string) return error.InvalidProvidesNativeLibraryName;
+            const path_value = entry.get("path") orelse return error.MissingProvidesNativeLibraryPath;
+            if (path_value != .string) return error.InvalidProvidesNativeLibraryPath;
+
+            var linkage = NativeLibraryLinkage.shared;
+            if (entry.get("linkage")) |linkage_value| {
+                if (linkage_value != .string) return error.InvalidNativeLibraryLinkage;
+                linkage = std.meta.stringToEnum(NativeLibraryLinkage, linkage_value.string) orelse return error.InvalidNativeLibraryLinkage;
+                if (linkage == .unknown) return error.InvalidNativeLibraryLinkage;
+            }
+
+            const name = try allocator.dupe(u8, name_value.string);
+            errdefer allocator.free(name);
+            try provisions.append(allocator, .{
+                .name = name,
+                .path = try allocator.dupe(u8, path_value.string),
+                .linkage = linkage,
+            });
+        }
+
+        return try provisions.toOwnedSlice(allocator);
+    }
+
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !MoonstoneToml {
         var parser = toml.Parser(toml.Table).init(allocator);
         defer parser.deinit();
@@ -1421,6 +1478,14 @@ pub const MoonstoneToml = struct {
                 .revision = revision,
                 .hash = hash,
             };
+        }
+
+        self.provides = .{};
+        if (table.get("provides")) |provides_value| {
+            if (provides_value != .table) return error.InvalidProvidesSection;
+            if (provides_value.table.get("native_lib")) |native_lib_value| {
+                self.provides.native_lib = try parseDeclaredNativeLibraries(allocator, native_lib_value);
+            }
         }
 
         if (table.get("build")) |b| {
@@ -1623,6 +1688,9 @@ pub const MoonstoneToml = struct {
             if (origin.hash) |hash| allocator.free(hash);
         }
 
+        for (self.provides.native_lib) |provision| provision.deinit(allocator);
+        allocator.free(self.provides.native_lib);
+
         for (self.dependencies.items) |dep| {
             var mut_dep = dep;
             mut_dep.deinit(allocator);
@@ -1821,6 +1889,16 @@ pub const MoonstoneToml = struct {
                 }
                 try writer.print("priority = {d}\n", .{entry.value.priority});
             }
+        }
+
+        for (self.provides.native_lib) |provision| {
+            try writer.print("\n[[provides.native_lib]]\nname = ", .{});
+            try writeTomlString(writer, provision.name);
+            try writer.print("\npath = ", .{});
+            try writeTomlString(writer, provision.path);
+            try writer.print("\nlinkage = ", .{});
+            try writeTomlString(writer, @tagName(provision.linkage));
+            try writer.print("\n", .{});
         }
 
         const ordered_dependencies = try allocator.dupe(StoreDependency, self.dependencies.items);
@@ -2845,6 +2923,81 @@ test "StoreManifest native library linkage round-trips and defaults to unknown" 
     var legacy = try StoreManifest.parse(std.testing.allocator, legacy_linkage);
     defer legacy.deinit(std.testing.allocator);
     try std.testing.expectEqual(NativeLibraryLinkage.unknown, legacy.provides.native_lib[0].linkage);
+}
+
+test "MoonstoneToml parses and round-trips declared native libraries" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\manifest_version = 2
+        \\
+        \\[package]
+        \\name = "hydronium-ink"
+        \\version = "0.1.0"
+        \\kind = "lib"
+        \\
+        \\[interpreter]
+        \\name = "luajit"
+        \\version = "2.1"
+        \\abi = "lua51"
+        \\
+        \\[[provides.native_lib]]
+        \\name = "yogacore"
+        \\path = "native/dist/libyogacore.dylib"
+        \\
+        \\[[provides.native_lib]]
+        \\name = "yogacore-archive"
+        \\path = "native/dist/libyogacore.a"
+        \\linkage = "static"
+    ;
+
+    var mt = try MoonstoneToml.parse(allocator, toml_text);
+    defer mt.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), mt.provides.native_lib.len);
+    try std.testing.expectEqualStrings("yogacore", mt.provides.native_lib[0].name);
+    try std.testing.expectEqualStrings("native/dist/libyogacore.dylib", mt.provides.native_lib[0].path);
+    // An omitted linkage means "make this loadable", not "unknown".
+    try std.testing.expectEqual(NativeLibraryLinkage.shared, mt.provides.native_lib[0].linkage);
+    try std.testing.expectEqual(NativeLibraryLinkage.static, mt.provides.native_lib[1].linkage);
+
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    try mt.serialize(allocator, &output.writer);
+    try output.writer.flush();
+
+    var reparsed = try MoonstoneToml.parse(allocator, output.writer.buffer[0..output.writer.end]);
+    defer reparsed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), reparsed.provides.native_lib.len);
+    try std.testing.expectEqualStrings("native/dist/libyogacore.dylib", reparsed.provides.native_lib[0].path);
+    try std.testing.expectEqual(NativeLibraryLinkage.static, reparsed.provides.native_lib[1].linkage);
+}
+
+test "MoonstoneToml rejects malformed native library declarations" {
+    const allocator = std.testing.allocator;
+    const prefix =
+        \\[package]
+        \\name = "broken"
+        \\version = "0.1.0"
+        \\kind = "lib"
+        \\
+    ;
+
+    try std.testing.expectError(error.MissingProvidesNativeLibraryPath, MoonstoneToml.parse(
+        allocator,
+        prefix ++ "\n[[provides.native_lib]]\nname = \"only-a-name\"\n",
+    ));
+    try std.testing.expectError(error.MissingProvidesNativeLibraryName, MoonstoneToml.parse(
+        allocator,
+        prefix ++ "\n[[provides.native_lib]]\npath = \"lib/libonly.so\"\n",
+    ));
+    try std.testing.expectError(error.InvalidNativeLibraryLinkage, MoonstoneToml.parse(
+        allocator,
+        prefix ++ "\n[[provides.native_lib]]\nname = \"bad\"\npath = \"lib/libbad.so\"\nlinkage = \"dynamic\"\n",
+    ));
+    try std.testing.expectError(error.InvalidNativeLibraryLinkage, MoonstoneToml.parse(
+        allocator,
+        prefix ++ "\n[[provides.native_lib]]\nname = \"bad\"\npath = \"lib/libbad.so\"\nlinkage = \"unknown\"\n",
+    ));
 }
 
 test "MoonstoneToml rejects registry authentication fields" {

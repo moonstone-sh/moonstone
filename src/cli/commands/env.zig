@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const moonstone = @import("moonstone");
 const ndjson = @import("ndjson.zig");
 const router = @import("../router.zig");
@@ -29,23 +28,64 @@ pub const EnvCommand = struct {
         , .{});
     }
 
-    fn renderShellTemplate(allocator: std.mem.Allocator, template: []const u8, run_env: moonstone.project.run_env.RunEnv, project_root: []const u8) ![]const u8 {
+    /// Shell syntaxes `moon env --shell` can emit. The two templates differ in
+    /// how a variable is set, so anything generated rather than substituted
+    /// has to be written in the target syntax instead of assuming POSIX.
+    const ShellSyntax = enum { posix, fish };
+
+    fn writeShellAssignment(
+        writer: *std.Io.Writer,
+        syntax: ShellSyntax,
+        key: []const u8,
+        value: []const u8,
+    ) !void {
+        switch (syntax) {
+            .posix => try writer.print("export {s}=\"{s}\"\n", .{ key, value }),
+            .fish => try writer.print("set -gx {s} \"{s}\"\n", .{ key, value }),
+        }
+    }
+
+    fn renderShellTemplate(
+        allocator: std.mem.Allocator,
+        template: []const u8,
+        run_env: moonstone.project.run_env.RunEnv,
+        project_root: []const u8,
+        syntax: ShellSyntax,
+    ) ![]const u8 {
         var result = try allocator.dupe(u8, template);
         errdefer allocator.free(result);
 
-        const native_library_export = if (run_env.native_lib_path) |native_lib_path| switch (builtin.os.tag) {
-            .linux, .freebsd => try std.fmt.allocPrint(allocator, "export LD_LIBRARY_PATH=\"{s}:${{LD_LIBRARY_PATH:-}}\"\n", .{native_lib_path}),
-            .macos => try std.fmt.allocPrint(allocator, "export DYLD_FALLBACK_LIBRARY_PATH=\"{s}:${{DYLD_FALLBACK_LIBRARY_PATH:-}}\"\n", .{native_lib_path}),
-            .windows => "",
-            else => "",
-        } else "";
-        defer if (run_env.native_lib_path != null and native_library_export.len > 0) allocator.free(native_library_export);
+        var native_library_export = std.Io.Writer.Allocating.init(allocator);
+        defer native_library_export.deinit();
+        if (run_env.native_lib_path) |native_lib_path| {
+            if (moonstone.project.environment.nativeLibraryEnvironmentVariable()) |key| {
+                switch (syntax) {
+                    .posix => try native_library_export.writer.print(
+                        "export {s}=\"{s}:${{{s}:-}}\"\n",
+                        .{ key, native_lib_path, key },
+                    ),
+                    .fish => try native_library_export.writer.print(
+                        "set -gx {s} \"{s}\" ${s}\n",
+                        .{ key, native_lib_path, key },
+                    ),
+                }
+            }
+        }
+        try native_library_export.writer.flush();
+
+        var package_root_exports = std.Io.Writer.Allocating.init(allocator);
+        defer package_root_exports.deinit();
+        for (run_env.package_roots) |entry| {
+            try writeShellAssignment(&package_root_exports.writer, syntax, entry.key, entry.root);
+        }
+        try package_root_exports.writer.flush();
 
         const replacements = [_]struct { key: []const u8, value: []const u8 }{
             .{ .key = "{{bin_path}}", .value = run_env.bin_path },
             .{ .key = "{{lua_path}}", .value = run_env.lua_path },
             .{ .key = "{{lua_cpath}}", .value = run_env.lua_cpath },
-            .{ .key = "{{native_library_export}}", .value = native_library_export },
+            .{ .key = "{{native_library_export}}", .value = native_library_export.writer.buffer[0..native_library_export.writer.end] },
+            .{ .key = "{{package_root_exports}}", .value = package_root_exports.writer.buffer[0..package_root_exports.writer.end] },
             .{ .key = "{{project_root}}", .value = project_root },
         };
 
@@ -73,12 +113,30 @@ pub const EnvCommand = struct {
         defer run_env.deinit();
 
         if (self.json) {
+            const JsonPackageRoot = struct {
+                name: []const u8,
+                root: []const u8,
+                env: []const u8,
+                projection: []const u8,
+            };
+            const package_roots = try allocator.alloc(JsonPackageRoot, run_env.package_roots.len);
+            defer allocator.free(package_roots);
+            for (run_env.package_roots, 0..) |entry, index| {
+                package_roots[index] = .{
+                    .name = entry.name,
+                    .root = entry.root,
+                    .env = entry.key,
+                    .projection = entry.projection.asString(),
+                };
+            }
+
             try std.json.Stringify.value(.{
                 .path = run_env.bin_path,
                 .lua_path = run_env.lua_path,
                 .lua_cpath = run_env.lua_cpath,
                 .native_lib_path = run_env.native_lib_path,
                 .lua_version = run_env.lua_ver_dot,
+                .package_roots = package_roots,
             }, .{}, stdout);
             try stdout.writeAll("\n");
         } else if (self.paths) {
@@ -88,11 +146,11 @@ pub const EnvCommand = struct {
             defer allocator.free(project_root);
 
             if (std.mem.eql(u8, s, "bash") or std.mem.eql(u8, s, "zsh")) {
-                const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.posix, run_env, project_root);
+                const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.posix, run_env, project_root, .posix);
                 defer allocator.free(content);
                 try stdout.writeAll(content);
             } else if (std.mem.eql(u8, s, "fish")) {
-                const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.fish, run_env, project_root);
+                const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.fish, run_env, project_root, .fish);
                 defer allocator.free(content);
                 try stdout.writeAll(content);
             } else {
@@ -104,6 +162,12 @@ pub const EnvCommand = struct {
             try stdout.print("  LUA_PATH:  {s}\n", .{run_env.lua_path});
             try stdout.print("  LUA_CPATH: {s}\n", .{run_env.lua_cpath});
             if (run_env.native_lib_path) |native_lib_path| try stdout.print("  NATIVE_LIB_PATH: {s}\n", .{native_lib_path});
+            if (run_env.package_roots.len > 0) {
+                try stdout.print("  Package roots:\n", .{});
+                for (run_env.package_roots) |entry| {
+                    try stdout.print("    {s} ({s}) {s}={s}\n", .{ entry.name, entry.projection.asString(), entry.key, entry.root });
+                }
+            }
         }
     }
 };
