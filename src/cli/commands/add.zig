@@ -363,6 +363,14 @@ pub const add_command = struct {
             return err;
         };
         defer allocator.free(toml_content);
+        const original_toml = try allocator.dupe(u8, toml_content);
+        defer allocator.free(original_toml);
+
+        const original_lock = std.Io.Dir.cwd().readFileAlloc(io, lock_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| blk: {
+            if (err == error.FileNotFound) break :blk null;
+            return err;
+        };
+        defer if (original_lock) |bytes| allocator.free(bytes);
 
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, toml_content);
         defer mt.deinit(allocator);
@@ -373,12 +381,8 @@ pub const add_command = struct {
         }
 
         var lf = blk: {
-            const lock_content = std.Io.Dir.cwd().readFileAlloc(io, lock_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
-                if (err == error.FileNotFound) break :blk moonstone.domain.lockfile.LockFile.init(allocator);
-                return err;
-            };
-            defer allocator.free(lock_content);
-            break :blk try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
+            if (original_lock) |lock_content| break :blk try moonstone.domain.lockfile.LockFile.parse(allocator, lock_content);
+            break :blk moonstone.domain.lockfile.LockFile.init(allocator);
         };
         defer lf.deinit();
 
@@ -988,6 +992,8 @@ pub const add_command = struct {
             const store_rockspec = if (store_prov_opt) |store_prov| store_prov.rockspec else "";
             const store_rockspec_hash = if (store_prov_opt) |store_prov| store_prov.rockspec_hash else "";
             const store_rockspec_payload = if (store_prov_opt) |store_prov| store_prov.rockspec_payload else "";
+            const package_runtime = resolved.runtime orelse runtime_abi;
+            const package_lua_abi = resolved.lua_abi orelse runtime_abi;
 
             try lf.packages.append(allocator, .{
                 .name = try allocator.dupe(u8, resolved.name),
@@ -1003,18 +1009,18 @@ pub const add_command = struct {
                         .version = resolved.version,
                         .strategy = "registry",
                         .target = "native",
-                        .lua_abi = runtime_abi,
+                        .lua_abi = package_lua_abi,
                     })) else try moonstone.store.facade.computeRecipeHash(allocator, .{
                     .kind = "prebuilt",
                     .name = resolved.name,
                     .version = resolved.version,
                     .strategy = "registry",
                     .target = "native",
-                    .lua_abi = runtime_abi,
+                    .lua_abi = package_lua_abi,
                 }),
                 .artifact_hash = try allocator.dupe(u8, mat_res.artifact_hash),
-                .runtime = try allocator.dupe(u8, runtime_abi),
-                .lua_abi = try allocator.dupe(u8, runtime_abi),
+                .runtime = try allocator.dupe(u8, package_runtime),
+                .lua_abi = try allocator.dupe(u8, package_lua_abi),
                 .target = try allocator.dupe(u8, "native"),
                 .constellation = try allocator.dupe(u8, "default"),
                 .resolver = try allocator.dupe(u8, switch (resolved.origin) {
@@ -1050,8 +1056,24 @@ pub const add_command = struct {
         }
         profiler.spanCount("add.materialize", profile_span, "packages", solution.count());
 
-        // Write moonstone.toml
+        var restore_project_files = false;
+        errdefer if (restore_project_files) {
+            moonstone.project.manifest_editor.commitSource(io, original_toml) catch {};
+            if (original_lock) |bytes| {
+                if (std.Io.Dir.cwd().createFileAtomic(io, lock_path, .{ .replace = true })) |atomic_file| {
+                    var destination = atomic_file;
+                    defer destination.deinit(io);
+                    destination.file.writeStreamingAll(io, bytes) catch {};
+                    destination.replace(io) catch {};
+                } else |_| {}
+            } else {
+                std.Io.Dir.cwd().deleteFile(io, lock_path) catch {};
+            }
+        };
+
+        // Write moonstone.toml and lock as one rollback unit with the following sync.
         if (!self.dry_run) {
+            restore_project_files = true;
             const serialized_manifest = try moonstone.project.manifest_editor.commit(allocator, io, &mt);
             defer allocator.free(serialized_manifest);
         }
@@ -1070,10 +1092,26 @@ pub const add_command = struct {
             defer aw.deinit();
             try lf.serialize(allocator, &aw.writer);
 
-            const lock_file = try std.Io.Dir.cwd().createFile(io, lock_path, .{});
-            defer lock_file.close(io);
-            try lock_file.writeStreamingAll(io, aw.written());
+            var lock_file = try std.Io.Dir.cwd().createFileAtomic(io, lock_path, .{ .replace = true });
+            defer lock_file.deinit(io);
+            try lock_file.file.writeStreamingAll(io, aw.written());
+            try lock_file.replace(io);
         }
+
+        if (!self.no_sync and !self.dry_run) {
+            if (!self.json) backend.phase("Running sync...", .{});
+
+            const sync = @import("sync.zig").sync_command{
+                .json = self.json,
+                .update = self.update,
+                .reconcile = true,
+                .jobs_arg = self.jobs_arg,
+                .progress_arg = self.progress_arg,
+            };
+
+            try sync.runImpl(ctx, backend);
+        }
+        restore_project_files = false;
 
         if (added_list.items.len > 0) {
             if (emitter) |e| {
@@ -1089,20 +1127,6 @@ pub const add_command = struct {
             }
         } else if (emitter) |e| {
             try e.terminate(io, name, "ok", .{ .added = added_list.items, .dry_run = self.dry_run });
-        }
-
-        if (!self.no_sync and !self.dry_run) {
-            if (!self.json) backend.phase("Running sync...", .{});
-
-            const sync = @import("sync.zig").sync_command{
-                .json = self.json,
-                .update = self.update,
-                .reconcile = true,
-                .jobs_arg = self.jobs_arg,
-                .progress_arg = self.progress_arg,
-            };
-
-            try sync.runImpl(ctx, backend);
         }
     }
 };

@@ -41,6 +41,8 @@ LUA
 (cd "$WORKDIR/app" && moon interpreter set lua@5.4.7 --no-sync)
 
 cat > "$WORKDIR/app/moonstone.toml" <<'TOML'
+manifest_version = 2
+
 [package]
 name = "my-app"
 version = "0.1.0"
@@ -51,8 +53,10 @@ name = "lua"
 version = "5.4.7"
 abi = "5.4"
 
-[dependencies.tool]
-"linked-tool" = "link:linked-tool"
+[[dependencies]]
+name = "linked-tool"
+constraint = "link:linked-tool"
+role = "tool"
 
 [scripts]
 hello = 'lua -e "print(\"hello from app\")"'

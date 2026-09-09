@@ -245,7 +245,11 @@ local function create_tar_gz(files, dest)
   local tmp = os.tmpname()
   os.remove(tmp)
   mkdir_p(tmp)
-  for name, data in pairs(files) do write_file(join(tmp, name), data) end
+  for name, data in pairs(files) do
+    local path = join(tmp, name)
+    write_file(path, data)
+    if name:match("^bin/") then run("chmod +x " .. q(path)) end
+  end
   create_tar_gz_from_dir(tmp, dest)
   rm_rf(tmp)
 end
@@ -570,6 +574,52 @@ int luaopen_synthetic_cmodule(lua_State *L) { lua_newtable(L); lua_pushcfunction
   return { name = "synthetic-cmodule", version = "0.1.0", kind = "lib", description = "Synthetic C module for testing materialization", source_hash = hash, artifact_hash = hash, artifact_path = path, artifact_name = artifact_name, artifact_bytes = filesize(path), runtimes = { "lua@5.4.7" }, lua_api = "lua-5.4", lua_abi = "lua-5.4", runtime = "lua@5.4.7", runtime_artifact_hash = "", target = "source", strip_components = 0, materialize = { kind = "native-cmodule", external_paths = { { dependency = "SYNTHETIC_SDK", variable = "SYNTHETIC_SDK_INCDIR", kind = "include" } }, ldflags = { "-I$(SYNTHETIC_SDK_INCDIR)" } }, provides = { runtime = {}, bin = {}, headers = {}, native_lib = {}, lua_module = {}, lua_cmodule = { { name = "synthetic_cmodule.so", path = "synthetic_cmodule.so" } } } }
 end
 
+local function build_synthetic_luajit(output_dir)
+  local artifact_name = "luajit-2.1.1783773675-any.tar.gz"
+  local artifact_path = join(output_dir, artifact_name)
+  local launcher = [[#!/bin/sh
+if [ "${1:-}" = "-e" ]; then
+  printf '%s\n' 'LuaJIT synthetic runtime'
+  exit 0
+fi
+echo "synthetic LuaJIT accepts only the runtime probe" >&2
+exit 127
+]]
+  create_tar_gz({ ["bin/lua"] = launcher, ["bin/luajit"] = launcher }, artifact_path)
+  local hash = b3_file(artifact_path)
+  return {
+    name = "luajit", version = "2.1.1783773675", kind = "runtime",
+    description = "Synthetic LuaJIT runtime metadata for isolated-runtime tests",
+    source_hash = hash, artifact_hash = hash, artifact_path = artifact_path,
+    artifact_name = artifact_name, artifact_bytes = filesize(artifact_path),
+    runtimes = { "luajit@2.1.1783773675" }, lua_api = "lua-5.1", lua_abi = "lua-5.1",
+    runtime = "luajit@2.1.1783773675", runtime_artifact_hash = hash,
+    target = "any", strip_components = 0,
+    provides = {
+      runtime = { { name = "luajit", version = "2.1.1783773675", abi = "lua-5.1", __order = { "name", "version", "abi" } } },
+      bin = { { name = "lua", path = "bin/lua" }, { name = "luajit", path = "bin/luajit" } },
+      headers = {}, native_lib = {}, lua_module = {}, lua_cmodule = {},
+    },
+  }
+end
+
+local function build_synthetic_isolated_bin(output_dir, runtime_artifact_hash)
+  local artifact_name = "synthetic-isolated-bin-0.1.0-any.tar.gz"
+  local artifact_path = join(output_dir, artifact_name)
+  create_tar_gz({ ["bin/synthetic-isolated-bin"] = "#!/bin/sh\nexec lua -e 'print(_VERSION)'\n" }, artifact_path)
+  local hash = b3_file(artifact_path)
+  return {
+    name = "synthetic-isolated-bin", version = "0.1.0", kind = "bin",
+    description = "Synthetic binary requiring an isolated LuaJIT runtime",
+    source_hash = hash, artifact_hash = hash, artifact_path = artifact_path,
+    artifact_name = artifact_name, artifact_bytes = filesize(artifact_path),
+    runtimes = { "luajit@2.1.1783773675" }, lua_api = "lua-5.1", lua_abi = "lua-5.1",
+    runtime = "luajit@2.1.1783773675", runtime_artifact_hash = runtime_artifact_hash,
+    target = "any", strip_components = 0,
+    provides = { runtime = {}, bin = { { name = "synthetic-isolated-bin", path = "bin/synthetic-isolated-bin" } }, headers = {}, native_lib = {}, lua_module = {}, lua_cmodule = {} },
+  }
+end
+
 local function build_synthetic_make(output_dir)
   local c = [[
 #include <lua.h>
@@ -761,6 +811,12 @@ local function cmd_registry_builder(args)
   for _, builder in ipairs({ build_synthetic_cmodule, build_synthetic_make, build_synthetic_cmake }) do
     local info = builder(output_dir); info.recipe_hash = recipe_hash(info); infos[#infos + 1] = info
   end
+  local synthetic_luajit = build_synthetic_luajit(output_dir)
+  synthetic_luajit.recipe_hash = recipe_hash(synthetic_luajit)
+  infos[#infos + 1] = synthetic_luajit
+  local synthetic_isolated_bin = build_synthetic_isolated_bin(output_dir, synthetic_luajit.artifact_hash)
+  synthetic_isolated_bin.recipe_hash = recipe_hash(synthetic_isolated_bin)
+  infos[#infos + 1] = synthetic_isolated_bin
   local registry_dir = join(output_dir, "registry")
   mkdir_p(join(registry_dir, "blobs", "b3"))
   for _, info in ipairs(infos) do

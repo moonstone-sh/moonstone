@@ -39,7 +39,7 @@ fi
 
 # Verify the bin actually runs with the isolated runtime.
 OUTPUT="$(cd "$WORKDIR/app" && moon exec synthetic-isolated-bin)"
-if [[ "$OUTPUT" != "hello from isolated synthetic bin" ]]; then
+if [[ "$OUTPUT" != "LuaJIT synthetic runtime" ]]; then
     echo "unexpected bin output: $OUTPUT" >&2
     exit 1
 fi
