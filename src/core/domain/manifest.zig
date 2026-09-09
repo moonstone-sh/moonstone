@@ -380,10 +380,19 @@ pub const MaterializeConfig = struct {
             }
             if (ct.get("native_lib")) |v| {
                 var flist = std.ArrayList(FeatureProvision).empty;
-                for (v.array.items) |fv| try flist.append(allocator, .{
-                    .name = try allocator.dupe(u8, fv.table.get("name").?.string),
-                    .path = try allocator.dupe(u8, fv.table.get("path").?.string),
-                });
+                for (v.array.items) |fv| {
+                    var linkage: NativeLibraryLinkage = .shared;
+                    if (fv.table.get("linkage")) |linkage_value| {
+                        if (linkage_value != .string) return error.InvalidNativeLibraryLinkage;
+                        linkage = std.meta.stringToEnum(NativeLibraryLinkage, linkage_value.string) orelse return error.InvalidNativeLibraryLinkage;
+                        if (linkage == .unknown) return error.InvalidNativeLibraryLinkage;
+                    }
+                    try flist.append(allocator, .{
+                        .name = try allocator.dupe(u8, fv.table.get("name").?.string),
+                        .path = try allocator.dupe(u8, fv.table.get("path").?.string),
+                        .linkage = linkage,
+                    });
+                }
                 self.collect.native_lib = try flist.toOwnedSlice(allocator);
             }
         }
@@ -2624,6 +2633,44 @@ test "RemotePackageDescriptor parses string artifact runtime" {
 
     try std.testing.expectEqual(@as(usize, 1), desc.artifact.len);
     try std.testing.expectEqualStrings("moonstone/luajit@2.1.0", desc.artifact[0].runtime);
+}
+
+test "RemotePackageDescriptor parses collected native library linkage" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "native-source"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\
+        \\[[artifacts]]
+        \\id = "source"
+        \\kind = "source"
+        \\target = "source"
+        \\format = "tar.gz"
+        \\url = "blobs/b3/00/00/fake.tar.gz"
+        \\hash = "b3:fake"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+        \\
+        \\[artifacts.materialize]
+        \\type = "command"
+        \\command = "true"
+        \\
+        \\[artifacts.materialize.collect]
+        \\native_lib = [
+        \\  { name = "libshared.so", path = "build/libshared.so" },
+        \\  { name = "libstatic.a", path = "build/libstatic.a", linkage = "static" },
+        \\]
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    const collected = desc.artifact[0].materialize.?.collect.native_lib;
+    try std.testing.expectEqual(@as(usize, 2), collected.len);
+    try std.testing.expectEqual(NativeLibraryLinkage.shared, collected[0].linkage);
+    try std.testing.expectEqual(NativeLibraryLinkage.static, collected[1].linkage);
 }
 
 test "RemotePackageDescriptor accepts canonical dependency registries" {

@@ -56,6 +56,29 @@ fn descriptorDependencies(allocator: std.mem.Allocator, desc: manifest.RemotePac
     return try dependencies.toOwnedSlice(allocator);
 }
 
+fn collectedNativeLibProvides(
+    allocator: std.mem.Allocator,
+    collected: []const manifest.FeatureProvision,
+) ![]const manifest.FeatureProvision {
+    var provisions = std.ArrayList(manifest.FeatureProvision).empty;
+    errdefer {
+        for (provisions.items) |provision| provision.deinit(allocator);
+        provisions.deinit(allocator);
+    }
+    for (collected) |provision| {
+        const name = try allocator.dupe(u8, std.fs.path.basename(provision.name));
+        errdefer allocator.free(name);
+        const provision_path = try allocator.dupe(u8, provision.name);
+        errdefer allocator.free(provision_path);
+        try provisions.append(allocator, .{
+            .name = name,
+            .path = provision_path,
+            .linkage = provision.linkage,
+        });
+    }
+    return try provisions.toOwnedSlice(allocator);
+}
+
 pub const MaterializeResult = struct {
     path: []const u8,
     artifact_hash: []const u8,
@@ -400,7 +423,7 @@ pub const Materializer = struct {
                     try cmake.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, .cleanup, self.on_event, self.on_event_context);
 
                     var new_provides = try art.provides.clone(self.allocator);
-                    errdefer new_provides.deinit(self.allocator);
+                    defer new_provides.deinit(self.allocator);
 
                     // Update provides from collect config only if category was empty
                     if (new_provides.lua_cmodule.len == 0 and m.collect.lua_cmodules.len > 0) {
@@ -486,7 +509,7 @@ pub const Materializer = struct {
                     try command_mat.build(self.allocator, self.io, self.environ_map, tmp_path, build_out_path, rt_path, art.lua_abi, m, log_file_name, self.on_event, self.on_event_context);
 
                     var new_provides = try art.provides.clone(self.allocator);
-                    errdefer new_provides.deinit(self.allocator);
+                    defer new_provides.deinit(self.allocator);
 
                     // Update provides from collect config only if category was empty.
                     // When using 'command' materializer, files are collected into out_path
@@ -514,6 +537,9 @@ pub const Materializer = struct {
                             .path = try self.allocator.dupe(u8, p.name),
                         });
                         new_provides.bin = try clist.toOwnedSlice(self.allocator);
+                    }
+                    if (new_provides.native_lib.len == 0 and m.collect.native_lib.len > 0) {
+                        new_provides.native_lib = try collectedNativeLibProvides(self.allocator, m.collect.native_lib);
                     }
 
                     const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
@@ -763,4 +789,24 @@ test "materializer reuses a healthy CAS artifact and restores its index without 
     var candidate = (try index.get_candidate_by_hash(artifact.hash)) orelse return error.TestUnexpectedResult;
     defer candidate.deinit(allocator);
     try std.testing.expectEqualStrings(committed, candidate.path);
+}
+
+test "command materializer promotes collected native libraries to artifact provisions" {
+    const allocator = std.testing.allocator;
+    const collected = [_]manifest.FeatureProvision{
+        .{ .name = "lib/native/libyogacore.dylib", .path = "native/selected/libyogacore.dylib", .linkage = .shared },
+        .{ .name = "lib/native/libstatic.a", .path = "native/selected/libstatic.a", .linkage = .static },
+    };
+
+    const provisions = try collectedNativeLibProvides(allocator, &collected);
+    defer {
+        for (provisions) |provision| provision.deinit(allocator);
+        allocator.free(provisions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), provisions.len);
+    try std.testing.expectEqualStrings("libyogacore.dylib", provisions[0].name);
+    try std.testing.expectEqualStrings("lib/native/libyogacore.dylib", provisions[0].path);
+    try std.testing.expectEqual(manifest.NativeLibraryLinkage.shared, provisions[0].linkage);
+    try std.testing.expectEqual(manifest.NativeLibraryLinkage.static, provisions[1].linkage);
 }

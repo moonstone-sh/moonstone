@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Contract: a runtime native_lib provision is linked into the project
-# environment and a public binary can resolve its shared-library dependency
-# through Moonstone's host loader projection.
+# Contract: command materialization promotes collected native_lib outputs into
+# artifact provisions, the linker projects the shared library into the project
+# environment, and a collected binary resolves it through the host loader.
 
 if [[ "$(uname -s)" == "MINGW"* || "$(uname -s)" == "MSYS"* || "$(uname -s)" == "CYGWIN"* ]]; then
     echo "━━━ native library projection probe is covered by the Windows job ━━━"
@@ -86,9 +86,9 @@ kind = "bin"
 description = "Native loader projection probe"
 
 [[artifacts]]
-id = "native-loader-host"
-kind = "bin"
-target = "any"
+id = "native-loader-source"
+kind = "source"
+target = "source"
 lua_api = "5.4"
 lua_abi = "lua-5.4"
 runtime = "lua@5.4.7"
@@ -99,25 +99,15 @@ recipe_hash = "b3:00000000000000000000000000000000000000000000000000000000000000
 bytes = ${BYTES}
 
 [artifacts.materialize]
-type = "archive"
-strip_components = 0
+type = "command"
+command = "true"
 
-[[artifacts.provides]]
-kind = "bin"
-name = "${PACKAGE}"
-path = "bin/${PACKAGE}"
-
-[[artifacts.provides]]
-kind = "lib"
-name = "native-probe"
-path = "lib/${LIB_NAME}"
-linkage = "shared"
-
-[[artifacts.provides]]
-kind = "lib"
-name = "static-probe"
-path = "lib/libstaticprobe.a"
-linkage = "static"
+[artifacts.materialize.collect]
+bins = [{ name = "${PACKAGE}", path = "bin/${PACKAGE}" }]
+native_lib = [
+    { name = "${LIB_NAME}", path = "lib/${LIB_NAME}", linkage = "shared" },
+    { name = "libstaticprobe.a", path = "lib/libstaticprobe.a", linkage = "static" },
+]
 EOF
 DESCRIPTOR_HASH="$(blake3_file "${DESCRIPTOR}")"
 cat >> "${REGISTRY}/index.toml" <<EOF
