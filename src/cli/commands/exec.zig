@@ -9,6 +9,129 @@ fn pathSeparator() u8 {
     return if (builtin.os.tag == .windows) ';' else ':';
 }
 
+/// Whether this target carries POSIX permission bits worth reporting.
+const reports_modes: bool = builtin.os.tag != .windows and builtin.os.tag != .wasi;
+
+/// Diagnose an exec that failed with AccessDenied. Returns an owned message when
+/// the resolved path is a real file with no execute bit anywhere — the signature
+/// of a package published without it — and null in every other case so the caller
+/// can fall back to a generic message. A diagnostic must never itself fail the
+/// command, so each probe degrades to null rather than propagating.
+fn nonExecutableDiagnostic(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    command: []const u8,
+    resolved_path: []const u8,
+) ?[]u8 {
+    if (comptime !reports_modes) return null;
+    const st = std.Io.Dir.cwd().statFile(io, resolved_path, .{}) catch return null;
+    if (st.kind != .file) return null;
+    const mode: u32 = @intCast(st.permissions.toMode());
+    if (mode & 0o111 != 0) return null;
+    return std.fmt.allocPrint(
+        allocator,
+        "'{s}' resolved to {s} but is not executable (mode {o:0>4}) — the package may have been published without the executable bit",
+        .{ command, resolved_path, mode & 0o777 },
+    ) catch null;
+}
+
+/// Append the `[provides]` bin names declared by a store manifest.
+fn appendProvidedBinNames(
+    allocator: std.mem.Allocator,
+    names: *std.ArrayList([]const u8),
+    provides: *const toml.Table,
+) !void {
+    // A package declares runnable provisions under several keys depending on
+    // whether the bin is native or a Lua entry point. Read them all.
+    for ([_][]const u8{ "bins", "bin", "bin_lua", "bin_luas", "scripts" }) |key| {
+        const value = provides.get(key) orelse continue;
+        if (value != .array) continue;
+        for (value.array.items) |item| {
+            if (item != .table) continue;
+            const name_value = item.table.get("name") orelse continue;
+            if (name_value != .string) continue;
+            if (name_value.string.len == 0) continue;
+            try names.append(allocator, try allocator.dupe(u8, name_value.string));
+        }
+    }
+}
+
+/// When a command name is in fact a resolved dependency's PACKAGE name, report
+/// the bin names that package actually provides. `moon exec` takes a command
+/// name, never a package name, and the two are legitimately different, so the
+/// remedy is to name the real command rather than to resolve package names here.
+///
+/// Returns an owned ", "-joined list, or null when there is no unambiguous match.
+/// Every failure path yields null: this runs only while reporting another error
+/// and must not replace it with one of its own.
+fn providedBinsForPackage(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    working_directory: ?[]const u8,
+    package_name: []const u8,
+) ?[]u8 {
+    const base = working_directory orelse ".";
+    const deps_path = std.fs.path.join(allocator, &.{ base, ".moonstone", "env", "dependencies.toml" }) catch return null;
+    defer allocator.free(deps_path);
+
+    const deps_text = std.Io.Dir.cwd().readFileAlloc(io, deps_path, allocator, std.Io.Limit.limited(4 * 1024 * 1024)) catch return null;
+    defer allocator.free(deps_text);
+
+    var deps_parser = toml.Parser(toml.Table).init(allocator);
+    defer deps_parser.deinit();
+    var deps_doc = deps_parser.parseString(deps_text) catch return null;
+    defer deps_doc.deinit();
+
+    const dependencies = deps_doc.value.get("dependencies") orelse return null;
+    if (dependencies != .array) return null;
+
+    // Locate the dependency whose package name is exactly what was typed.
+    var artifact_path: ?[]const u8 = null;
+    for (dependencies.array.items) |entry| {
+        if (entry != .table) continue;
+        const name_value = entry.table.get("name") orelse continue;
+        if (name_value != .string) continue;
+        if (!std.mem.eql(u8, name_value.string, package_name)) continue;
+        const path_value = entry.table.get("path") orelse continue;
+        if (path_value != .string) continue;
+        if (artifact_path != null) return null; // ambiguous; say nothing
+        artifact_path = path_value.string;
+    }
+    const resolved_artifact = artifact_path orelse return null;
+
+    const manifest_path = std.fs.path.join(allocator, &.{ resolved_artifact, "manifest.toml" }) catch return null;
+    defer allocator.free(manifest_path);
+
+    const manifest_text = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(4 * 1024 * 1024)) catch return null;
+    defer allocator.free(manifest_text);
+
+    var manifest_parser = toml.Parser(toml.Table).init(allocator);
+    defer manifest_parser.deinit();
+    var manifest_doc = manifest_parser.parseString(manifest_text) catch return null;
+    defer manifest_doc.deinit();
+
+    const provides = manifest_doc.value.get("provides") orelse return null;
+    if (provides != .table) return null;
+
+    var names = std.ArrayList([]const u8).empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    appendProvidedBinNames(allocator, &names, provides.table) catch return null;
+    if (names.items.len == 0) return null;
+
+    var joined = std.ArrayList(u8).empty;
+    defer joined.deinit(allocator);
+    for (names.items, 0..) |n, i| {
+        if (i > 0) joined.appendSlice(allocator, ", ") catch return null;
+        joined.append(allocator, '\'') catch return null;
+        joined.appendSlice(allocator, n) catch return null;
+        joined.append(allocator, '\'') catch return null;
+    }
+    return allocator.dupe(u8, joined.items) catch null;
+}
+
 pub const ExecCommand = struct {
     pub const name = "exec";
     pub const description = "Run arbitrary command inside environment";
@@ -255,12 +378,7 @@ pub const ExecCommand = struct {
                 .environ_map = &run_env.env_map,
                 .expand_arg0 = .expand,
             });
-            if (err == error.FileNotFound) {
-                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
-                return error.CommandNotFound;
-            }
-            return err;
+            return self.reportSpawnFailure(ctx, io, argv[0], err);
         }
 
         var child = std.process.spawn(io, .{
@@ -268,16 +386,52 @@ pub const ExecCommand = struct {
             .environ_map = &run_env.env_map,
             .expand_arg0 = .expand,
         }) catch |err| {
-            if (err == error.FileNotFound) {
-                if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(allocator, "command not found: '{s}'", .{self.positionals[0]}) } };
-                return error.CommandNotFound;
-            }
-            return err;
+            return self.reportSpawnFailure(ctx, io, argv[0], err);
         };
         const wait_result = try child.wait(io);
         if (wait_result != .exited or wait_result.exited != 0) {
             std.process.exit(if (wait_result == .exited) @intCast(wait_result.exited) else 1);
         }
+    }
+
+    /// Turn a raw spawn failure into an actionable message. `execve` reports the
+    /// kernel's verdict, not the reason: AccessDenied on a package binary almost
+    /// always means the file shipped without its execute bit, and FileNotFound on
+    /// a name containing a package's shape usually means a package name was typed
+    /// where a command name belongs. Unrecognized errors pass through untouched.
+    fn reportSpawnFailure(
+        self: ExecCommand,
+        ctx: *router.Context,
+        io: std.Io,
+        resolved_path: []const u8,
+        err: anyerror,
+    ) anyerror {
+        const allocator = ctx.allocator;
+        const command = self.positionals[0];
+
+        const message: []u8 = switch (err) {
+            error.FileNotFound => blk: {
+                if (providedBinsForPackage(allocator, io, ctx.working_directory, command)) |bins| {
+                    defer allocator.free(bins);
+                    break :blk std.fmt.allocPrint(
+                        allocator,
+                        "command not found: '{s}' (did you mean the bin it provides: {s}?)",
+                        .{ command, bins },
+                    ) catch return err;
+                }
+                break :blk std.fmt.allocPrint(allocator, "command not found: '{s}'", .{command}) catch return err;
+            },
+            error.AccessDenied => nonExecutableDiagnostic(allocator, io, command, resolved_path) orelse
+                (std.fmt.allocPrint(
+                    allocator,
+                    "cannot execute '{s}' ({s}): permission denied",
+                    .{ command, resolved_path },
+                ) catch return err),
+            else => return err,
+        };
+
+        if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+        ctx.error_detail = .{ .message = .{ .msg = message } };
+        return if (err == error.FileNotFound) error.CommandNotFound else err;
     }
 };

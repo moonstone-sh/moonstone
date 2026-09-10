@@ -1,5 +1,6 @@
 const std = @import("std");
 const archive = @import("../../archive/root.zig");
+const permissions = @import("../../archive/permissions.zig");
 
 pub fn materialize(
     allocator: std.mem.Allocator,
@@ -63,8 +64,12 @@ pub fn materialize(
         const src_rel_path = entry.value_ptr.*;
 
         try root_dir.copyFile(io, src_rel_path, bin_dir, bin_name, .{});
-        // Ensure it's executable
-        // In Zig 0.16.0 we might need to use chmod if available
-        // For now, assume copyFile preserves some bits or we'll fix it if it fails tests
+
+        // Ensure it's executable. copyFile does not carry the source mode across
+        // reliably, and an archive may legitimately have stored the bin 0644, so
+        // set the bit explicitly rather than inheriting whatever landed here.
+        const copied = try bin_dir.openFile(io, bin_name, .{});
+        defer copied.close(io);
+        try permissions.applyFilePermissions(io, copied, 0o755);
     }
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const manifest = @import("../../domain/manifest.zig");
 const executable = @import("../../platform/executable.zig");
+const permissions = @import("../../archive/permissions.zig");
 
 pub fn build(
     allocator: std.mem.Allocator,
@@ -269,16 +270,26 @@ fn collectOutputs(
     lua_link_library: ?[]const u8,
     lua_bin_dir: []const u8,
 ) !void {
-    const categories = [_][]const manifest.FeatureProvision{
-        collect.lua_cmodules,
-        collect.lua_modules,
-        collect.bins,
-        collect.headers,
-        collect.native_lib,
+    // A `bins` provision is a promise that the collected output is runnable. That
+    // promise cannot be delegated to whatever mode a publisher happened to store
+    // in its archive: a source package built by a packager that dropped the
+    // execute bit materializes cleanly and then fails at `exec` with a bare
+    // AccessDenied. Enforce the bit here instead of trusting the input. Every
+    // other category keeps the copied mode.
+    const Category = struct {
+        items: []const manifest.FeatureProvision,
+        executable: bool,
+    };
+    const categories = [_]Category{
+        .{ .items = collect.lua_cmodules, .executable = false },
+        .{ .items = collect.lua_modules, .executable = false },
+        .{ .items = collect.bins, .executable = true },
+        .{ .items = collect.headers, .executable = false },
+        .{ .items = collect.native_lib, .executable = false },
     };
 
-    for (categories) |items| {
-        for (items) |item| {
+    for (categories) |category| {
+        for (category.items) |item| {
             const expanded_src = try expandVariables(allocator, item.path, out_path, src_path, build_path, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi);
             defer allocator.free(expanded_src);
 
@@ -288,8 +299,10 @@ fn collectOutputs(
             const dest_abs = try std.fs.path.join(allocator, &.{ out_path, item.name });
             defer allocator.free(dest_abs);
 
-            // Skip if source and destination are the same path
+            // Skip the copy when source and destination are the same path, but
+            // still enforce the bin invariant on the file already sitting there.
             if (std.mem.eql(u8, src_abs, dest_abs)) {
+                if (category.executable) try ensureExecutable(io, dest_abs);
                 continue;
             }
 
@@ -306,6 +319,17 @@ fn collectOutputs(
                 std.log.err("Failed to copy '{s}' to '{s}': {s}", .{ src_abs, dest_abs, cp_res.stderr });
                 return error.CopyFailed;
             }
+
+            if (category.executable) try ensureExecutable(io, dest_abs);
         }
     }
+}
+
+/// Force a collected bin to 0o755. Moonstone owns this invariant: a package
+/// whose archive stored the bin without the execute bit must still materialize
+/// into something `moon exec` can actually run.
+fn ensureExecutable(io: std.Io, file_path: []const u8) !void {
+    const file = try std.Io.Dir.cwd().openFile(io, file_path, .{});
+    defer file.close(io);
+    try permissions.applyFilePermissions(io, file, 0o755);
 }
