@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# No -e: completion functions routinely hit expected non-zero exits
+# (compgen with no matches, complete -p with nothing registered yet) as
+# ordinary control flow, not failures -- check() below does its own
+# explicit exit-1-on-mismatch, which is what actually catches regressions.
+set -uo pipefail
 
 # Test: `moon exec`/`moon orbit exec`/`moon orbit run`'s bash completion
 # delegates to whatever completion is registered for the wrapped command,
@@ -49,6 +53,28 @@ echo ran
 SH
 chmod +x "${WORKDIR}/.moonstone/env/bin/only-in-moon-env"
 
+# A tool that speaks the Moonstone completion convention but has NOTHING
+# registered for it yet in this shell -- proves the lazy path really works:
+# asked for its own script, that script gets eval'd for real, and the
+# SECOND completion for the same command reuses the now-real registration
+# (no second script fetch -- `complete -p` finds it directly).
+mkdir -p "${WORKDIR}/.moonstone/env/bin"
+cat > "${WORKDIR}/.moonstone/env/bin/clingy-like-tool" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "--__moonstone-complete-script" ]]; then
+  cat <<'SCRIPT'
+_clingy_like_tool_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "--alpha --beta" -- "$cur") )
+}
+complete -F _clingy_like_tool_complete clingy-like-tool
+SCRIPT
+  exit 0
+fi
+echo "ran for real: $*"
+SH
+chmod +x "${WORKDIR}/.moonstone/env/bin/clingy-like-tool"
+
 cd "${WORKDIR}"
 
 "${MOON_BIN}" completions bash > moon_completions.bash
@@ -92,5 +118,21 @@ check "--rm --name" moon exec -- docker run ""
 
 # Moon's own words are unaffected.
 check "exec" moon "ex"
+
+# Nothing is registered for clingy-like-tool yet -- the completion function
+# must fetch its script, eval it for real, and delegate to it.
+check "--alpha --beta" moon exec clingy-like-tool ""
+# It's now really registered in THIS shell; confirm that directly rather
+# than just trusting a second completion call succeeded by coincidence.
+if [[ -z "$(complete -p clingy-like-tool 2>/dev/null)" ]]; then
+  echo "Fail: clingy-like-tool was not actually registered after lazy completion" >&2
+  exit 1
+fi
+# Second completion for the same command must reuse that registration
+# (same expected output; the point is it no longer needs the script fetch,
+# which the fake binary's own --__moonstone-complete-script branch is the
+# only source of "--alpha --beta" -- if COMPREPLY is still right here, the
+# real complete -p path, not a repeated re-fetch, produced it).
+check "--alpha --beta" moon exec clingy-like-tool ""
 
 echo "━━━ ✓ moon completions delegation passed ━━━"

@@ -137,6 +137,20 @@ pub const CompletionsCommand = struct {
             \\      shift $((name_index - 1)) words
             \\      (( CURRENT -= name_index - 1 ))
             \\      local PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\
+            \\      local delegate="$words[1]"
+            \\      if (( ! $+_comps[$delegate] )); then
+            \\        local delegate_path
+            \\        delegate_path="$(command -v -- "$delegate" 2>/dev/null)"
+            \\        if [[ -n "$delegate_path" ]]; then
+            \\          local script
+            \\          script="$("$delegate_path" --__moonstone-complete-script zsh "$delegate" 2>/dev/null)"
+            \\          if [[ -n "$script" ]]; then
+            \\            eval "$script"
+            \\          fi
+            \\        fi
+            \\      fi
+            \\
             \\      _normal -p moon
             \\      return
             \\    elif (( CURRENT == name_index )); then
@@ -248,6 +262,20 @@ pub const CompletionsCommand = struct {
             \\
             \\      local delegate_fn
             \\      delegate_fn=$(complete -p "$delegate" 2>/dev/null | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+            \\
+            \\      if [[ -z "$delegate_fn" ]]; then
+            \\        local delegate_path
+            \\        delegate_path=$(command -v -- "$delegate" 2>/dev/null)
+            \\        if [[ -n "$delegate_path" ]]; then
+            \\          local script
+            \\          script=$("$delegate_path" --__moonstone-complete-script bash "$delegate" 2>/dev/null)
+            \\          if [[ -n "$script" ]]; then
+            \\            eval "$script"
+            \\            delegate_fn=$(complete -p "$delegate" 2>/dev/null | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+            \\          fi
+            \\        fi
+            \\      fi
+            \\
             \\      if [[ -n "$delegate_fn" ]]; then
             \\        "$delegate_fn"
             \\      else
@@ -375,8 +403,20 @@ pub const CompletionsCommand = struct {
             \\function __moon_delegate_complete --description 'ask fish for completions of the shifted line, as if the delegate had been typed directly'
             \\    set -l boundary (__moon_boundary)
             \\    set -l toks (commandline -opc)
-            \\    set -l shifted $toks[$boundary..-1] (commandline -ct)
+            \\    set -l delegate $toks[$boundary]
             \\    set -lx PATH (__moon_env_path) $PATH
+            \\
+            \\    if test -z "$(complete -c $delegate)"
+            \\        set -l delegate_path (command -v -- $delegate 2>/dev/null)
+            \\        if test -n "$delegate_path"
+            \\            set -l script ("$delegate_path" --__moonstone-complete-script fish $delegate 2>/dev/null)
+            \\            if test -n "$script"
+            \\                eval $script
+            \\            end
+            \\        end
+            \\    end
+            \\
+            \\    set -l shifted $toks[$boundary..-1] (commandline -ct)
             \\    complete -C(string join ' ' -- $shifted)
             \\end
             \\
