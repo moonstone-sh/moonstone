@@ -350,9 +350,7 @@ moon exec [options] <command> [args...]
 ### Argument Boundary Rules
 
 - **First Positional Boundary**: All Moonstone options (`--global`, `--json`, `--dev`, `--prod`, etc.) must precede `<command>`. Once `<command>` is encountered, Moonstone transfers ownership of all remaining arguments to `<command>` without interpreting them.
-- **Double-Dash (`--`) Position**:
-  - An optional `--` **before** `<command>` explicitly terminates Moonstone option parsing (useful if `<command>` starts with a hyphen, e.g. `moon exec -- -strange-program arg`).
-  - One `--` **after** `<command>` is an optional argument delimiter and is not forwarded (e.g. `moon exec tool -- --child-flag`). Use `moon exec tool -- --` to pass one literal `--` to `tool`.
+- **Double-Dash (`--`) Position**: an optional `--` **before** `<command>` explicitly terminates Moonstone option parsing (useful if `<command>` starts with a hyphen, e.g. `moon exec -- -strange-program arg`) and is the only `--` Moonstone itself ever consumes. Every `--` **at or after** `<command>` is forwarded to it verbatim, however many there are — Moonstone has no way to tell "a separator the user typed for readability" apart from "a `--` the command's own argument grammar needs" (e.g. `docker run x -- y`), so it never guesses and never drops one. `moon exec -- docker run x -- y` gives `docker` exactly `run x -- y`.
 - **Direct Execution**: Arguments are passed directly via `spawn` array boundaries (`child.argv`) without shell string re-assembly, preserving exact argument boundaries.
 
 See [LÖVE + Moonstone](LOVE.md) for a complete `love-importer` workflow.

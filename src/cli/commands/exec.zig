@@ -155,8 +155,10 @@ pub const ExecCommand = struct {
             \\process unchanged.
             \\
             \\An optional '--' may appear before <command> to explicitly terminate Moonstone
-            \\option parsing. One '--' after <command> is treated as an argument delimiter
-            \\and is not forwarded; use a second '--' to pass a literal delimiter.
+            \\option parsing (needed if <command> itself starts with a hyphen). That is the
+            \\only '--' Moonstone ever consumes: every '--' at or after <command> is forwarded
+            \\to it verbatim, however many there are (e.g. `moon exec -- docker run x -- y`
+            \\gives docker exactly `run x -- y`).
             \\
             \\Options:
             \\  --prod           Exclude development dependencies

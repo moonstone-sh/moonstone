@@ -61,8 +61,11 @@ SH
 chmod +x "${WORKDIR}/child/.moonstone/env/bin/tool"
 
 cd "${WORKDIR}"
-"${MOON_BIN}" orbit run child args -- first "two words" | grep -Fx 'RUN[first][two words]'
-"${MOON_BIN}" orbit exec child tool -- first "two words" | grep -Fx 'EXEC[first][two words]'
-"${MOON_BIN}" orbit exec child tool -- -- | grep -Fx 'EXEC[--]'
+# A "--" at or after the script/command name is always forwarded verbatim
+# now (see tests/e2e/commands/exec_semantics.sh for the full rationale) —
+# these orbit variants share the same router.zig parsing as `exec`.
+"${MOON_BIN}" orbit run child args -- first "two words" | grep -Fx 'RUN[--][first][two words]'
+"${MOON_BIN}" orbit exec child tool -- first "two words" | grep -Fx 'EXEC[--][first][two words]'
+"${MOON_BIN}" orbit exec child tool -- -- | grep -Fx 'EXEC[--][--]'
 
 echo "━━━ ✓ orbit delimiter semantics passed ━━━"

@@ -81,13 +81,15 @@ pub const CommandNode = struct {
                     var stop_parsing_flags = false;
                     const opaque_arguments_after: ?usize = comptime if (@hasDecl(CmdType, "opaque_arguments_after")) @as(usize, CmdType.opaque_arguments_after) else null;
                     var opaque_arguments_started = false;
-                    var opaque_delimiter_consumed = false;
                     while (i < args.len) : (i += 1) {
                         const arg = args[i];
-                        if (opaque_arguments_started and !opaque_delimiter_consumed and std.mem.eql(u8, arg, "--")) {
-                            opaque_delimiter_consumed = true;
-                            continue;
-                        }
+                        // Once opaque forwarding has started (the wrapped command's
+                        // name has been consumed), every remaining token — including
+                        // any further "--" the wrapped command wants for itself, e.g.
+                        // `moon exec -- docker run x -- y` — is forwarded verbatim.
+                        // Moonstone's own "--" handling only ever applies BEFORE that
+                        // boundary (see the `!stop_parsing_flags` branch below); it
+                        // must never re-interpret a "--" that belongs to the child.
                         if (!stop_parsing_flags and std.mem.eql(u8, arg, "--")) {
                             stop_parsing_flags = true;
                             continue;
