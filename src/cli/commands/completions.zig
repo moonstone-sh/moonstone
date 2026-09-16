@@ -90,7 +90,62 @@ pub const CompletionsCommand = struct {
     fn generateZsh(self: CompletionsCommand, ctx: *router.Context) !void {
         _ = self;
         try ctx.stdout.print(
+            \\_moon_opaque_boundary() {{
+            \\  local -a w
+            \\  w=("${{words[@]:1}}")
+            \\  local n=$#w
+            \\  local i=1
+            \\  local need=0
+            \\
+            \\  if [[ "${{w[1]:-}}" == "exec" ]]; then
+            \\    i=2; need=1
+            \\  elif [[ "${{w[1]:-}}" == "orbit" && "${{w[2]:-}}" == "exec" ]]; then
+            \\    i=3; need=2
+            \\  elif [[ "${{w[1]:-}}" == "orbit" && "${{w[2]:-}}" == "run" ]]; then
+            \\    i=3; need=2
+            \\  else
+            \\    return 1
+            \\  fi
+            \\
+            \\  local dashdash=0
+            \\  while (( i <= n )); do
+            \\    local wd="${{w[$i]}}"
+            \\    if [[ "$wd" == "--" && $dashdash -eq 0 ]]; then
+            \\      dashdash=1; (( i++ )); continue
+            \\    fi
+            \\    if (( need == 1 )) && [[ "$wd" == --* ]] && (( dashdash == 0 )); then
+            \\      if [[ "$wd" == "--interpreter" ]]; then (( i += 2 )); else (( i++ )); fi
+            \\      continue
+            \\    fi
+            \\    break
+            \\  done
+            \\
+            \\  local consumed=0
+            \\  while (( consumed < need - 1 && i <= n )); do
+            \\    (( i++ )); (( consumed++ ))
+            \\  done
+            \\
+            \\  reply=($((i + 1)))
+            \\  return 0
+            \\}}
+            \\
             \\_moon() {{
+            \\  local name_index
+            \\  if _moon_opaque_boundary; then
+            \\    name_index=$reply[1]
+            \\    if (( CURRENT > name_index )); then
+            \\      shift $((name_index - 1)) words
+            \\      (( CURRENT -= name_index - 1 ))
+            \\      local PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\      _normal -p moon
+            \\      return
+            \\    elif (( CURRENT == name_index )); then
+            \\      local PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\      _command_names
+            \\      return
+            \\    fi
+            \\  fi
+            \\
             \\  local cmd="$words[1]"
             \\  local -a commands
             \\  commands=(
@@ -124,6 +179,44 @@ pub const CompletionsCommand = struct {
     fn generateBash(self: CompletionsCommand, ctx: *router.Context) !void {
         _ = self;
         try ctx.stdout.print(
+            \\_moon_opaque_boundary() {{
+            \\  local words=("${{COMP_WORDS[@]:1}}")   # drop "moon"
+            \\  local n=${{#words[@]}}
+            \\  local i=0
+            \\  local need=0
+            \\
+            \\  if [[ "${{words[0]:-}}" == "exec" ]]; then
+            \\    i=1; need=1
+            \\  elif [[ "${{words[0]:-}}" == "orbit" && "${{words[1]:-}}" == "exec" ]]; then
+            \\    i=2; need=2
+            \\  elif [[ "${{words[0]:-}}" == "orbit" && "${{words[1]:-}}" == "run" ]]; then
+            \\    i=2; need=2
+            \\  else
+            \\    return 1
+            \\  fi
+            \\
+            \\  local dashdash_seen=0
+            \\  while (( i < n )); do
+            \\    local w="${{words[$i]}}"
+            \\    if [[ "$w" == "--" && $dashdash_seen -eq 0 ]]; then
+            \\      dashdash_seen=1; i=$((i+1)); continue
+            \\    fi
+            \\    if (( need == 1 )) && [[ "$w" == --* ]] && [[ $dashdash_seen -eq 0 ]]; then
+            \\      if [[ "$w" == "--interpreter" ]]; then i=$((i+2)); else i=$((i+1)); fi
+            \\      continue
+            \\    fi
+            \\    break
+            \\  done
+            \\
+            \\  local consumed=0
+            \\  while (( consumed < need - 1 && i < n )); do
+            \\    i=$((i+1)); consumed=$((consumed+1))
+            \\  done
+            \\
+            \\  MOON_NAME_INDEX=$((i+1))
+            \\  return 0
+            \\}}
+            \\
             \\_moon_completions() {{
             \\  local cur prev words cword
             \\  if type _get_comp_words_by_ref &>/dev/null; then
@@ -131,6 +224,50 @@ pub const CompletionsCommand = struct {
             \\  else
             \\      cur="${{COMP_WORDS[COMP_CWORD]}}"
             \\  fi
+            \\
+            \\  if _moon_opaque_boundary; then
+            \\    if (( COMP_CWORD > MOON_NAME_INDEX )); then
+            \\      local delegate="${{COMP_WORDS[$MOON_NAME_INDEX]}}"
+            \\      local offset=$MOON_NAME_INDEX
+            \\
+            \\      local saved_path="$PATH"
+            \\      PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\
+            \\      local saved_words=("${{COMP_WORDS[@]}}")
+            \\      local saved_cword=$COMP_CWORD
+            \\      local saved_line="$COMP_LINE"
+            \\      local saved_point=$COMP_POINT
+            \\
+            \\      COMP_WORDS=("${{saved_words[@]:$offset}}")
+            \\      COMP_CWORD=$(( saved_cword - offset ))
+            \\      COMP_LINE="${{COMP_WORDS[*]}}"
+            \\      if [[ "${{saved_line: -1}}" == " " ]] && (( saved_cword == ${{#saved_words[@]}} - 1 )); then
+            \\        COMP_LINE+=" "
+            \\      fi
+            \\      COMP_POINT=${{#COMP_LINE}}
+            \\
+            \\      local delegate_fn
+            \\      delegate_fn=$(complete -p "$delegate" 2>/dev/null | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+            \\      if [[ -n "$delegate_fn" ]]; then
+            \\        "$delegate_fn"
+            \\      else
+            \\        COMPREPLY=( $(compgen -c -- "${{COMP_WORDS[COMP_CWORD]}}") )
+            \\      fi
+            \\
+            \\      PATH="$saved_path"
+            \\      COMP_WORDS=("${{saved_words[@]}}")
+            \\      COMP_CWORD=$saved_cword
+            \\      COMP_LINE="$saved_line"
+            \\      COMP_POINT=$saved_point
+            \\      return
+            \\    elif (( COMP_CWORD == MOON_NAME_INDEX )); then
+            \\      local extra_path
+            \\      extra_path="$(moon env --paths 2>/dev/null)"
+            \\      COMPREPLY=( $(PATH="${{extra_path}}:${{PATH}}" compgen -c -- "$cur") )
+            \\      return
+            \\    fi
+            \\  fi
+            \\
             \\  local cmd="${{COMP_WORDS[0]}}"
             \\  local completions
             \\  completions="$($cmd completions --complete "$COMP_LINE" 2>/dev/null)"
@@ -164,5 +301,93 @@ pub const CompletionsCommand = struct {
                 try ctx.stdout.print("complete -c moon -n \"__fish_seen_subcommand_from {s}\" -a \"(moon completions --complete (commandline -cp))\"\n", .{sub.name});
             }
         }
+
+        try ctx.stdout.print(
+            \\
+            \\# UNVERIFIED: fish is not available in the environment this was written in
+            \\# to test against a live session. Written from documented fish semantics
+            \\# (commandline -opc/-ct, complete -C) rather than exercised interactively --
+            \\# treat this as a design, not a shipped guarantee, until someone runs it.
+            \\
+            \\function __moon_boundary --description 'index (1-based, toks[1]=="moon") of the delegated command-name token, or nothing if this isn\'t an exec/orbit-exec/orbit-run line'
+            \\    set -l toks (commandline -opc)
+            \\    set -l n (count $toks)
+            \\    set -l i 2
+            \\    set -l need 0
+            \\
+            \\    if test $n -ge 2 -a "$toks[2]" = exec
+            \\        set i 3; set need 1
+            \\    else if test $n -ge 3 -a "$toks[2]" = orbit -a "$toks[3]" = exec
+            \\        set i 4; set need 2
+            \\    else if test $n -ge 3 -a "$toks[2]" = orbit -a "$toks[3]" = run
+            \\        set i 4; set need 2
+            \\    else
+            \\        return 1
+            \\    end
+            \\
+            \\    set -l dashdash 0
+            \\    while test $i -le $n
+            \\        set -l w $toks[$i]
+            \\        if test "$w" = -- -a $dashdash -eq 0
+            \\            set dashdash 1
+            \\            set i (math $i + 1)
+            \\            continue
+            \\        end
+            \\        if test $need -eq 1 -a $dashdash -eq 0 && string match -q -- '--*' $w
+            \\            if test "$w" = --interpreter
+            \\                set i (math $i + 2)
+            \\            else
+            \\                set i (math $i + 1)
+            \\            end
+            \\            continue
+            \\        end
+            \\        break
+            \\    end
+            \\
+            \\    set -l consumed 0
+            \\    while test $consumed -lt (math $need - 1) -a $i -le $n
+            \\        set i (math $i + 1)
+            \\        set consumed (math $consumed + 1)
+            \\    end
+            \\
+            \\    echo $i
+            \\    return 0
+            \\end
+            \\
+            \\function __moon_env_path
+            \\    moon env --paths 2>/dev/null
+            \\end
+            \\
+            \\function __moon_choosing_command --description 'true while the CURRENT token being typed is the delegate command-name slot itself'
+            \\    set -l boundary (__moon_boundary)
+            \\    test -n "$boundary"; or return 1
+            \\    set -l toks (commandline -opc)
+            \\    test (count $toks) -eq (math $boundary - 1)
+            \\end
+            \\
+            \\function __moon_past_command --description 'true once a delegate command name has been fully typed and we\'re completing ITS arguments'
+            \\    set -l boundary (__moon_boundary)
+            \\    test -n "$boundary"; or return 1
+            \\    set -l toks (commandline -opc)
+            \\    test (count $toks) -ge $boundary
+            \\end
+            \\
+            \\function __moon_delegate_complete --description 'ask fish for completions of the shifted line, as if the delegate had been typed directly'
+            \\    set -l boundary (__moon_boundary)
+            \\    set -l toks (commandline -opc)
+            \\    set -l shifted $toks[$boundary..-1] (commandline -ct)
+            \\    set -lx PATH (__moon_env_path) $PATH
+            \\    complete -C(string join ' ' -- $shifted)
+            \\end
+            \\
+            \\# Completing the bare command name: every executable on the ambient PATH
+            \\# plus whatever this moon environment additionally materializes.
+            \\complete -c moon -n __moon_choosing_command -x -a '(set -lx PATH (__moon_env_path) $PATH; __fish_complete_command)'
+            \\
+            \\# Past the command name: delegate to fish's own completion for it,
+            \\# verbatim, exactly like plain env/nice/time wrapping does.
+            \\complete -c moon -n __moon_past_command -x -a '(__moon_delegate_complete)'
+            \\
+        , .{});
     }
 };

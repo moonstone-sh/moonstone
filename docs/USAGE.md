@@ -353,6 +353,10 @@ moon exec [options] <command> [args...]
 - **Double-Dash (`--`) Position**: an optional `--` **before** `<command>` explicitly terminates Moonstone option parsing (useful if `<command>` starts with a hyphen, e.g. `moon exec -- -strange-program arg`) and is the only `--` Moonstone itself ever consumes. Every `--` **at or after** `<command>` is forwarded to it verbatim, however many there are — Moonstone has no way to tell "a separator the user typed for readability" apart from "a `--` the command's own argument grammar needs" (e.g. `docker run x -- y`), so it never guesses and never drops one. `moon exec -- docker run x -- y` gives `docker` exactly `run x -- y`.
 - **Direct Execution**: Arguments are passed directly via `spawn` array boundaries (`child.argv`) without shell string re-assembly, preserving exact argument boundaries.
 
+### Shell Completion
+
+`moon completions bash|zsh|fish` generates a completion script that, once past `<command>` on an `exec`/`orbit exec`/`orbit run` line, delegates entirely to whatever completion is already registered for that command — Moonstone doesn't need to know anything about `docker`, `hydronium-create`, or any other tool to complete their own arguments correctly. This uses each shell's own real mechanism for "a wrapper whose tail is another command" (the same one `env`, `sudo`, `time`, and `nice` use): bash's `complete -F`-registered function lookup, zsh's `_normal -p` (as used by zsh's own `_precommand`), and fish's `complete -C`. Before delegating, the moon-managed bin directory (`moon env --paths`) is added to `PATH` for that one completion call, so a tool only materialized there — not on the ambient shell `PATH` — is both completable as a command name and resolvable by whatever it delegates to. The bash and zsh integrations are exercised directly (see `tests/e2e/commands/completions_delegate.sh`); the fish one is written from documented fish semantics but not exercised against a live fish session.
+
 See [LÖVE + Moonstone](LOVE.md) for a complete `love-importer` workflow.
 
 ## User Configuration Overrides
