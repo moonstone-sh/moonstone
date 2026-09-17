@@ -399,5 +399,5 @@ test "an escaping declaration path is refused" {
     defer allocator.free(root);
 
     try std.testing.expectError(error.UnsafeNativeLibraryDeclaration, collect(allocator, io, "hydronium-ink", root));
-    _ = error_context.take(allocator);
+    if (error_context.take(allocator)) |diagnostic| allocator.free(diagnostic);
 }

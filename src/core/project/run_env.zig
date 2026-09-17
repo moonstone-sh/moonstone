@@ -471,7 +471,8 @@ test "build_run_env projects an existing native library directory" {
     defer base_env.deinit();
     try base_env.put("PATH", "/host/bin");
 
-    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4", &.{});
+    const lua_ver_dot = try allocator.dupe(u8, "5.4");
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, lua_ver_dot, &.{});
     defer run_env.deinit();
 
     try std.testing.expectEqualStrings(native_lib_path, run_env.native_lib_path.?);
@@ -510,7 +511,8 @@ test "build_run_env omits absent native library directory" {
     defer base_env.deinit();
     try base_env.put("PATH", "/host/bin");
 
-    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, "5.4", &.{});
+    const lua_ver_dot = try allocator.dupe(u8, "5.4");
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, native_lib_path, lua_ver_dot, &.{});
     defer run_env.deinit();
 
     try std.testing.expect(run_env.native_lib_path == null);
@@ -548,7 +550,8 @@ test "recorded package roots become exported environment variables" {
         .projection = .live,
     }};
 
-    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, null, "5.1", &declared);
+    const lua_ver_dot = try allocator.dupe(u8, "5.1");
+    var run_env = try build_run_env(allocator, io, &base_env, bin_path, share_path, lib_path, null, lua_ver_dot, &declared);
     defer run_env.deinit();
 
     try std.testing.expectEqualStrings(

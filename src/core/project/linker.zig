@@ -815,10 +815,19 @@ fn projectDirectory(
 /// resolution and projection) is recorded verbatim rather than failing the
 /// sync: the caller has already accepted that directory as the dependency.
 fn resolveRealPackageRoot(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
-    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| switch (err) {
+    // `realPathFileAlloc` returns a sentinel-terminated `[:0]u8` (its
+    // underlying allocation is one byte larger than its reported length).
+    // Coercing that directly to the non-sentinel `[]const u8` this function
+    // returns would erase the sentinel from the type the eventual
+    // `allocator.free` sees, freeing one byte short of what was actually
+    // allocated. Re-dupe into a plain allocation whose length matches its
+    // own allocation size.
+    const real = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => try allocator.dupe(u8, path),
+        else => return try allocator.dupe(u8, path),
     };
+    defer allocator.free(real);
+    return try allocator.dupe(u8, real);
 }
 
 fn appendPackageRoot(
