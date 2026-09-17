@@ -323,6 +323,40 @@ pub const Version = struct {
             });
         }
     }
+
+    /// `std.hash.autoHash` (and therefore `std.AutoHashMap`/`std.AutoArrayHashMap`'s
+    /// default context) refuses structs containing slices, since it can't tell
+    /// whether the intent is to hash pointer identity or slice contents. `Version`
+    /// legitimately holds string slices (`extra`/`pre`/`build`), so any map keyed
+    /// on `Version` needs this explicit context instead of the Auto* variants.
+    pub const HashContext = struct {
+        pub fn hash(self: @This(), key: Version) u32 {
+            _ = self;
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update(std.mem.asBytes(&key.major));
+            hasher.update(std.mem.asBytes(&key.minor));
+            hasher.update(std.mem.asBytes(&key.patch));
+            hasher.update(key.extra);
+            hasher.update(key.pre);
+            hasher.update(key.build);
+            hasher.update(std.mem.asBytes(&key.precision));
+            hasher.update(std.mem.asBytes(&key.revision));
+            return @truncate(hasher.final());
+        }
+
+        pub fn eql(self: @This(), a: Version, b: Version, b_index: usize) bool {
+            _ = self;
+            _ = b_index;
+            return a.major == b.major and
+                a.minor == b.minor and
+                a.patch == b.patch and
+                a.precision == b.precision and
+                a.revision == b.revision and
+                std.mem.eql(u8, a.extra, b.extra) and
+                std.mem.eql(u8, a.pre, b.pre) and
+                std.mem.eql(u8, a.build, b.build);
+        }
+    };
 };
 
 fn isLuaRocksRolling(suffix: []const u8) bool {

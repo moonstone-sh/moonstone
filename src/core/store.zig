@@ -751,7 +751,7 @@ test "commit_to_store reuses complete artifacts without deleting staging or itse
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(tmp_path);
 
     var env = std.process.Environ.Map.init(allocator);

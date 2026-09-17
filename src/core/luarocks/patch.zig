@@ -412,8 +412,8 @@ test "applies an ordinary patch beneath an isolated source root" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, "greeting.lua", "return 'old'\n");
-    const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+    try tmp.dir.writeFile(io, .{ .sub_path = "greeting.lua", .data = "return 'old'\n" });
+    const root_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root_path);
 
     var patch = try parse(
@@ -427,7 +427,7 @@ test "applies an ordinary patch beneath an isolated source root" {
     defer patch.deinit(allocator);
     try applyFileAtRoot(allocator, io, root_path, patch.files[0]);
 
-    const content = try tmp.dir.readFileAlloc(io, "greeting.lua", allocator, 4096);
+    const content = try tmp.dir.readFileAlloc(io, "greeting.lua", allocator, std.Io.Limit.limited(4096));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("return 'new'\n", content);
 }
@@ -438,9 +438,9 @@ test "refuses a symlinked patch target" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, "outside.lua", "return 'old'\n");
+    try tmp.dir.writeFile(io, .{ .sub_path = "outside.lua", .data = "return 'old'\n" });
     try tmp.dir.symLink(io, "outside.lua", "greeting.lua", .{});
-    const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const root_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root_path);
 
     var patch = try parse(
@@ -453,7 +453,7 @@ test "refuses a symlinked patch target" {
     );
     defer patch.deinit(allocator);
     try std.testing.expectError(error.NotLink, applyFileAtRoot(allocator, io, root_path, patch.files[0]));
-    const outside = try tmp.dir.readFileAlloc(io, "outside.lua", allocator, 4096);
+    const outside = try tmp.dir.readFileAlloc(io, "outside.lua", allocator, std.Io.Limit.limited(4096));
     defer allocator.free(outside);
     try std.testing.expectEqualStrings("return 'old'\n", outside);
 }

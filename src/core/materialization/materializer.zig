@@ -730,7 +730,7 @@ test "materializer reuses a healthy CAS artifact and restores its index without 
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const home = try tmp.dir.realpathAlloc(allocator, ".");
+    const home = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(home);
 
     var env = std.process.Environ.Map.init(allocator);

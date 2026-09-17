@@ -322,7 +322,9 @@ pub const CompletionsCommand = struct {
             \\      extra_path="$(moon env --paths $global_flag 2>/dev/null)"
             \\      local bin_runtime_names
             \\      bin_runtime_names="$(moon env --bin-runtime-names $global_flag 2>/dev/null)"
-            \\      COMPREPLY=( $(PATH="${{extra_path}}:${{PATH}}" compgen -c -- "$cur") $(compgen -W "$bin_runtime_names" -- "$cur") )
+            \\      local -a raw_candidates
+            \\      raw_candidates=( $(PATH="${{extra_path}}:${{PATH}}" compgen -c -- "$cur") $(compgen -W "$bin_runtime_names" -- "$cur") )
+            \\      COMPREPLY=( $(printf '%s\n' "${{raw_candidates[@]}}" | sort -u) )
             \\      return
             \\    fi
             \\  fi

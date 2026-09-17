@@ -1302,7 +1302,7 @@ test "LuaRocks CMake variables resolve deterministically without shell expansion
     , .{});
     defer parsed.deinit();
 
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("CFLAGS", "-O2 -fPIC");
 
@@ -1321,7 +1321,7 @@ test "LuaRocks CMake variables resolve deterministically without shell expansion
 
 test "LuaRocks CMake variables reject unknown placeholders" {
     const allocator = std.testing.allocator;
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try std.testing.expectError(
         error.UnsupportedLuaRocksCMakeVariable,
@@ -1331,7 +1331,7 @@ test "LuaRocks CMake variables reject unknown placeholders" {
 
 test "LuaRocks CMake self-forwarded variables use deterministic defaults" {
     const allocator = std.testing.allocator;
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("WITH_SHARED_LIBUV", "host-specific-value-must-not-leak");
 
@@ -1348,7 +1348,7 @@ test "LuaRocks CMake self-forwarded variables use deterministic defaults" {
 
 test "LuaRocks command variables become projected command values" {
     const allocator = std.testing.allocator;
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("CC", "clang");
 
@@ -1369,7 +1369,7 @@ test "LuaRocks command build defaults link the projected Lua archive on Linux" {
     if (comptime builtin.os.tag != .linux) return;
 
     const allocator = std.testing.allocator;
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
 
     const command = try expand_luarocks_command_value(
@@ -1386,7 +1386,7 @@ test "LuaRocks command build defaults link the projected Lua archive on Linux" {
 
 test "LuaRocks command variables reject unknown placeholders" {
     const allocator = std.testing.allocator;
-    var env = try std.process.getEnvMap(allocator);
+    var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try std.testing.expectError(
         error.UnsupportedLuaRocksCommandVariable,

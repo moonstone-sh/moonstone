@@ -91,18 +91,18 @@ pub fn executePlan(
             try step_env.put(se.key, se.value);
         }
 
-        var child = std.process.Child.init(argv_list.items, allocator);
-        child.cwd = step_cwd;
-        child.env_map = &step_env;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-
-        child.spawn() catch {
+        var child = std.process.spawn(io, .{
+            .argv = argv_list.items,
+            .cwd = .{ .path = step_cwd },
+            .environ_map = &step_env,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch {
             return error.ExecutionStepFailed;
         };
 
-        const term = child.wait() catch return error.ExecutionStepFailed;
-        if (term != .Exited or term.Exited != 0) {
+        const term = child.wait(io) catch return error.ExecutionStepFailed;
+        if (term != .exited or term.exited != 0) {
             return error.ExecutionStepFailed;
         }
     }

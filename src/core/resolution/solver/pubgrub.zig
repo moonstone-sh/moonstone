@@ -421,7 +421,7 @@ pub const Solver = struct {
 const MockProvider = struct {
     allocator: std.mem.Allocator,
     versions: std.StringArrayHashMapUnmanaged([]const semver.Version),
-    deps: std.StringArrayHashMapUnmanaged(std.AutoArrayHashMapUnmanaged(semver.Version, []const Term)),
+    deps: std.StringArrayHashMapUnmanaged(std.ArrayHashMapUnmanaged(semver.Version, []const Term, semver.Version.HashContext, true)),
 
     pub fn init(allocator: std.mem.Allocator) MockProvider {
         return .{
@@ -520,7 +520,7 @@ test "simple conflict" {
         break :blk v;
     });
 
-    var a_deps = std.AutoArrayHashMapUnmanaged(semver.Version, []const Term).empty;
+    var a_deps = std.ArrayHashMapUnmanaged(semver.Version, []const Term, semver.Version.HashContext, true).empty;
     try a_deps.put(allocator, v1, blk: {
         var t = try allocator.alloc(Term, 2);
         t[0] = Term{ .name = try allocator.dupe(u8, "B"), .range = try semver.VersionRange.parse(allocator, "1.0.0") };
@@ -558,7 +558,7 @@ test "exact root requirements expand transitive dependencies" {
         break :blk versions;
     });
 
-    var a_deps = std.AutoArrayHashMapUnmanaged(semver.Version, []const Term).empty;
+    var a_deps = std.ArrayHashMapUnmanaged(semver.Version, []const Term, semver.Version.HashContext, true).empty;
     try a_deps.put(allocator, a_v1, blk: {
         var terms = try allocator.alloc(Term, 1);
         terms[0] = .{

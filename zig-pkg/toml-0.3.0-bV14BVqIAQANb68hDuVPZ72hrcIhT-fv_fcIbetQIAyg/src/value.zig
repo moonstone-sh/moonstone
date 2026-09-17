@@ -49,13 +49,30 @@ pub const Value = union(enum) {
 
     pub fn print(self: *const Value) void {
         switch (self.*) {
-
-
-
-
-
-
-
+            .string => |str| {
+                std.debug.print("{s}", .{str});
+            },
+            .integer => |i| {
+                std.debug.print("{d}", .{i});
+            },
+            .float => |f| {
+                std.debug.print("{d}", .{f});
+            },
+            .boolean => |b| {
+                std.debug.print("{}", .{b});
+            },
+            .date => |d| {
+                std.debug.print("{d}-{d}-{d}", .{ d.year, d.month, d.day });
+            },
+            .time => |t| {
+                std.debug.print("{d}:{d}:{d}", .{ t.hour, t.minute, t.second });
+            },
+            .datetime => |dt| {
+                std.debug.print("{d}-{d}-{d}T{d}:{d}:{d}", .{
+                    dt.date.year,  dt.date.month,  dt.date.day,
+                    dt.time.hour,  dt.time.minute, dt.time.second,
+                });
+            },
             .array => |ar| {
 
                 for (ar.items) |x| {

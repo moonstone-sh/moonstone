@@ -173,8 +173,29 @@ fn refAllDeclsRecursive(comptime T: type) void {
     if (!@import("builtin").is_test) return;
     inline for (comptime std.meta.declarations(T)) |decl| {
         if (@TypeOf(@field(T, decl.name)) == type) {
-            switch (@typeInfo(@field(T, decl.name))) {
-                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(@field(T, decl.name)),
+            const Field = @field(T, decl.name);
+            switch (@typeInfo(Field)) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => {
+                    // Don't recurse into raw @cImport translation units (e.g.
+                    // store.driver.c, from @cInclude("sqlite3.h")). They hold
+                    // no zig `test {}` blocks to discover, and Zig 0.16's
+                    // translate-c unconditionally emits a few inert
+                    // `@compileError` placeholders for compiler builtins it
+                    // can't express as Zig values -- notably Darwin's
+                    // `_Nonnull`/`_Nullable`/`_Null_unspecified`, which are
+                    // hardcoded lexer keywords in Zig's bundled Aro C
+                    // frontend (aro/Tokenizer.zig), not ordinary macros, so
+                    // no `-D` flag can neutralize them. They're harmless
+                    // unless something actually forces their evaluation --
+                    // which walking every declaration here would do. Every
+                    // @cImport unconditionally defines `__builtin_va_list` as
+                    // part of its libc-compatibility shims, so its presence
+                    // is a reliable signal this is a C translation unit
+                    // rather than hand-written Zig with tests to surface.
+                    if (!@hasDecl(Field, "__builtin_va_list")) {
+                        refAllDeclsRecursive(Field);
+                    }
+                },
                 else => {},
             }
         }

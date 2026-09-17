@@ -351,7 +351,7 @@ pub fn resolve_moonstone(allocator: std.mem.Allocator, env: *std.process.Environ
 }
 
 pub fn copy_moonstone_config(allocator: std.mem.Allocator, path: []const u8, io: std.Io) !void {
-    const config_raw = @embedFile("raw/config.toml");
+    const config_raw = @embedFile("../assets/config.toml");
 
     const config_file_path = try std.fs.path.join(allocator, &.{ path, "config.toml" });
     defer allocator.free(config_file_path);
@@ -380,8 +380,8 @@ pub const NetworkConfig = struct {
     retry_delay: u32 = 1,
 };
 
-pub fn is_json_mode(allocator: std.mem.Allocator) bool {
-    var args = std.process.argsWithAllocator(allocator) catch return false;
+pub fn is_json_mode(allocator: std.mem.Allocator, process_args: std.process.Args) bool {
+    var args = process_args.iterateAllocator(allocator) catch return false;
     defer args.deinit();
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--json")) return true;

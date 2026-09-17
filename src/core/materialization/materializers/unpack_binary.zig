@@ -13,7 +13,7 @@ pub fn materialize(
     // 1. Create a temporary extraction directory
     // We can use out_dir/tmp_unpack
     try out_dir.createDirPath(io, "tmp_unpack");
-    const tmp_unpack_path = try out_dir.realPathAlloc(io, allocator, "tmp_unpack");
+    const tmp_unpack_path = try out_dir.realPathFileAlloc(io, "tmp_unpack", allocator);
     defer allocator.free(tmp_unpack_path);
     defer out_dir.deleteTree(io, "tmp_unpack") catch {};
 
@@ -63,7 +63,7 @@ pub fn materialize(
         const bin_name = entry.key_ptr.*;
         const src_rel_path = entry.value_ptr.*;
 
-        try root_dir.copyFile(io, src_rel_path, bin_dir, bin_name, .{});
+        try root_dir.copyFile(src_rel_path, bin_dir, bin_name, io, .{});
 
         // Ensure it's executable. copyFile does not carry the source mode across
         // reliably, and an archive may legitimately have stored the bin 0644, so

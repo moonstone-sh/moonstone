@@ -30,7 +30,7 @@ pub const ArchiveError = error{
     CorruptedTarHeader,
     UnsupportedZipStripComponents,
     ArchivePermissionRestoreFailed,
-} || std.mem.Allocator.Error || std.Io.Dir.OpenError || std.Io.Dir.CreateFileError || std.Io.File.ReadError || std.Io.File.WriteError;
+} || std.mem.Allocator.Error || std.Io.Dir.OpenError || std.Io.File.OpenError || std.Io.File.Reader.Error || std.Io.File.Writer.Error;
 
 const PendingArchiveSymlink = struct {
     entry_path: []const u8,

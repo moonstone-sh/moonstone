@@ -104,7 +104,7 @@ test "Windows resolution recognizes executable, command, and batch suffixes" {
         const executable = try tmp.dir.createFile(io, name, .{});
         executable.close(io);
     }
-    const directory = try tmp.dir.realPathAlloc(io, std.testing.allocator, ".");
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
     defer std.testing.allocator.free(directory);
 
     inline for (.{

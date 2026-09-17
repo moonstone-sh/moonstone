@@ -10,8 +10,9 @@ pub fn to_recipe(allocator: std.mem.Allocator, rock: rockspec.Rockspec, source_h
         .source_hash = try allocator.dupe(u8, source_hash),
         .materializer_kind = try allocator.dupe(u8, "copy_lua"),
         .materializer_version = try allocator.dupe(u8, "v0"),
-        .runtime = try allocator.dupe(u8, "lua54"),
+        .lua_version = try allocator.dupe(u8, "lua54"),
         .lua_abi = try allocator.dupe(u8, "lua54"),
+        .runtime_artifact_hash = try allocator.dupe(u8, ""),
         .target = try allocator.dupe(u8, "native"),
     };
 }

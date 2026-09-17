@@ -19,19 +19,29 @@ pub fn source_hash(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return blake3_hex(allocator, data);
 }
 
+/// Format `fmt`/`args` and feed the resulting bytes into `hasher`. Blake3 no
+/// longer exposes a `std.Io.Writer`-compatible `.writer()` in Zig 0.16, so we
+/// format into a heap buffer first and hash the bytes directly, matching the
+/// pattern already used by `artifact_hash` below.
+fn hashPrint(allocator: std.mem.Allocator, hasher: *std.crypto.hash.Blake3, comptime fmt: []const u8, args: anytype) !void {
+    const formatted = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(formatted);
+    hasher.update(formatted);
+}
+
 pub fn recipe_hash(allocator: std.mem.Allocator, recipe: Recipe) ![]u8 {
     var hasher = std.crypto.hash.Blake3.init(.{});
 
     // Hash fields in a stable order
-    try hasher.writer().print("schema_version={d}\n", .{recipe.schema_version});
-    try hasher.writer().print("name={s}\n", .{recipe.name});
-    try hasher.writer().print("version={s}\n", .{recipe.version});
-    try hasher.writer().print("source_hash={s}\n", .{recipe.source_hash});
-    try hasher.writer().print("materializer_kind={s}\n", .{recipe.materializer_kind});
-    try hasher.writer().print("materializer_version={s}\n", .{recipe.materializer_version});
-    try hasher.writer().print("runtime={s}\n", .{recipe.runtime});
-    try hasher.writer().print("lua_abi={s}\n", .{recipe.lua_abi});
-    try hasher.writer().print("target={s}\n", .{recipe.target});
+    try hashPrint(allocator, &hasher, "schema_version={d}\n", .{recipe.schema_version});
+    try hashPrint(allocator, &hasher, "name={s}\n", .{recipe.name});
+    try hashPrint(allocator, &hasher, "version={s}\n", .{recipe.version});
+    try hashPrint(allocator, &hasher, "source_hash={s}\n", .{recipe.source_hash});
+    try hashPrint(allocator, &hasher, "materializer_kind={s}\n", .{recipe.materializer_kind});
+    try hashPrint(allocator, &hasher, "materializer_version={s}\n", .{recipe.materializer_version});
+    try hashPrint(allocator, &hasher, "runtime={s}\n", .{recipe.lua_version});
+    try hashPrint(allocator, &hasher, "lua_abi={s}\n", .{recipe.lua_abi});
+    try hashPrint(allocator, &hasher, "target={s}\n", .{recipe.target});
 
     // Hash dependencies in sorted order
     var dep_keys = std.ArrayList([]const u8).empty;
@@ -48,33 +58,32 @@ pub fn recipe_hash(allocator: std.mem.Allocator, recipe: Recipe) ![]u8 {
 
     for (dep_keys.items) |key| {
         const val = recipe.dependency_artifact_hashes.get(key).?;
-        try hasher.writer().print("dep:{s}={s}\n", .{ key, val });
+        try hashPrint(allocator, &hasher, "dep:{s}={s}\n", .{ key, val });
     }
 
-    if (recipe.command) |c| try hasher.writer().print("command={s}\n", .{c});
-    if (recipe.args) |args| {
-        for (args, 0..) |arg, i| {
-            try hasher.writer().print("arg:{d}={s}\n", .{ i, arg });
-        }
+    if (recipe.command) |c| try hashPrint(allocator, &hasher, "command={s}\n", .{c});
+    // recipe.args is a plain (non-optional) slice defaulting to &.{}, so a
+    // bare `for` over it already reproduces the original "hash each arg if
+    // there are any" intent with no behavior change for the empty case.
+    for (recipe.args, 0..) |arg, i| {
+        try hashPrint(allocator, &hasher, "arg:{d}={s}\n", .{ i, arg });
     }
-    if (recipe.env) |env| {
-        var env_keys = std.ArrayList([]const u8).empty;
-        defer env_keys.deinit(allocator);
-        var env_it = env.iterator();
-        while (env_it.next()) |entry| {
-            try env_keys.append(allocator, entry.key_ptr.*);
-        }
-        std.mem.sort([]const u8, env_keys.items, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.lessThan(u8, a, b);
+    // recipe.env is a plain []const EnvPair slice, not a map -- sort a copy
+    // by key for deterministic hash order, matching the original map-based
+    // code's intent.
+    {
+        const env_sorted = try allocator.dupe(manifest.EnvPair, recipe.env);
+        defer allocator.free(env_sorted);
+        std.mem.sort(manifest.EnvPair, env_sorted, {}, struct {
+            fn lessThan(_: void, a: manifest.EnvPair, b: manifest.EnvPair) bool {
+                return std.mem.lessThan(u8, a.key, b.key);
             }
         }.lessThan);
-        for (env_keys.items) |key| {
-            const val = env.get(key).?;
-            try hasher.writer().print("env:{s}={s}\n", .{ key, val });
+        for (env_sorted) |pair| {
+            try hashPrint(allocator, &hasher, "env:{s}={s}\n", .{ pair.key, pair.value });
         }
     }
-    if (recipe.output_collection_rules) |o| try hasher.writer().print("output_rules={s}\n", .{o});
+    if (recipe.output_collection_rules) |o| try hashPrint(allocator, &hasher, "output_rules={s}\n", .{o});
 
     var hash_val: [32]u8 = undefined;
     hasher.final(&hash_val);

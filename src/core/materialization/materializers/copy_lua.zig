@@ -53,6 +53,6 @@ pub fn materialize(
         }
 
         // Copy the file
-        try source_dir.copyFile(io, src_rel_path, files_dir, final_target_path, .{});
+        try source_dir.copyFile(src_rel_path, files_dir, final_target_path, io, .{});
     }
 }

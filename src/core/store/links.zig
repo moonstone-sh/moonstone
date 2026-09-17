@@ -196,7 +196,7 @@ pub const LinkStore = struct {
     }
 
     pub fn clearLinks(self: LinkStore) !void {
-        try self.driver.execRaw("DELETE FROM links;");
+        try self.driver.exec("DELETE FROM links;", .{});
     }
 
     fn readLinkEntry(self: LinkStore, stmt: ?*c.sqlite3_stmt) !LinkEntry {

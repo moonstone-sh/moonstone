@@ -246,7 +246,7 @@ test "a package without declarations collects nothing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
 
     const missing = try collect(allocator, io, "no-manifest", root);
@@ -305,7 +305,7 @@ test "declared native libraries resolve against the package root" {
     defer allocator.free(manifest_body);
     try writeTestPackage(io, tmp.dir, manifest_body);
 
-    const root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
 
     const declared = try collect(allocator, io, "hydronium-ink", root);
@@ -341,7 +341,7 @@ test "a declared but unbuilt native library fails with a recovery diagnostic" {
     defer allocator.free(manifest_body);
     try writeTestPackage(io, tmp.dir, manifest_body);
 
-    const root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
 
     try std.testing.expectError(error.DeclaredNativeLibraryMissing, collect(allocator, io, "hydronium-ink", root));
@@ -368,7 +368,7 @@ test "a shared declaration must name a host-loadable file" {
         \\
     );
 
-    const root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
 
     try std.testing.expectError(error.UnsupportedNativeLibraryFilename, collect(allocator, io, "hydronium-ink", root));
@@ -395,7 +395,7 @@ test "an escaping declaration path is refused" {
         \\
     );
 
-    const root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
 
     try std.testing.expectError(error.UnsafeNativeLibraryDeclaration, collect(allocator, io, "hydronium-ink", root));

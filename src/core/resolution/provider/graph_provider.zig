@@ -1488,6 +1488,7 @@ test "resolverForPackageSpec handles unknown and custom registries" {
             .url = "https://corp.internal/registry",
             .token = null,
             .resolver = "moonstone",
+            .priority = 0,
         },
     };
     try std.testing.expectEqual(root.ResolverKind.moonstone, (try resolverForPackageSpec(&custom_regs, unknown_spec)).?);

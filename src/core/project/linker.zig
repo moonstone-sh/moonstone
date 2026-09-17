@@ -925,8 +925,9 @@ pub fn link_project_env(
     projected_artifacts: []const ProjectedArtifact,
     live_links: []const LiveLink,
     project_runtime_name: []const u8,
+    env_map: *std.process.Environ.Map,
 ) !void {
-    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", &std.process.environ_map, project_runtime_name);
+    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", env_map, project_runtime_name);
 }
 
 pub fn link_project_env_at(
@@ -2097,7 +2098,7 @@ test "store package libexec mount prefers the executable layout" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(io, "payload/libexec/valua");
-    const payload_root = try tmp.dir.realPathAlloc(io, allocator, "payload");
+    const payload_root = try tmp.dir.realPathFileAlloc(io, "payload", allocator);
     defer allocator.free(payload_root);
 
     const executable_root = try storePackageLibexecRoot(allocator, io, payload_root, "valua");
@@ -2164,7 +2165,7 @@ test "package roots resolve through symlinked directories" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(io, "real/package");
-    const tmp_root = try tmp.dir.realPathAlloc(io, allocator, ".");
+    const tmp_root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(tmp_root);
     const real_package = try std.fs.path.join(allocator, &.{ tmp_root, "real", "package" });
     defer allocator.free(real_package);
@@ -2206,8 +2207,8 @@ test "Windows executable projection retains sibling DLLs for linked launchers" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDir(io, "source");
-    try tmp.dir.createDir(io, "destination");
+    try tmp.dir.createDir(io, "source", .default_dir);
+    try tmp.dir.createDir(io, "destination", .default_dir);
 
     var source = try tmp.dir.openDir(io, "source", .{});
     defer source.close(io);
@@ -2219,7 +2220,7 @@ test "Windows executable projection retains sibling DLLs for linked launchers" {
     const unrelated = try source.createFile(io, "README.txt", .{});
     unrelated.close(io);
 
-    const source_root = try tmp.dir.realPathAlloc(io, std.testing.allocator, "source");
+    const source_root = try tmp.dir.realPathFileAlloc(io, "source", std.testing.allocator);
     defer std.testing.allocator.free(source_root);
     const launcher_path = try std.fs.path.join(std.testing.allocator, &.{ source_root, "lua.exe" });
     defer std.testing.allocator.free(launcher_path);
@@ -2235,14 +2236,14 @@ test "Windows executable projection retains sibling DLLs for linked launchers" {
     try stale.writeStreamingAll(io, "stale projection");
     stale.close(io);
     try copySiblingDllsForWindows(io, destination, launcher_path, true);
-    const projected = try destination.readFileAlloc(io, "lua54.DLL", std.testing.allocator, 4096);
+    const projected = try destination.readFileAlloc(io, "lua54.DLL", std.testing.allocator, std.Io.Limit.limited(4096));
     defer std.testing.allocator.free(projected);
     try std.testing.expectEqualStrings("runtime dependency", projected);
 }
 
 test "live-link shim uses the target launcher without hardcoded Lua versions" {
     const allocator = std.testing.allocator;
-    const io = std.Io.default;
+    const io = std.testing.io;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2250,7 +2251,7 @@ test "live-link shim uses the target launcher without hardcoded Lua versions" {
     try writeLiveLinkScriptShim(allocator, io, tmp.dir, "dummy_bin", "/fake/source", "lua src/main.lua");
 
     const shim_name = if (comptime builtin.os.tag == .windows) "dummy_bin.cmd" else "dummy_bin";
-    const content = try tmp.dir.readFileAlloc(io, shim_name, allocator, 4096);
+    const content = try tmp.dir.readFileAlloc(io, shim_name, allocator, std.Io.Limit.limited(4096));
     defer allocator.free(content);
 
     if (comptime builtin.os.tag == .windows) {

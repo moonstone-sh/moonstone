@@ -387,18 +387,17 @@ test "tryResolveFromStore selects maximal SemVer version" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const io = std.testing.allocator;
-    _ = io;
+    const io = std.testing.io;
 
     var driver = try driver_mod.StoreDriver.init(allocator, ":memory:");
     defer driver.deinit();
 
     // Create dummy directories for path access check
-    try tmp.dir.makePath("pkg_2_0_0");
-    try tmp.dir.makePath("pkg_10_0_0");
-    const path_2_0 = try tmp.dir.realpathAlloc(allocator, "pkg_2_0_0");
+    try tmp.dir.createDirPath(io, "pkg_2_0_0");
+    try tmp.dir.createDirPath(io, "pkg_10_0_0");
+    const path_2_0 = try tmp.dir.realPathFileAlloc(io, "pkg_2_0_0", allocator);
     defer allocator.free(path_2_0);
-    const path_10_0 = try tmp.dir.realpathAlloc(allocator, "pkg_10_0_0");
+    const path_10_0 = try tmp.dir.realPathFileAlloc(io, "pkg_10_0_0", allocator);
     defer allocator.free(path_10_0);
 
     // Insert 2.0.0 and 10.0.0
@@ -411,7 +410,7 @@ test "tryResolveFromStore selects maximal SemVer version" {
         .{ "b3:hash_10", "mypkg", "10.0.0", "lib", "any", "5.4", "", path_10_0, "/tmp/10/manifest.toml", "5.4", "", "moonstone", "", "0" },
     );
 
-    const coordinator = Coordinator.init(allocator, std.Io.getOsIo());
+    const coordinator = Coordinator.init(allocator, io);
     var resolved = try coordinator.tryResolveFromStore("mypkg", ">=1.0.0", .moonstone, driver, .{}, &.{});
     try std.testing.expect(resolved != null);
     defer if (resolved) |*c| c.deinit(allocator);

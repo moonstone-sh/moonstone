@@ -55,11 +55,11 @@ pub const ArtifactProvision = struct {
 };
 
 pub const ArtifactProvisions = struct {
-    bins: []const ArtifactProvision,
-    headers: []const ArtifactProvision,
-    libs: []const ArtifactProvision,
-    lua_modules: []const ArtifactProvision,
-    lua_cmodules: []const ArtifactProvision,
+    bins: []ArtifactProvision,
+    headers: []ArtifactProvision,
+    libs: []ArtifactProvision,
+    lua_modules: []ArtifactProvision,
+    lua_cmodules: []ArtifactProvision,
 
     pub fn deinit(self: *ArtifactProvisions, allocator: std.mem.Allocator) void {
         for (self.bins) |*item| item.deinit(allocator);
@@ -105,8 +105,8 @@ pub const ArtifactStore = struct {
             "DELETE FROM artifacts;",
         };
 
-        for (tables) |sql| {
-            try self.driver.execRaw(sql);
+        inline for (tables) |sql| {
+            try self.driver.exec(sql, .{});
         }
 
         try self.driver.commit();
@@ -192,7 +192,7 @@ pub const ArtifactStore = struct {
                 @tagName(sm.artifact.kind),
                 sm.artifact.target,
                 sm.compat.lua_abi,
-                sm.compat.runtime,
+                sm.compat.runtime_version,
                 path,
                 manifest_path,
             },
@@ -359,7 +359,7 @@ pub const ArtifactStore = struct {
         };
     }
 
-    fn loadNativeLibraryProvisions(self: @This(), artifact_hash: []const u8) ![]const ArtifactProvision {
+    fn loadNativeLibraryProvisions(self: @This(), artifact_hash: []const u8) ![]ArtifactProvision {
         var list = std.ArrayList(ArtifactProvision).empty;
         errdefer {
             for (list.items) |*item| item.deinit(self.allocator());
@@ -389,7 +389,7 @@ pub const ArtifactStore = struct {
         self: @This(),
         comptime table: []const u8,
         artifact_hash: []const u8,
-    ) ![]const ArtifactProvision {
+    ) ![]ArtifactProvision {
         var list = std.ArrayList(ArtifactProvision).empty;
 
         const sql = comptime "SELECT name, path FROM " ++ table ++ " WHERE artifact_hash = ?;";
