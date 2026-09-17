@@ -70,15 +70,41 @@ fn tidyScriptsWithLines(allocator: std.mem.Allocator, source: []const u8, lines:
     defer output.deinit();
     try output.writer.writeAll(source[0..section.body_start]);
     try output.writer.writeAll(source[section.body_start..blocks[0].start]);
+
+    // The gap after each original entry is either an unattached comment (a
+    // documented "floating" note, also surfaced by `unattachedComments`) or
+    // plain separator whitespace. A commented gap is a real document
+    // landmark, so it stays pinned to the table slot it occupied before the
+    // reorder — between whichever entries now land in that slot. Plain
+    // whitespace carries no information worth pinning to a slot that may no
+    // longer make sense post-sort, so it drains to the end of the tidied
+    // run instead of freezing between two entries it has no real tie to.
+    var trailing_gaps = std.ArrayList(u8).empty;
+    defer trailing_gaps.deinit(allocator);
+
     for (sorted, 0..) |block, index| {
         try output.writer.writeAll(source[block.start..block.end]);
         const gap_start = blocks[index].end;
         const gap_end = if (index + 1 < blocks.len) blocks[index + 1].start else section.body_end;
-        try output.writer.writeAll(source[gap_start..gap_end]);
+        const gap = source[gap_start..gap_end];
+        if (gapHasComment(source, lines, gap_start, gap_end)) {
+            try output.writer.writeAll(gap);
+        } else {
+            try trailing_gaps.appendSlice(allocator, gap);
+        }
     }
+    try output.writer.writeAll(trailing_gaps.items);
     try output.writer.writeAll(source[section.body_end..]);
     try output.writer.flush();
     return allocator.dupe(u8, output.writer.buffer[0..output.writer.end]);
+}
+
+fn gapHasComment(source: []const u8, lines: []const Line, start: usize, end: usize) bool {
+    for (lines) |line| {
+        if (line.start < start or line.start >= end) continue;
+        if (isCommentLine(lineSlice(source, line))) return true;
+    }
+    return false;
 }
 
 /// Returns comment-only source lines that have no immediately adjacent script
@@ -117,7 +143,14 @@ pub fn setScript(allocator: std.mem.Allocator, source: []const u8, name: []const
     for (blocks) |block| if (std.mem.eql(u8, block.name, name)) {
         const replacement = try renderAssignment(allocator, name, command, inlineComment(source[block.entry_start..block.end]));
         defer allocator.free(replacement);
-        const edited = try replaceRange(allocator, source, block.entry_start, block.end, replacement);
+        // `block.end` includes the original entry's trailing newline (or,
+        // for a multiline command, the newline after its closing
+        // delimiter). `renderAssignment` never appends one, so the
+        // replacement must carry its own or it fuses onto whatever
+        // originally followed the entry on the next line.
+        const replacement_line = try std.fmt.allocPrint(allocator, "{s}\n", .{replacement});
+        defer allocator.free(replacement_line);
+        const edited = try replaceRange(allocator, source, block.entry_start, block.end, replacement_line);
         defer allocator.free(edited);
         return tidyScriptsAfterMutation(allocator, edited);
     };
