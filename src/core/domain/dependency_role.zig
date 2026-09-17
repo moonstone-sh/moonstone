@@ -65,7 +65,7 @@ pub const DependencyRole = enum {
                 .export_default = false,
             },
             .tool => .{
-                .link_lua_modules_to_root = true,
+                .link_lua_modules_to_root = false,
                 .link_cmodules_to_root = false,
                 .expose_public_bins = false,
                 .expose_tool_scope = true,
@@ -103,3 +103,12 @@ pub const DependencyRole = enum {
         };
     }
 };
+
+test "getProjectionPolicy: tool role does not link Lua modules to root" {
+    const policy = DependencyRole.tool.getProjectionPolicy();
+    try std.testing.expectEqual(false, policy.link_lua_modules_to_root);
+    try std.testing.expectEqual(false, policy.link_cmodules_to_root);
+    try std.testing.expectEqual(false, policy.expose_public_bins);
+    try std.testing.expectEqual(true, policy.expose_tool_scope);
+    try std.testing.expectEqual(false, policy.expose_helper_scope);
+}

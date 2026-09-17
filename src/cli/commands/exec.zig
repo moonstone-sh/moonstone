@@ -135,7 +135,7 @@ fn providedBinsForPackage(
 pub const ExecCommand = struct {
     pub const name = "exec";
     pub const description = "Run arbitrary command inside environment";
-    pub const opaque_arguments_after = 1;
+    pub const requires_dashdash = true;
 
     positionals: []const []const u8 = &.{},
     prod: bool = false,
@@ -146,19 +146,16 @@ pub const ExecCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon exec [options] <command> [args...]
+            \\Usage: moon exec [options] -- <command> [args...]
             \\
             \\Executes an arbitrary command inside the project environment.
             \\
-            \\All Moonstone options must appear BEFORE <command>. Once <command> is
-            \\encountered, ownership of all remaining arguments transfers to the child
-            \\process unchanged.
-            \\
-            \\An optional '--' may appear before <command> to explicitly terminate Moonstone
-            \\option parsing (needed if <command> itself starts with a hyphen). That is the
-            \\only '--' Moonstone ever consumes: every '--' at or after <command> is forwarded
-            \\to it verbatim, however many there are (e.g. `moon exec -- docker run x -- y`
-            \\gives docker exactly `run x -- y`).
+            \\All Moonstone options must appear BEFORE the '--'. The '--' separator is
+            \\mandatory: it marks the exact boundary between Moonstone's own flags and the
+            \\command to run. Nothing before '--' is ever passed to the child process;
+            \\everything after it — including any further '--' the child wants for itself,
+            \\e.g. `moon exec -- docker run x -- y` gives docker exactly `run x -- y` — is
+            \\forwarded verbatim.
             \\
             \\Options:
             \\  --prod           Exclude development dependencies

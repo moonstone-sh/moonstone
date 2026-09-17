@@ -113,7 +113,7 @@ fi
 
 # The executable was linked without an rpath, so it can only find the library
 # through Moonstone's projected loader environment.
-"${MOON_BIN}" exec path-native-probe | grep -q 'path dependency native library projected'
+"${MOON_BIN}" exec -- path-native-probe | grep -q 'path dependency native library projected'
 
 # A declared-but-unbuilt library must fail loudly instead of syncing a broken
 # environment.

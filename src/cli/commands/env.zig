@@ -12,6 +12,8 @@ pub const EnvCommand = struct {
     shell: ?[]const u8 = null,
     prod: bool = false,
     dev: bool = true,
+    global: bool = false,
+    bin_runtime_names: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -20,10 +22,12 @@ pub const EnvCommand = struct {
             \\Show Moonstone environment configuration for the current project.
             \\
             \\Flags:
-            \\  --json        Output as JSON
-            \\  --paths       Output only PATH additions
-            \\  --shell <s>   Output export commands for shell: bash, zsh, fish, cmd, powershell
-            \\  --prod        Exclude development dependencies
+            \\  --json                Output as JSON
+            \\  --paths               Output only PATH additions
+            \\  --shell <s>           Output export commands for shell: bash, zsh, fish, cmd, powershell
+            \\  --prod                Exclude development dependencies
+            \\  --global              Show the global tools environment instead of the current project
+            \\  --bin-runtime-names   List bin-runtime-scoped tool names (one per line), each usable with `moon exec`
             \\
         , .{});
     }
@@ -106,6 +110,9 @@ pub const EnvCommand = struct {
         const stdout = ctx.stdout;
         const env = ctx.env;
 
+        const global_project = if (self.global) try @import("global_tools.zig").enterProject(allocator, env, io) else null;
+        defer if (global_project) |gp| @import("global_tools.zig").leaveProject(allocator, io, gp);
+
         var run_env = if (ctx.working_directory) |project_root|
             try moonstone.project.run_env.get_run_env_at_root(allocator, io, project_root, env)
         else
@@ -141,6 +148,28 @@ pub const EnvCommand = struct {
             try stdout.writeAll("\n");
         } else if (self.paths) {
             try stdout.print("{s}\n", .{run_env.bin_path});
+        } else if (self.bin_runtime_names) {
+            // bin-runtime scopes live as a sibling of the flat bin/ directory
+            // this same run_env resolved above (`--paths` prints that
+            // directory directly; here we look at its sibling instead of
+            // re-deriving the project root ourselves).
+            const bin_runtime_path = try std.fs.path.join(allocator, &.{
+                std.fs.path.dirname(run_env.bin_path) orelse ".",
+                "bin-runtime",
+            });
+            defer allocator.free(bin_runtime_path);
+
+            var bin_runtime_dir = std.Io.Dir.openDirAbsolute(io, bin_runtime_path, .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound, error.NotDir => return,
+                else => return err,
+            };
+            defer bin_runtime_dir.close(io);
+
+            var it = bin_runtime_dir.iterate();
+            while (try it.next(io)) |entry| {
+                if (entry.kind != .directory) continue;
+                try stdout.print("{s}\n", .{entry.name});
+            }
         } else if (self.shell) |s| {
             const project_root = try std.process.currentPathAlloc(io, allocator);
             defer allocator.free(project_root);

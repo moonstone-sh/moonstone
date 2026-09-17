@@ -143,6 +143,6 @@ if [[ -e ".moonstone/env/lib/native/libstaticprobe.a" ]]; then
 fi
 
 moon env --json | grep -Fq '"native_lib_path":"'
-moon exec "${PACKAGE}" | grep -q 'native loader projected'
+moon exec -- "${PACKAGE}" | grep -q 'native loader projected'
 
 echo "━━━ ✓ native-library projection and loader contract passed ━━━"

@@ -178,12 +178,12 @@ if ($LASTEXITCODE -ne 0 -or $environment.lua_cpath -notmatch '\?\.dll') { throw 
 & $moon -C $project run check
 if ($LASTEXITCODE -ne 0) { throw 'cmd-hosted opaque script failed' }
 
-& $moon -C $project exec cmd /d /s /c 'exit /b 0'
+& $moon -C $project exec -- cmd /d /s /c 'exit /b 0'
 if ($LASTEXITCODE -ne 0) { throw 'projected exec failed' }
 
 $probeExe = Join-Path $project '.moonstone/env/bin/probe.exe'
 Copy-Item -Force $env:ComSpec $probeExe
-& $moon -C $project exec probe /d /s /c 'exit /b 0'
+& $moon -C $project exec -- probe /d /s /c 'exit /b 0'
 if ($LASTEXITCODE -ne 0) { throw 'extensionless .exe resolution failed' }
 
 @'
@@ -191,7 +191,7 @@ if ($LASTEXITCODE -ne 0) { throw 'extensionless .exe resolution failed' }
 exit /b 0
 '@ | Set-Content -NoNewline (Join-Path $project '.moonstone/env/bin/live-tool.cmd')
 
-& $moon -C $project exec live-tool
+& $moon -C $project exec -- live-tool
 if ($LASTEXITCODE -ne 0) { throw 'extensionless .cmd launcher resolution failed' }
 
 @'
@@ -199,7 +199,7 @@ if ($LASTEXITCODE -ne 0) { throw 'extensionless .cmd launcher resolution failed'
 exit /b 0
 '@ | Set-Content -NoNewline (Join-Path $project '.moonstone/env/bin/live-tool-bat.bat')
 
-& $moon -C $project exec live-tool-bat
+& $moon -C $project exec -- live-tool-bat
 if ($LASTEXITCODE -ne 0) { throw 'extensionless .bat launcher resolution failed' }
 
 # Exercise the actual Windows dynamic-loader boundary. The native package
@@ -249,7 +249,7 @@ if ($LASTEXITCODE -ne 0) { throw 'failed to compile native loader executable' }
 
 $nativeEnvironment = & $moon -C $project env --json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $nativeEnvironment.native_lib_path -notmatch 'lib[\\/]native') { throw 'native library environment path was not exposed' }
-$nativeOutput = & $moon -C $project exec $nativePackage
+$nativeOutput = & $moon -C $project exec -- $nativePackage
 if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'native loader projected') { throw 'native DLL was not visible through Moonstone PATH projection' }
 
 Write-Output 'PASS: Moonstone Windows core CLI, projection, launcher, and native DLL loader smoke test'

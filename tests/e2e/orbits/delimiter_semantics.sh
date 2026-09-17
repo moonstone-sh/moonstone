@@ -61,11 +61,14 @@ SH
 chmod +x "${WORKDIR}/child/.moonstone/env/bin/tool"
 
 cd "${WORKDIR}"
-# A "--" at or after the script/command name is always forwarded verbatim
-# now (see tests/e2e/commands/exec_semantics.sh for the full rationale) —
-# these orbit variants share the same router.zig parsing as `exec`.
-"${MOON_BIN}" orbit run child args -- first "two words" | grep -Fx 'RUN[--][first][two words]'
-"${MOON_BIN}" orbit exec child tool -- first "two words" | grep -Fx 'EXEC[--][first][two words]'
-"${MOON_BIN}" orbit exec child tool -- -- | grep -Fx 'EXEC[--][--]'
+# `orbit run`/`orbit exec` collect their leading positional (<orbit> for
+# both, plus <command> for `orbit exec`) BEFORE the mandatory "--". The
+# first "--" encountered is always the boundary and is consumed, never
+# forwarded; only "--" tokens AFTER that boundary are forwarded verbatim
+# (see tests/e2e/commands/exec_semantics.sh for the full rationale) — these
+# orbit variants share the same router.zig parsing as `exec`.
+"${MOON_BIN}" orbit run child -- args first "two words" | grep -Fx 'RUN[first][two words]'
+"${MOON_BIN}" orbit exec child -- tool first "two words" | grep -Fx 'EXEC[first][two words]'
+"${MOON_BIN}" orbit exec child -- tool -- -- | grep -Fx 'EXEC[--][--]'
 
 echo "━━━ ✓ orbit delimiter semantics passed ━━━"

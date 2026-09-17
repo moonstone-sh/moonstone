@@ -110,6 +110,7 @@ pub const CliErrorSet = error{
     UnknownCommand,
     UnknownFlag,
     MissingArgument,
+    MissingDashDash,
     UnexpectedPositionalArgument,
     FileNotFound,
     PermissionDenied,
@@ -186,6 +187,9 @@ pub const CliErrorDetail = union(enum) {
     orbit_not_found: struct {
         orbit: []const u8,
     },
+    missing_dashdash: struct {
+        command: []const u8,
+    },
 
     pub fn deinit(self: *CliErrorDetail, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -216,6 +220,7 @@ pub const CliErrorDetail = union(enum) {
             .external_dependency_paths => |paths| paths.deinit(allocator),
             .script_not_found => |snf| allocator.free(snf.name),
             .orbit_not_found => |onf| allocator.free(onf.orbit),
+            .missing_dashdash => |md| allocator.free(md.command),
         }
     }
 };
@@ -255,6 +260,7 @@ fn recoveryHint(err: anyerror) ?[]const u8 {
         error.PackageNotFound => "Check the package name and registry prefix. LuaRocks packages use `rocks:<name>`; inspect configured registries with `moon registry list`.",
         error.DanglingSymlink => "Run `moon sync` to rebuild the projected environment. Do not repair files inside `.moonstone/env` by hand.",
         error.InvalidLinkPathMode => "Use `moon link` for a registered live link or `moon add path:<directory>` for a project-local dependency.",
+        error.MissingDashDash => "Add '--' immediately before the command or script you want to run, e.g. `moon exec -- <command>` or `moon orbit exec <orbit> -- <command>`.",
         else => null,
     };
 }
@@ -315,6 +321,7 @@ pub fn reportError(
                 }),
                 .script_not_found => |snf| try emitter.fail(io, about, value, .{ .script = snf.name, .recovery = recoveryHint(err) }),
                 .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit, .recovery = recoveryHint(err) }),
+                .missing_dashdash => |md| try emitter.fail(io, about, value, .{ .command = md.command, .recovery = recoveryHint(err) }),
             }
         } else if (contextual_detail) |msg| {
             try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = msg });
@@ -407,6 +414,12 @@ pub fn reportError(
                 },
                 .orbit_not_found => |onf| {
                     try stdout.print("Error: orbit '{s}' not found.\n", .{onf.orbit});
+                },
+                .missing_dashdash => |md| {
+                    try stdout.print(
+                        "Error: '{s}' requires a mandatory '--' separator before the command it runs. Nothing before '--' is ever passed to the child process, and Moonstone cannot tell where its own options end without it.\n",
+                        .{md.command},
+                    );
                 },
             }
         } else if (contextual_detail) |msg| {

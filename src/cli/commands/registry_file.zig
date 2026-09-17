@@ -53,6 +53,7 @@ fn packageKindString(kind: moonstone.domain.manifest.Kind) []const u8 {
         .lib => "lib",
         .bin => "bin",
         .runtime => "runtime",
+        .libtool => "libtool",
     };
 }
 

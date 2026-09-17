@@ -436,7 +436,7 @@ pub fn isEnvEntryAllowed(
         if (std.mem.indexOf(u8, target, hash_suffix) != null) {
             if (pkg.roles.len == 0) return true; // backward compat
             for (pkg.roles) |g| {
-                if (std.mem.eql(u8, g, "runtime") or std.mem.eql(u8, g, "dev") or std.mem.eql(u8, g, "libs") or std.mem.eql(u8, g, "bins")) return true;
+                if (std.mem.eql(u8, g, "runtime") or std.mem.eql(u8, g, "dev") or std.mem.eql(u8, g, "libs") or std.mem.eql(u8, g, "bins") or std.mem.eql(u8, g, "tool")) return true;
             }
             return false;
         }

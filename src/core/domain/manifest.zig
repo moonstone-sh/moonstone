@@ -8,12 +8,14 @@ pub const Kind = enum {
     lib,
     bin,
     runtime,
+    libtool,
 
     pub fn from_string(s: []const u8) !Kind {
         if (std.mem.eql(u8, s, "script")) return .script;
         if (std.mem.eql(u8, s, "lib") or std.mem.eql(u8, s, "c_module") or std.mem.eql(u8, s, "lua_module")) return .lib;
         if (std.mem.eql(u8, s, "bin")) return .bin;
         if (std.mem.eql(u8, s, "runtime")) return .runtime;
+        if (std.mem.eql(u8, s, "libtool")) return .libtool;
         return error.InvalidKind;
     }
 
@@ -27,6 +29,7 @@ fn packageKindFromString(s: []const u8) !Kind {
     if (std.mem.eql(u8, s, "lib")) return .lib;
     if (std.mem.eql(u8, s, "bin")) return .bin;
     if (std.mem.eql(u8, s, "runtime")) return .runtime;
+    if (std.mem.eql(u8, s, "libtool")) return .libtool;
     return error.InvalidPackageKind;
 }
 
@@ -2209,6 +2212,21 @@ test "MoonstoneToml parse rejects package kind tool" {
     ;
 
     try std.testing.expectError(error.InvalidPackageKind, MoonstoneToml.parse(allocator, toml_text));
+}
+
+test "MoonstoneToml parse accepts package kind libtool" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "libtool-kind"
+        \\version = "0.1.0"
+        \\kind = "libtool"
+    ;
+
+    var manifest = try MoonstoneToml.parse(allocator, toml_text);
+    defer manifest.deinit(allocator);
+
+    try std.testing.expectEqual(Kind.libtool, manifest.package.kind);
 }
 
 test "MoonstoneToml serializes simple dependencies as flat runtime roles" {

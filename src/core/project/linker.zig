@@ -1445,12 +1445,39 @@ pub fn link_project_env_at(
         }
     }
 
-    // 4a. Create tool scope directories
+    // 4a. Link tool binaries flat into bin_dir, same as public binaries, and
+    // only isolate them into a bin-runtime scope when their own runtime
+    // actually differs from the project's declared interpreter. A role=tool
+    // dependency is still a real executable dependency — it should be
+    // flat-PATH-discoverable (`which <name>` works, `moon exec <name>` works
+    // without needing the isolated-scope special case) whenever its runtime
+    // matches the project's own.
     var tit = tool_bin_map.iterator();
     while (tit.next()) |entry| {
-        const bin_name = entry.key_ptr.*;
-        const bin_info = entry.value_ptr.*;
-        try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", bin_name, bin_info.path, bin_info.artifact_hash, true, null, projected_artifacts);
+        const name = entry.key_ptr.*;
+        const provision_path = entry.value_ptr.path;
+
+        var projected_name: ?[]const u8 = null;
+        defer if (projected_name) |value| allocator.free(value);
+        if (windowsExecutableProjectionExtension(name, provision_path, comptime builtin.os.tag == .windows)) |extension| {
+            projected_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, extension });
+        }
+        try projectExecutable(io, bin_dir, provision_path, projected_name orelse name, comptime builtin.os.tag == .windows);
+
+        // If this tool binary comes from a package with an isolated runtime
+        // that differs from the project runtime, create a bin-runtime scope so
+        // `moon exec` can prepend the correct runtime bin directory.
+        const scoped_runtime_bin_path = try resolveScopedRuntimeBinPath(allocator, io, index, entry.value_ptr.artifact_hash);
+        defer if (scoped_runtime_bin_path) |p| allocator.free(p);
+        const needs_isolated_scope = if (scoped_runtime_bin_path) |srp| blk: {
+            if (project_runtime_bin_path) |prp| {
+                break :blk !std.mem.eql(u8, prp, srp);
+            }
+            break :blk true;
+        } else false;
+        if (needs_isolated_scope) {
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, provision_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
+        }
     }
 
     // 4a-bis. Create helper scope directories

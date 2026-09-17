@@ -79,8 +79,8 @@ pub const CommandNode = struct {
 
                     var i: usize = 0;
                     var stop_parsing_flags = false;
-                    const opaque_arguments_after: ?usize = comptime if (@hasDecl(CmdType, "opaque_arguments_after")) @as(usize, CmdType.opaque_arguments_after) else null;
-                    var opaque_arguments_started = false;
+                    var saw_dashdash = false;
+                    const requires_dashdash: bool = comptime @hasDecl(CmdType, "requires_dashdash") and CmdType.requires_dashdash;
                     while (i < args.len) : (i += 1) {
                         const arg = args[i];
                         // Once opaque forwarding has started (the wrapped command's
@@ -92,6 +92,7 @@ pub const CommandNode = struct {
                         // must never re-interpret a "--" that belongs to the child.
                         if (!stop_parsing_flags and std.mem.eql(u8, arg, "--")) {
                             stop_parsing_flags = true;
+                            saw_dashdash = true;
                             continue;
                         }
 
@@ -174,13 +175,14 @@ pub const CommandNode = struct {
                             }
                         } else {
                             try positionals.append(ctx.allocator, arg);
-                            if (opaque_arguments_after) |count| {
-                                if (positionals.items.len >= count) opaque_arguments_started = true;
-                            }
-                            if (opaque_arguments_started) {
-                                stop_parsing_flags = true;
-                            }
                         }
+                    }
+
+                    if (requires_dashdash and positionals.items.len > 0 and !saw_dashdash) {
+                        const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
+                        if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                        ctx.error_detail = .{ .missing_dashdash = .{ .command = try ctx.allocator.dupe(u8, cmd_name) } };
+                        return reportAndStop(args, ctx, cmd, error.MissingDashDash);
                     }
 
                     if (@hasField(CmdType, "positionals")) {

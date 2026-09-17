@@ -24,20 +24,20 @@ OUTER_VER=$("$MOON_BIN" version)
 echo "$OUTER_VER" | grep -i "Moonstone"
 
 # Inner moon returns MoonScript compiler/runner version
-INNER_VER=$("$MOON_BIN" exec moon --version)
+INNER_VER=$("$MOON_BIN" exec -- moon --version)
 echo "$INNER_VER" | grep -i "MoonScript"
 
 echo "━━━ 3. Executing MoonScript file directly ━━━"
-EXEC_OUT=$("$MOON_BIN" exec moon src/main.moon)
+EXEC_OUT=$("$MOON_BIN" exec -- moon src/main.moon)
 echo "$EXEC_OUT" | grep "Ada Lovelace"
 
 echo "━━━ 4. Compiling .moon to Lua and running with Lua 5.4 ━━━"
-"$MOON_BIN" exec moonc -t build src/
-LUA_OUT=$("$MOON_BIN" exec lua build/src/main.lua)
+"$MOON_BIN" exec -- moonc -t build src/
+LUA_OUT=$("$MOON_BIN" exec -- lua build/src/main.lua)
 echo "$LUA_OUT" | grep "Ada Lovelace"
 
 echo "━━━ 5. Verifying Ballad export ━━━"
-"$MOON_BIN" exec ballad play partiture.lua
+"$MOON_BIN" exec -- ballad play partiture.lua
 test -x dist/bin/app
 EXPORT_OUT=$(dist/bin/app)
 echo "$EXPORT_OUT" | grep "Ada Lovelace"

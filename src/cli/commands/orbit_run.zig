@@ -8,19 +8,34 @@ const run_command = @import("run.zig").RunCommand;
 pub const OrbitRunCommand = struct {
     pub const name = "run";
     pub const description = "Run a named script inside a child orbit environment";
-    pub const opaque_arguments_after = 2;
+    pub const requires_dashdash = true;
 
     positionals: []const []const u8 = &.{},
+    prod: bool = false,
+    dev: bool = true,
+    interpreter: ?[]const u8 = null,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon orbit run <orbit> <script> [-- [args...]]
+            \\Usage: moon orbit run [flags] <orbit> -- <script> [args...]
             \\
             \\Executes a script inside the isolated environment of a child orbit.
             \\The current working directory will be temporarily changed to the orbit's path.
             \\
+            \\The '--' separator is mandatory: it marks the boundary between Moonstone's
+            \\own flags/the orbit selector and the script to run. Everything after '--'
+            \\(including any further '--' the script wants for itself) is forwarded to it
+            \\verbatim.
+            \\
+            \\These flags are forwarded to the wrapped `moon run` invocation:
+            \\  --prod           Exclude development dependencies
+            \\  --dev            Include development dependencies (default)
+            \\  --interpreter <i> Override interpreter
+            \\  --json           Output results as JSON
+            \\
             \\Example:
-            \\  moon orbit run openresty serve -- --port 8080
+            \\  moon orbit run openresty -- serve --port 8080
             \\
         , .{});
     }
@@ -79,7 +94,7 @@ pub const OrbitRunCommand = struct {
     pub fn run(self: OrbitRunCommand, ctx: *router.Context) !void {
         if (self.positionals.len < 2) {
             try ctx.stdout.print(
-                \\Usage: moon orbit run <orbit> <script> [-- [args...]]
+                \\Usage: moon orbit run [flags] <orbit> -- <script> [args...]
                 \\
             , .{});
             return error.MissingArgument;
@@ -137,6 +152,10 @@ pub const OrbitRunCommand = struct {
 
         var r_cmd = run_command{
             .positionals = script_args,
+            .prod = self.prod,
+            .dev = self.dev,
+            .interpreter = self.interpreter,
+            .json = self.json,
         };
 
         try r_cmd.run(ctx);

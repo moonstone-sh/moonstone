@@ -8,19 +8,36 @@ const exec_command = @import("exec.zig").ExecCommand;
 pub const OrbitExecCommand = struct {
     pub const name = "exec";
     pub const description = "Run arbitrary command inside a child orbit environment";
-    pub const opaque_arguments_after = 2;
+    pub const requires_dashdash = true;
 
     positionals: []const []const u8 = &.{},
+    prod: bool = false,
+    dev: bool = false,
+    interpreter: ?[]const u8 = null,
+    json: bool = false,
+    global: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon orbit exec <orbit> [--] <command> [-- [args...]]
+            \\Usage: moon orbit exec [flags] <orbit> -- <command> [args...]
             \\
             \\Executes a command inside the isolated environment of a child orbit.
             \\The current working directory will be temporarily changed to the orbit's path.
             \\
+            \\The '--' separator is mandatory: it marks the boundary between Moonstone's
+            \\own flags/the orbit selector and the command to run. Everything after '--'
+            \\(including any further '--' the wrapped command wants for itself) is
+            \\forwarded to it verbatim.
+            \\
+            \\These flags are forwarded to the wrapped `moon exec` invocation:
+            \\  --prod           Exclude development dependencies
+            \\  --dev            Include development dependencies (default)
+            \\  --interpreter <i> Override interpreter
+            \\  --json           Output results as JSON
+            \\  --global         Run command from the global tools environment
+            \\
             \\Example:
-            \\  moon orbit exec openresty resty -- app.lua
+            \\  moon orbit exec openresty -- resty app.lua
             \\
         , .{});
     }
@@ -50,16 +67,18 @@ pub const OrbitExecCommand = struct {
     pub fn run(self: OrbitExecCommand, ctx: *router.Context) !void {
         if (self.positionals.len < 2) {
             try ctx.stdout.print(
-                \\Usage: moon orbit exec <orbit> [--] <cmd...>
+                \\Usage: moon orbit exec [flags] <orbit> -- <command> [args...]
                 \\
             , .{});
             return error.MissingArgument;
         }
 
         const target = self.positionals[0];
-        const remaining_args = self.positionals[1..];
-        const cmd_args = if (remaining_args.len > 0 and std.mem.eql(u8, remaining_args[0], "--")) remaining_args[1..] else remaining_args;
-        if (cmd_args.len == 0) return error.MissingArgument;
+        // The router already stripped exactly one mandatory "--" before this
+        // command's run() was ever called (requires_dashdash = true), so
+        // self.positionals here is already [orbit_name, wrapped_cmd, wrapped_args...]
+        // with the separator gone.
+        const cmd_args = self.positionals[1..];
 
         const project_root = try moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".");
         defer project_root.deinit(ctx.allocator);
@@ -110,6 +129,11 @@ pub const OrbitExecCommand = struct {
 
         var exec_cmd = exec_command{
             .positionals = cmd_args,
+            .prod = self.prod,
+            .dev = self.dev,
+            .interpreter = self.interpreter,
+            .json = self.json,
+            .global = self.global,
         };
 
         try exec_cmd.run(ctx);

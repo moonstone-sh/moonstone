@@ -38,7 +38,7 @@ if ! grep -q "luajit-2.1.1783773675/files/bin" "$SCOPE"; then
 fi
 
 # Verify the bin actually runs with the isolated runtime.
-OUTPUT="$(cd "$WORKDIR/app" && moon exec synthetic-isolated-bin)"
+OUTPUT="$(cd "$WORKDIR/app" && moon exec -- synthetic-isolated-bin)"
 if [[ "$OUTPUT" != "LuaJIT synthetic runtime" ]]; then
     echo "unexpected bin output: $OUTPUT" >&2
     exit 1

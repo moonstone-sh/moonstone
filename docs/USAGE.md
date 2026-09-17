@@ -125,7 +125,7 @@ For LÖVE, use `moonstone/love-importer`:
 
 ```bash
 moon add --global --tool moonstone:moonstone/love-importer
-moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
+moon exec --global -- love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
 ```
 
 The importer produces `moonstone/love@11.5`, with `files/bin/love` and runtime metadata suitable for:
@@ -333,8 +333,8 @@ moon add --global --tool moonstone:moonstone/love-importer
 ## Run a Global Tool
 
 ```bash
-moon exec --global love-importer --help
-moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
+moon exec --global -- love-importer --help
+moon exec --global -- love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
 ```
 
 `moon exec --global` runs inside the global tools environment and still applies per-tool runtime scopes from `.moonstone/env/bin-runtime/<bin>/env.toml`.
@@ -344,14 +344,15 @@ moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --versio
 `moon exec` spawns programs inside the resolved project (or global) environment:
 
 ```bash
-moon exec [options] <command> [args...]
+moon exec [options] -- <command> [args...]
 ```
 
 ### Argument Boundary Rules
 
-- **First Positional Boundary**: All Moonstone options (`--global`, `--json`, `--dev`, `--prod`, etc.) must precede `<command>`. Once `<command>` is encountered, Moonstone transfers ownership of all remaining arguments to `<command>` without interpreting them.
-- **Double-Dash (`--`) Position**: an optional `--` **before** `<command>` explicitly terminates Moonstone option parsing (useful if `<command>` starts with a hyphen, e.g. `moon exec -- -strange-program arg`) and is the only `--` Moonstone itself ever consumes. Every `--` **at or after** `<command>` is forwarded to it verbatim, however many there are — Moonstone has no way to tell "a separator the user typed for readability" apart from "a `--` the command's own argument grammar needs" (e.g. `docker run x -- y`), so it never guesses and never drops one. `moon exec -- docker run x -- y` gives `docker` exactly `run x -- y`.
+- **Mandatory `--` Boundary**: `--` is a required, single-purpose separator between Moonstone's own options (`--global`, `--json`, `--dev`, `--prod`, etc.) and `<command>`. All Moonstone options must precede it. Moonstone no longer infers the boundary from argument position — omitting `--` before `<command>` is a parse error, not a fallback.
+- **Forwarding After `--`**: once the mandatory `--` is seen, Moonstone transfers ownership of every remaining argument to `<command>` without interpreting them, including any further `--` the command's own argument grammar needs (e.g. `docker run x -- y`) — Moonstone never guesses and never drops one. `moon exec -- docker run x -- y` gives `docker` exactly `run x -- y`. The same mandatory `--` also escapes a hyphen-leading command name, e.g. `moon exec -- -strange-program arg`.
 - **Direct Execution**: Arguments are passed directly via `spawn` array boundaries (`child.argv`) without shell string re-assembly, preserving exact argument boundaries.
+- **`orbit exec`/`orbit run`**: the same mandatory `--` rule applies after the leading `<orbit>` selector: `moon orbit exec [flags] <orbit> -- <command> [args...]` and `moon orbit run [flags] <orbit> -- <script> [args...]`.
 
 ### Shell Completion
 
@@ -453,14 +454,14 @@ Project-local tool:
 
 ```bash
 moon add --tool moonstone/ballad
-moon exec ballad -- --help
+moon exec -- ballad --help
 ```
 
 Global tool:
 
 ```bash
 moon add --global --tool moonstone:moonstone/love-importer
-moon exec --global love-importer --help
+moon exec --global -- love-importer --help
 ```
 
 Use project-local tools when a project needs a pinned version in its lockfile. Use global tools for developer utilities that should be available from any directory.
@@ -474,7 +475,7 @@ Moonstone treats LÖVE as a runtime package. A LÖVE game stays in the normal de
 
 ```bash
 moon add --global --tool moonstone:moonstone/love-importer
-moon exec --global love-importer --help
+moon exec --global -- love-importer --help
 ```
 
 Global tools are described in [Global Tools](GLOBAL_TOOLS.md).
@@ -484,14 +485,14 @@ Global tools are described in [Global Tools](GLOBAL_TOOLS.md).
 Download the official macOS zip or provide a normalized root with `bin/love`.
 
 ```bash
-moon exec --global love-importer inspect ~/Downloads/love-11.5-macos.zip
-moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
+moon exec --global -- love-importer inspect ~/Downloads/love-11.5-macos.zip
+moon exec --global -- love-importer import ~/Downloads/love-11.5-macos.zip --version 11.5
 ```
 
 On macOS, downloaded apps may carry Gatekeeper quarantine attributes. The importer does not silently bypass them. If you have verified the download and want the staged copy to avoid repeated prompts, opt in:
 
 ```bash
-moon exec --global love-importer import ~/Downloads/love-11.5-macos.zip \
+moon exec --global -- love-importer import ~/Downloads/love-11.5-macos.zip \
   --version 11.5 \
   --clear-quarantine
 ```
@@ -545,7 +546,7 @@ role = "runtime"
 
 [scripts]
 dev = "love ."
-export = "moon exec ballad -- play partiture.lua"
+export = "moon exec -- ballad play partiture.lua"
 ```
 
 Sync and run the normal LÖVE dev loop:

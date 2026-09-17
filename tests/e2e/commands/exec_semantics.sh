@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test: moon exec keeps every child argument opaque once the command name is
-# consumed — including any number of further "--" tokens the child wants for
-# itself (e.g. `docker run x -- y`). Only a "--" appearing BEFORE the command
-# name (to escape a hyphen-leading command) is ever consumed by Moonstone.
+# Test: moon exec requires a mandatory, single-purpose "--" before the
+# wrapped <command>. Once seen, moonstone stops parsing its own flags and
+# forwards every remaining token opaquely — including any number of further
+# "--" tokens the child wants for itself (e.g. `docker run x -- y`). Without
+# a "--" at all, moonstone can no longer tell where its own option parsing
+# ends, so it must fail clearly instead of guessing from positional count.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MOON_BIN="${PROJECT_ROOT}/zig-out/bin/moon"
@@ -50,21 +52,27 @@ SH
 chmod +x "${WORKDIR}/.moonstone/env/bin/-strange"
 
 cd "${WORKDIR}"
-"${MOON_BIN}" exec tool direct | grep -Fx 'TOOL[direct]'
 
-# A "--" AT OR AFTER the command name is now always forwarded verbatim,
-# however many there are — this is the behavior a tool like docker
-# (`run x -- y`) needs, and there is no way for Moonstone to tell "a
-# cosmetic separator the user typed" apart from "a `--` the child's own
-# argument grammar needs", so it never guesses and never drops one.
-"${MOON_BIN}" exec tool -- first "two words" | grep -Fx 'TOOL[--][first][two words]'
-"${MOON_BIN}" exec tool -- -- | grep -Fx 'TOOL[--][--]'
-"${MOON_BIN}" exec tool x -- y | grep -Fx 'TOOL[x][--][y]'
+# A bare command with no "--" at all can no longer succeed: moonstone has no
+# way left to infer where its own option parsing ends and the wrapped
+# command begins (the old positional-counting fallback is gone).
+if OUTPUT=$("${MOON_BIN}" exec tool direct 2>&1); then
+    echo "Fail: expected 'moon exec' without '--' to fail, got: ${OUTPUT}" >&2
+    exit 1
+fi
+echo "${OUTPUT}" | grep -Fq -- "--"
+
+# The mandatory "--" precedes <command>. Once seen, every remaining token —
+# including any further "--" the child wants for itself — is forwarded
+# verbatim, however many there are (e.g. `moon exec -- docker run x -- y`
+# gives docker exactly `run x -- y`).
+"${MOON_BIN}" exec -- tool first "two words" | grep -Fx 'TOOL[first][two words]'
+"${MOON_BIN}" exec -- tool -- -- | grep -Fx 'TOOL[--][--]'
+"${MOON_BIN}" exec -- tool x -- y | grep -Fx 'TOOL[x][--][y]'
 "${MOON_BIN}" exec -- tool run x -- --something-else | grep -Fx 'TOOL[run][x][--][--something-else]'
 
-# A "--" BEFORE the command name still escapes a hyphen-leading command name
-# and is still consumed (not forwarded) — that boundary is unchanged, and is
-# the only "--" Moonstone itself ever interprets.
+# The same mandatory "--" also escapes a hyphen-leading command name from
+# moonstone's own flag parsing.
 "${MOON_BIN}" exec -- -strange arg | grep -Fx 'STRANGE[arg]'
 
 echo "━━━ ✓ moon exec delimiter semantics passed ━━━"

@@ -80,7 +80,7 @@ if ! grep -q "lua-5.4.6/files/bin" "$SCOPE"; then
 fi
 
 # Verify the tool actually runs with its isolated runtime.
-OUTPUT="$(cd "$WORKDIR/app" && moon exec linked-tool)"
+OUTPUT="$(cd "$WORKDIR/app" && moon exec -- linked-tool)"
 if [[ "$OUTPUT" != "hello from isolated tool" ]]; then
     echo "unexpected tool output: $OUTPUT" >&2
     exit 1
