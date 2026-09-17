@@ -123,6 +123,23 @@ grep -Fq 'Package luasql-sqlite3@2.8.0-1 requires external development files.' "
 grep -Fq 'SQLITE_INCDIR — include directory (headers)' "${MISSING_PATHS_LOG}"
 grep -Fq 'SQLITE_LIBDIR — library directory' "${MISSING_PATHS_LOG}"
 
+# `moon add` now rolls moonstone.toml/moonstone.lock back to their
+# pre-add contents when materialization fails (see add.zig's
+# restore_project_files errdefer), so the failed add above left no trace
+# of luasql-sqlite3 in the manifest -- a bare `moon sync` next would have
+# nothing to reject and trivially "pass". Declare the dependency directly,
+# the way a manifest committed by someone with the SDK installed would
+# arrive on a machine that doesn't have it, and prove a standalone sync
+# still enforces the same external-path requirement moon add does.
+cat >>moonstone.toml <<EOF3
+
+[[dependencies]]
+name = "${PACKAGE}"
+constraint = "== ${VERSION}"
+registry = "rocks"
+role = "runtime"
+EOF3
+
 MISSING_PATHS_JSON_LOG="${WORKDIR}/missing-external-paths.ndjson"
 if env -u SQLITE_INCDIR -u SQLITE_LIBDIR moon sync --json >"${MISSING_PATHS_JSON_LOG}" 2>&1; then
     echo "ERROR: JSON sync unexpectedly materialized LuaSQL SQLite3 without its declared external paths"
