@@ -630,8 +630,8 @@ fn lua_module_directory_version(allocator: std.mem.Allocator, runtime: []const u
     if (runtime.len == 5 and std.mem.startsWith(u8, runtime, "lua") and std.ascii.isDigit(runtime[3]) and std.ascii.isDigit(runtime[4])) {
         return try std.fmt.allocPrint(allocator, "{c}.{c}", .{ runtime[3], runtime[4] });
     }
-    if (runtime.len == 7 and std.mem.startsWith(u8, runtime, "lua-") and runtime[4] == '.' and std.ascii.isDigit(runtime[3]) and std.ascii.isDigit(runtime[5])) {
-        return try allocator.dupe(u8, runtime[3..]);
+    if (runtime.len == 7 and std.mem.startsWith(u8, runtime, "lua-") and std.ascii.isDigit(runtime[4]) and runtime[5] == '.' and std.ascii.isDigit(runtime[6])) {
+        return try allocator.dupe(u8, runtime[4..]);
     }
     return try allocator.dupe(u8, runtime);
 }
@@ -1311,12 +1311,20 @@ test "LuaRocks CMake variables resolve deterministically without shell expansion
         for (definitions) |definition| allocator.free(definition);
         allocator.free(definitions);
     }
-    try std.testing.expectEqualSlices([]const u8, &.{
+    // `std.testing.expectEqualSlices([]const u8, ...)` only compares each
+    // element's `.ptr`/`.len` (see `std.meta.eql`'s `.slice` case) rather than
+    // string *content*, so it can never actually match heap-allocated output
+    // against literal expectations here. Compare contents explicitly.
+    const expected = [_][]const u8{
         "-DCMAKE_C_FLAGS=-O2 -fPIC",
         "-DLIBDIR=${cmake.install}/lib/lua/${lua_abi}",
         "-DLUA=${runtime.bin_dir}/lua",
         "-DLUA_INCDIR=${runtime.include}",
-    }, definitions);
+    };
+    try std.testing.expectEqual(expected.len, definitions.len);
+    for (expected, definitions) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
 }
 
 test "LuaRocks CMake variables reject unknown placeholders" {
