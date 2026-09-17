@@ -199,6 +199,9 @@ pub fn applyFile(allocator: std.mem.Allocator, source: []const u8, file: FilePat
 /// root. Target files are opened without following symlinks and through the
 /// root handle; replacement happens through a sibling temporary file and
 /// rename. Create/delete patches are deliberately excluded from this API.
+/// A symlinked target surfaces as `error.SymLinkLoop`: the underlying open
+/// refuses (O_NOFOLLOW) to traverse the final symlink component rather than
+/// racily lstat-ing the path first and opening it second.
 pub fn applyFileAtRoot(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -452,7 +455,7 @@ test "refuses a symlinked patch target" {
             "+return 'new'\n",
     );
     defer patch.deinit(allocator);
-    try std.testing.expectError(error.NotLink, applyFileAtRoot(allocator, io, root_path, patch.files[0]));
+    try std.testing.expectError(error.SymLinkLoop, applyFileAtRoot(allocator, io, root_path, patch.files[0]));
     const outside = try tmp.dir.readFileAlloc(io, "outside.lua", allocator, std.Io.Limit.limited(4096));
     defer allocator.free(outside);
     try std.testing.expectEqualStrings("return 'old'\n", outside);

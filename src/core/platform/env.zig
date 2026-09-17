@@ -9,10 +9,8 @@ pub fn get_home_dir(env: *std.process.Environ.Map) ![]const u8 {
         if (home.len != 0) return home;
     }
 
-    if (comptime builtin.os.tag == .windows) {
-        if (env.get("USERPROFILE")) |home| {
-            if (home.len != 0) return home;
-        }
+    if (env.get("USERPROFILE")) |home| {
+        if (home.len != 0) return home;
     }
 
     return error.EnvironmentVariableNotFound;

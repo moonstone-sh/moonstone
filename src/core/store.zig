@@ -573,6 +573,7 @@ pub fn commit_to_store_with_sources(
     defer allocator.free(manifest_path);
 
     // 3. Register in SQLite index
+    try std.Io.Dir.cwd().createDirPath(io, paths.index);
     const index_db_path = try std.fs.path.join(allocator, &.{ paths.index, "index.sqlite" });
     defer allocator.free(index_db_path);
     const index_db_path_z = try allocator.dupeZ(u8, index_db_path);
