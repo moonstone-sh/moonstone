@@ -400,6 +400,36 @@ test "tryResolveFromStore selects maximal SemVer version" {
     const path_10_0 = try tmp.dir.realPathFileAlloc(io, "pkg_10_0_0", allocator);
     defer allocator.free(path_10_0);
 
+    // storeCandidateDependenciesValid requires a manifest.toml with a complete
+    // dependency closure alongside every store candidate (matching real
+    // materialized artifacts); write minimal ones for both versions here.
+    const manifest_template =
+        \\dependencies_complete = true
+        \\
+        \\[artifact]
+        \\name = "mypkg"
+        \\version = "{s}"
+        \\kind = "lib"
+        \\source_hash = "b3:src"
+        \\recipe_hash = "b3:recipe"
+        \\artifact_hash = "{s}"
+        \\target = "any"
+        \\
+        \\[origin]
+        \\resolver = "moonstone"
+        \\
+        \\[compat]
+        \\runtime_version = "lua@5.4"
+        \\lua_abi = "5.4"
+        \\runtime_artifact_hash = ""
+    ;
+    const manifest_2_0 = try std.fmt.allocPrint(allocator, manifest_template, .{ "2.0.0", "b3:hash_2" });
+    defer allocator.free(manifest_2_0);
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg_2_0_0/manifest.toml", .data = manifest_2_0 });
+    const manifest_10_0 = try std.fmt.allocPrint(allocator, manifest_template, .{ "10.0.0", "b3:hash_10" });
+    defer allocator.free(manifest_10_0);
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg_10_0_0/manifest.toml", .data = manifest_10_0 });
+
     // Insert 2.0.0 and 10.0.0
     try driver.exec(
         "INSERT INTO artifacts (artifact_hash, name, version, kind, target, lua_abi, runtime, path, manifest_path, lua_api, runtime_artifact_hash, resolver, source, native_compat_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",

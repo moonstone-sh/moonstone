@@ -66,7 +66,14 @@ pub const Solver = struct {
     }
 
     pub fn deinit(self: *Solver) void {
-        self.solution.deinit(self.allocator);
+        // `solution.assignments` is always grown with `self.arena.allocator()`
+        // (see `propagate`/`decide` below), never `self.allocator` directly.
+        // Freeing it through `self.allocator` hands the backing GPA a pointer
+        // it never allocated (a suballocation of one of the arena's chunks),
+        // which trips its canary check ("Invalid free"). Deinit through the
+        // same arena allocator instead so the free is a correctly-scoped
+        // no-op, then let `self.arena.deinit()` reclaim everything at once.
+        self.solution.deinit(self.arena.allocator());
         self.expanded_packages.deinit(self.allocator);
         self.arena.deinit();
     }
@@ -225,7 +232,15 @@ pub const Solver = struct {
         });
 
         const deps = try self.provider.getDependencies(assignment.term.name, version);
-        defer arena.free(deps);
+        // Providers own the contents of the returned Terms for their own
+        // lifetime (see `MockProvider`/`RegistryProvider`'s `getDependencies`:
+        // each Term's name/range is allocated from the provider's own arena,
+        // not this solver's). Only the outer slice is a fresh per-call
+        // allocation from the shared allocator both are constructed with, so
+        // only it is ours to free -- freeing it through `self.arena` (a
+        // different allocator instance) is a silent no-op that leaks it, and
+        // deep-freeing each Term here would double-free provider-owned memory.
+        defer self.allocator.free(deps);
 
         for (deps) |d| {
             var terms = try arena.alloc(Term, 2);
@@ -282,7 +297,11 @@ pub const Solver = struct {
                 }
             } else {
                 const versions = try self.provider.getVersions(as.term.name);
-                defer arena.free(versions);
+                // Same ownership split as `expandDependencies`: only the
+                // outer slice is a per-call allocation from the shared
+                // allocator; free it that way rather than through the
+                // solver's own arena (a no-op that leaks it).
+                defer self.allocator.free(versions);
                 self.emit(.resolving, .{ .package = as.term.name });
 
                 var best: ?semver.Version = null;
@@ -422,12 +441,22 @@ const MockProvider = struct {
     allocator: std.mem.Allocator,
     versions: std.StringArrayHashMapUnmanaged([]const semver.Version),
     deps: std.StringArrayHashMapUnmanaged(std.ArrayHashMapUnmanaged(semver.Version, []const Term, semver.Version.HashContext, true)),
+    // Real providers (e.g. RegistryProvider) return dependency/version data
+    // whose *contents* live in the provider's own arena for the provider's
+    // whole lifetime -- only the outer container is a fresh per-call
+    // allocation the Solver frees once via its own allocator (see
+    // `expandDependencies`/`decide` below). Mirror that here instead of
+    // handing back plain `self.allocator` dupes the Solver never frees
+    // element-by-element, which otherwise leaks every returned Term's
+    // name/range on every call.
+    content_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) MockProvider {
         return .{
             .allocator = allocator,
             .versions = .empty,
             .deps = .empty,
+            .content_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
@@ -451,6 +480,7 @@ const MockProvider = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.deps.deinit(self.allocator);
+        self.content_arena.deinit();
     }
 
     pub fn get_provider(self: *MockProvider) package_provider.PackageProvider {
@@ -478,7 +508,7 @@ const MockProvider = struct {
             if (vmap.get(version)) |dt| {
                 var res = try self.allocator.alloc(Term, dt.len);
                 for (dt, 0..) |t, i| {
-                    res[i] = try t.clone(self.allocator);
+                    res[i] = try t.clone(self.content_arena.allocator());
                 }
                 return res;
             }
