@@ -14,13 +14,13 @@ Because standard shell `PATH` resolution selects whichever executable appears fi
 moon sync
 
 # Execute MoonScript using the project-local compiler/runner
-moon exec moon src/main.moon
+moon exec -- moon src/main.moon
 
 # Build Lua output with moonc
-moon exec moonc -t build src/
+moon exec -- moonc -t build src/
 
 # Run Ballad export pipeline
-moon exec ballad -- play partiture.lua
+moon exec -- ballad -- play partiture.lua
 ```
 
 For a complete explanation of isolated resolution and command forwarding, see the [MoonScript Coexistence Guide](https://moonstone.sh/docs/guide/moonscript).

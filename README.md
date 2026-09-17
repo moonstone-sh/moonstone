@@ -19,7 +19,7 @@ Run a script or invoke a command in the project environment:
 
 ```bash
 moon run dev
-moon exec lua src/main.lua
+moon exec -- lua src/main.lua
 ```
 
 Use `-C` or `--directory` to select a project from another directory:
@@ -47,7 +47,7 @@ or the lockfile by hand.
 
 ## `run` and `exec`
 
-`moon exec <command> [args...]` is the primitive projected process runner. It
+`moon exec -- <command> [args...]` is the primitive projected process runner. It
 sets the project environment, including executable and Lua module paths, before
 starting the command.
 

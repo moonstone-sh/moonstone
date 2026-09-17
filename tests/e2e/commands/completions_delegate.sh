@@ -110,7 +110,7 @@ check() {
 }
 
 # Choosing the delegate command name: sees the moon-env-only tool, filtered.
-check "only-in-moon-env" moon exec only-in-moon-env
+check "only-in-moon-env" moon exec -- only-in-moon-env
 
 # Past the command name: delegates to docker's own completion, words shifted.
 check "run build" moon exec -- docker ""
@@ -121,7 +121,7 @@ check "exec" moon "ex"
 
 # Nothing is registered for clingy-like-tool yet -- the completion function
 # must fetch its script, eval it for real, and delegate to it.
-check "--alpha --beta" moon exec clingy-like-tool ""
+check "--alpha --beta" moon exec -- clingy-like-tool ""
 # It's now really registered in THIS shell; confirm that directly rather
 # than just trusting a second completion call succeeded by coincidence.
 if [[ -z "$(complete -p clingy-like-tool 2>/dev/null)" ]]; then
@@ -133,6 +133,6 @@ fi
 # which the fake binary's own --__moonstone-complete-script branch is the
 # only source of "--alpha --beta" -- if COMPREPLY is still right here, the
 # real complete -p path, not a repeated re-fetch, produced it).
-check "--alpha --beta" moon exec clingy-like-tool ""
+check "--alpha --beta" moon exec -- clingy-like-tool ""
 
 echo "━━━ ✓ moon completions delegation passed ━━━"

@@ -91,57 +91,66 @@ pub const CompletionsCommand = struct {
         _ = self;
         try ctx.stdout.print(
             \\_moon_opaque_boundary() {{
-            \\  local -a w
-            \\  w=("${{words[@]:1}}")
-            \\  local n=$#w
-            \\  local i=1
-            \\  local need=0
+            \\  local n=$#words
+            \\  local i
             \\
-            \\  if [[ "${{w[1]:-}}" == "exec" ]]; then
-            \\    i=2; need=1
-            \\  elif [[ "${{w[1]:-}}" == "orbit" && "${{w[2]:-}}" == "exec" ]]; then
-            \\    i=3; need=2
-            \\  elif [[ "${{w[1]:-}}" == "orbit" && "${{w[2]:-}}" == "run" ]]; then
-            \\    i=3; need=2
+            \\  if [[ "${{words[2]:-}}" == "exec" ]]; then
+            \\    i=3
+            \\  elif [[ "${{words[2]:-}}" == "orbit" && "${{words[3]:-}}" == "exec" ]]; then
+            \\    i=4
+            \\  elif [[ "${{words[2]:-}}" == "orbit" && "${{words[3]:-}}" == "run" ]]; then
+            \\    i=4
             \\  else
             \\    return 1
             \\  fi
             \\
+            \\  # '--' is now mandatory and single-purpose (see exec.zig/
+            \\  # orbit_exec.zig/orbit_run.zig's printHelp): the boundary is simply
+            \\  # the first literal '--' after the recognized subcommand shape. No
+            \\  # positional counting or --interpreter-consumes-two-tokens special
+            \\  # case is needed any more -- that machinery only ever existed to
+            \\  # avoid miscounting positions before an *implicit* boundary.
+            \\  local is_global=0
             \\  local dashdash=0
-            \\  while (( i <= n )); do
-            \\    local wd="${{w[$i]}}"
-            \\    if [[ "$wd" == "--" && $dashdash -eq 0 ]]; then
-            \\      dashdash=1; (( i++ )); continue
+            \\  local j=$i
+            \\  while (( j <= n )); do
+            \\    [[ "${{words[$j]}}" == "--global" ]] && is_global=1
+            \\    if [[ "${{words[$j]}}" == "--" ]]; then
+            \\      dashdash=$j
+            \\      break
             \\    fi
-            \\    if (( need == 1 )) && [[ "$wd" == --* ]] && (( dashdash == 0 )); then
-            \\      if [[ "$wd" == "--interpreter" ]]; then (( i += 2 )); else (( i++ )); fi
-            \\      continue
-            \\    fi
-            \\    break
+            \\    (( j++ ))
             \\  done
             \\
-            \\  local consumed=0
-            \\  while (( consumed < need - 1 && i <= n )); do
-            \\    (( i++ )); (( consumed++ ))
-            \\  done
+            \\  # No '--' typed yet: under the mandatory-'--' grammar there is no
+            \\  # delegate command-name slot to complete yet -- fall through to
+            \\  # moon's own normal flag/subcommand completion instead of guessing.
+            \\  (( dashdash == 0 )) && return 1
             \\
-            \\  reply=($((i + 1)))
+            \\  reply=($((dashdash + 1)) $is_global)
             \\  return 0
             \\}}
             \\
             \\_moon() {{
-            \\  local name_index
+            \\  local name_index is_global
             \\  if _moon_opaque_boundary; then
             \\    name_index=$reply[1]
+            \\    is_global=$reply[2]
+            \\    local -a global_flag
+            \\    (( is_global )) && global_flag=(--global)
+            \\
             \\    if (( CURRENT > name_index )); then
             \\      shift $((name_index - 1)) words
             \\      (( CURRENT -= name_index - 1 ))
-            \\      local PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\      local PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
             \\
             \\      local delegate="$words[1]"
             \\      if (( ! $+_comps[$delegate] )); then
             \\        local delegate_path
-            \\        delegate_path="$(command -v -- "$delegate" 2>/dev/null)"
+            \\        delegate_path="$(moon provision resolve --json ${{global_flag[@]}} -- "$delegate" 2>/dev/null | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+            \\        if [[ -z "$delegate_path" ]]; then
+            \\          delegate_path="$(command -v -- "$delegate" 2>/dev/null)"
+            \\        fi
             \\        if [[ -n "$delegate_path" ]]; then
             \\          local script
             \\          script="$("$delegate_path" --__moonstone-complete-script zsh "$delegate" 2>/dev/null)"
@@ -154,8 +163,11 @@ pub const CompletionsCommand = struct {
             \\      _normal -p moon
             \\      return
             \\    elif (( CURRENT == name_index )); then
-            \\      local PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\      local PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
+            \\      local -a bin_runtime_names
+            \\      bin_runtime_names=(${{(f)"$(moon env --bin-runtime-names ${{global_flag[@]}} 2>/dev/null)"}})
             \\      _command_names
+            \\      (( $#bin_runtime_names )) && compadd -a bin_runtime_names
             \\      return
             \\    fi
             \\  fi
@@ -194,40 +206,45 @@ pub const CompletionsCommand = struct {
         _ = self;
         try ctx.stdout.print(
             \\_moon_opaque_boundary() {{
-            \\  local words=("${{COMP_WORDS[@]:1}}")   # drop "moon"
-            \\  local n=${{#words[@]}}
-            \\  local i=0
-            \\  local need=0
+            \\  local n=${{#COMP_WORDS[@]}}
+            \\  local i
             \\
-            \\  if [[ "${{words[0]:-}}" == "exec" ]]; then
-            \\    i=1; need=1
-            \\  elif [[ "${{words[0]:-}}" == "orbit" && "${{words[1]:-}}" == "exec" ]]; then
-            \\    i=2; need=2
-            \\  elif [[ "${{words[0]:-}}" == "orbit" && "${{words[1]:-}}" == "run" ]]; then
-            \\    i=2; need=2
+            \\  if [[ "${{COMP_WORDS[1]:-}}" == "exec" ]]; then
+            \\    i=2
+            \\  elif [[ "${{COMP_WORDS[1]:-}}" == "orbit" && "${{COMP_WORDS[2]:-}}" == "exec" ]]; then
+            \\    i=3
+            \\  elif [[ "${{COMP_WORDS[1]:-}}" == "orbit" && "${{COMP_WORDS[2]:-}}" == "run" ]]; then
+            \\    i=3
             \\  else
             \\    return 1
             \\  fi
             \\
-            \\  local dashdash_seen=0
-            \\  while (( i < n )); do
-            \\    local w="${{words[$i]}}"
-            \\    if [[ "$w" == "--" && $dashdash_seen -eq 0 ]]; then
-            \\      dashdash_seen=1; i=$((i+1)); continue
+            \\  # '--' is now mandatory and single-purpose (see exec.zig/
+            \\  # orbit_exec.zig/orbit_run.zig's printHelp): the boundary is simply
+            \\  # the first literal '--' after the recognized subcommand shape. No
+            \\  # positional counting or --interpreter-consumes-two-tokens special
+            \\  # case is needed any more -- that machinery only ever existed to
+            \\  # avoid miscounting positions before an *implicit* boundary.
+            \\  MOON_BOUNDARY_GLOBAL=0
+            \\  local dashdash=-1
+            \\  local j=$i
+            \\  while (( j < n )); do
+            \\    [[ "${{COMP_WORDS[$j]}}" == "--global" ]] && MOON_BOUNDARY_GLOBAL=1
+            \\    if [[ "${{COMP_WORDS[$j]}}" == "--" ]]; then
+            \\      dashdash=$j
+            \\      break
             \\    fi
-            \\    if (( need == 1 )) && [[ "$w" == --* ]] && [[ $dashdash_seen -eq 0 ]]; then
-            \\      if [[ "$w" == "--interpreter" ]]; then i=$((i+2)); else i=$((i+1)); fi
-            \\      continue
-            \\    fi
-            \\    break
+            \\    j=$((j+1))
             \\  done
             \\
-            \\  local consumed=0
-            \\  while (( consumed < need - 1 && i < n )); do
-            \\    i=$((i+1)); consumed=$((consumed+1))
-            \\  done
+            \\  # No '--' typed yet: under the mandatory-'--' grammar there is no
+            \\  # delegate command-name slot to complete yet -- fall through to
+            \\  # moon's own normal flag/subcommand completion instead of guessing.
+            \\  if (( dashdash < 0 )); then
+            \\    return 1
+            \\  fi
             \\
-            \\  MOON_NAME_INDEX=$((i+1))
+            \\  MOON_NAME_INDEX=$((dashdash + 1))
             \\  return 0
             \\}}
             \\
@@ -240,12 +257,21 @@ pub const CompletionsCommand = struct {
             \\  fi
             \\
             \\  if _moon_opaque_boundary; then
+            \\    # A plain scalar, not an array: on bash 3.2 (macOS's default, and
+            \\    # this harness runs under `set -u`), referencing "${{arr[@]}}" on an
+            \\    # array declared empty via arr=() raises "unbound variable" -- a
+            \\    # long-fixed bug (4.4+) that macOS's stock bash still has. A scalar
+            \\    # that is either empty or exactly "--global" sidesteps it entirely;
+            \\    # unquoted below, it word-splits into zero or one argument.
+            \\    local global_flag=""
+            \\    (( MOON_BOUNDARY_GLOBAL )) && global_flag="--global"
+            \\
             \\    if (( COMP_CWORD > MOON_NAME_INDEX )); then
             \\      local delegate="${{COMP_WORDS[$MOON_NAME_INDEX]}}"
             \\      local offset=$MOON_NAME_INDEX
             \\
             \\      local saved_path="$PATH"
-            \\      PATH="$(moon env --paths 2>/dev/null):$PATH"
+            \\      PATH="$(moon env --paths $global_flag 2>/dev/null):$PATH"
             \\
             \\      local saved_words=("${{COMP_WORDS[@]}}")
             \\      local saved_cword=$COMP_CWORD
@@ -265,7 +291,10 @@ pub const CompletionsCommand = struct {
             \\
             \\      if [[ -z "$delegate_fn" ]]; then
             \\        local delegate_path
-            \\        delegate_path=$(command -v -- "$delegate" 2>/dev/null)
+            \\        delegate_path=$(moon provision resolve --json $global_flag -- "$delegate" 2>/dev/null | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+            \\        if [[ -z "$delegate_path" ]]; then
+            \\          delegate_path=$(command -v -- "$delegate" 2>/dev/null)
+            \\        fi
             \\        if [[ -n "$delegate_path" ]]; then
             \\          local script
             \\          script=$("$delegate_path" --__moonstone-complete-script bash "$delegate" 2>/dev/null)
@@ -290,8 +319,10 @@ pub const CompletionsCommand = struct {
             \\      return
             \\    elif (( COMP_CWORD == MOON_NAME_INDEX )); then
             \\      local extra_path
-            \\      extra_path="$(moon env --paths 2>/dev/null)"
-            \\      COMPREPLY=( $(PATH="${{extra_path}}:${{PATH}}" compgen -c -- "$cur") )
+            \\      extra_path="$(moon env --paths $global_flag 2>/dev/null)"
+            \\      local bin_runtime_names
+            \\      bin_runtime_names="$(moon env --bin-runtime-names $global_flag 2>/dev/null)"
+            \\      COMPREPLY=( $(PATH="${{extra_path}}:${{PATH}}" compgen -c -- "$cur") $(compgen -W "$bin_runtime_names" -- "$cur") )
             \\      return
             \\    fi
             \\  fi
@@ -332,82 +363,105 @@ pub const CompletionsCommand = struct {
 
         try ctx.stdout.print(
             \\
-            \\# UNVERIFIED: fish is not available in the environment this was written in
-            \\# to test against a live session. Written from documented fish semantics
-            \\# (commandline -opc/-ct, complete -C) rather than exercised interactively --
-            \\# treat this as a design, not a shipped guarantee, until someone runs it.
+            \\# UNVERIFIED: written from documented fish semantics (commandline
+            \\# -opc/-ct, complete -C, string match -r/-g) rather than exercised
+            \\# against a live interactive session -- treat this as a design, not a
+            \\# shipped guarantee, until someone drives it with a real fish TTY.
             \\
-            \\function __moon_boundary --description 'index (1-based, toks[1]=="moon") of the delegated command-name token, or nothing if this isn\'t an exec/orbit-exec/orbit-run line'
+            \\function __moon_boundary --description 'echoes "name_index\nis_global" (1-based, toks[1]=="moon") for the delegated command-name token, or nothing if this isn\'t an exec/orbit-exec/orbit-run line, or "--" has not been typed yet'
             \\    set -l toks (commandline -opc)
             \\    set -l n (count $toks)
-            \\    set -l i 2
-            \\    set -l need 0
+            \\    set -l i
             \\
             \\    if test $n -ge 2 -a "$toks[2]" = exec
-            \\        set i 3; set need 1
+            \\        set i 3
             \\    else if test $n -ge 3 -a "$toks[2]" = orbit -a "$toks[3]" = exec
-            \\        set i 4; set need 2
+            \\        set i 4
             \\    else if test $n -ge 3 -a "$toks[2]" = orbit -a "$toks[3]" = run
-            \\        set i 4; set need 2
+            \\        set i 4
             \\    else
             \\        return 1
             \\    end
             \\
+            \\    # '--' is now mandatory and single-purpose: the boundary is simply
+            \\    # the first literal '--' after the recognized subcommand shape. No
+            \\    # positional counting or --interpreter-consumes-two-tokens special
+            \\    # case is needed any more -- that machinery only ever existed to
+            \\    # avoid miscounting positions before an *implicit* boundary.
+            \\    set -l is_global 0
             \\    set -l dashdash 0
-            \\    while test $i -le $n
-            \\        set -l w $toks[$i]
-            \\        if test "$w" = -- -a $dashdash -eq 0
-            \\            set dashdash 1
-            \\            set i (math $i + 1)
-            \\            continue
+            \\    set -l j $i
+            \\    while test $j -le $n
+            \\        if test "$toks[$j]" = --global
+            \\            set is_global 1
             \\        end
-            \\        if test $need -eq 1 -a $dashdash -eq 0 && string match -q -- '--*' $w
-            \\            if test "$w" = --interpreter
-            \\                set i (math $i + 2)
-            \\            else
-            \\                set i (math $i + 1)
-            \\            end
-            \\            continue
+            \\        if test "$toks[$j]" = --
+            \\            set dashdash $j
+            \\            break
             \\        end
-            \\        break
+            \\        set j (math $j + 1)
             \\    end
             \\
-            \\    set -l consumed 0
-            \\    while test $consumed -lt (math $need - 1) -a $i -le $n
-            \\        set i (math $i + 1)
-            \\        set consumed (math $consumed + 1)
+            \\    # No '--' typed yet: under the mandatory-'--' grammar there is no
+            \\    # delegate command-name slot to complete yet -- fall through to
+            \\    # moon's own normal flag/subcommand completion instead of guessing.
+            \\    if test $dashdash -eq 0
+            \\        return 1
             \\    end
             \\
-            \\    echo $i
+            \\    echo (math $dashdash + 1)
+            \\    echo $is_global
             \\    return 0
             \\end
             \\
             \\function __moon_env_path
-            \\    moon env --paths 2>/dev/null
+            \\    set -l parts (__moon_boundary)
+            \\    set -l global_flag
+            \\    if test -n "$parts[2]" -a "$parts[2]" = 1
+            \\        set global_flag --global
+            \\    end
+            \\    moon env --paths $global_flag 2>/dev/null
+            \\end
+            \\
+            \\function __moon_env_bin_runtime_names
+            \\    set -l parts (__moon_boundary)
+            \\    set -l global_flag
+            \\    if test -n "$parts[2]" -a "$parts[2]" = 1
+            \\        set global_flag --global
+            \\    end
+            \\    moon env --bin-runtime-names $global_flag 2>/dev/null
             \\end
             \\
             \\function __moon_choosing_command --description 'true while the CURRENT token being typed is the delegate command-name slot itself'
-            \\    set -l boundary (__moon_boundary)
-            \\    test -n "$boundary"; or return 1
+            \\    set -l parts (__moon_boundary)
+            \\    test -n "$parts[1]"; or return 1
             \\    set -l toks (commandline -opc)
-            \\    test (count $toks) -eq (math $boundary - 1)
+            \\    test (count $toks) -eq (math $parts[1] - 1)
             \\end
             \\
             \\function __moon_past_command --description 'true once a delegate command name has been fully typed and we\'re completing ITS arguments'
-            \\    set -l boundary (__moon_boundary)
-            \\    test -n "$boundary"; or return 1
+            \\    set -l parts (__moon_boundary)
+            \\    test -n "$parts[1]"; or return 1
             \\    set -l toks (commandline -opc)
-            \\    test (count $toks) -ge $boundary
+            \\    test (count $toks) -ge $parts[1]
             \\end
             \\
             \\function __moon_delegate_complete --description 'ask fish for completions of the shifted line, as if the delegate had been typed directly'
-            \\    set -l boundary (__moon_boundary)
+            \\    set -l parts (__moon_boundary)
+            \\    set -l boundary $parts[1]
+            \\    set -l global_flag
+            \\    if test -n "$parts[2]" -a "$parts[2]" = 1
+            \\        set global_flag --global
+            \\    end
             \\    set -l toks (commandline -opc)
             \\    set -l delegate $toks[$boundary]
             \\    set -lx PATH (__moon_env_path) $PATH
             \\
             \\    if test -z "$(complete -c $delegate)"
-            \\        set -l delegate_path (command -v -- $delegate 2>/dev/null)
+            \\        set -l delegate_path (moon provision resolve --json $global_flag -- $delegate 2>/dev/null | string match -r '"path":"([^"]*)"' -g)
+            \\        if test -z "$delegate_path"
+            \\            set delegate_path (command -v -- $delegate 2>/dev/null)
+            \\        end
             \\        if test -n "$delegate_path"
             \\            set -l script ("$delegate_path" --__moonstone-complete-script fish $delegate 2>/dev/null)
             \\            if test -n "$script"
@@ -420,9 +474,11 @@ pub const CompletionsCommand = struct {
             \\    complete -C(string join ' ' -- $shifted)
             \\end
             \\
-            \\# Completing the bare command name: every executable on the ambient PATH
-            \\# plus whatever this moon environment additionally materializes.
-            \\complete -c moon -n __moon_choosing_command -x -a '(set -lx PATH (__moon_env_path) $PATH; __fish_complete_command)'
+            \\# Completing the bare delegate command name (the token right after
+            \\# '--'): merge the ambient-PATH-plus-moon-env completer with
+            \\# bin-runtime-isolated tool names (which are never on PATH at all),
+            \\# so `moon exec -- <tab>` finds both.
+            \\complete -c moon -n __moon_choosing_command -x -a '(set -lx PATH (__moon_env_path) $PATH; __fish_complete_command; __moon_env_bin_runtime_names)'
             \\
             \\# Past the command name: delegate to fish's own completion for it,
             \\# verbatim, exactly like plain env/nice/time wrapping does.

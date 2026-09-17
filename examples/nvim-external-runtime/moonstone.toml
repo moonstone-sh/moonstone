@@ -12,7 +12,7 @@ version = "2.1"
 abi = "5.1"
 
 [scripts]
-export = 'moon exec ballad play partiture.lua -- "$@"'
+export = 'moon exec -- ballad play partiture.lua -- "$@"'
 smoke = 'nvim --headless -u tests/minimal_init.lua "+lua assert(require(\"nvim_host_example\").host() == \"neovim\")" +qa'
 
 [[dependencies]]
