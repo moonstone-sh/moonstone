@@ -155,6 +155,33 @@ pub const assets = struct {
     };
 };
 
+// Zig 0.16's std.testing.refAllDecls is NOT recursive: it only references a
+// type's own direct declarations, so nested modules like `domain.manifest`
+// or `project.linker` -- and every `test` block inside them -- were never
+// actually reachable from this file's own `test {}` block and silently
+// never ran under `zig build test`. This hand-rolled recursive version
+// (refAllDeclsRecursive isn't in std as of 0.16) walks into every nested
+// struct/enum/union/opaque declaration so their test blocks get discovered.
+//
+// Turning this on surfaces ~37 real compile errors in code that was
+// previously unreachable from both the CLI binary's call graph and the test
+// suite -- being fixed domain-by-domain in follow-up commits. Until all of
+// them land, `zig build test` will fail to compile; that failure is
+// expected and documents real, pre-existing dead-code bugs, not a
+// regression introduced here.
+fn refAllDeclsRecursive(comptime T: type) void {
+    if (!@import("builtin").is_test) return;
+    inline for (comptime std.meta.declarations(T)) |decl| {
+        if (@TypeOf(@field(T, decl.name)) == type) {
+            switch (@typeInfo(@field(T, decl.name))) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(@field(T, decl.name)),
+                else => {},
+            }
+        }
+        _ = &@field(T, decl.name);
+    }
+}
+
 test {
-    std.testing.refAllDecls(@This());
+    refAllDeclsRecursive(@This());
 }
