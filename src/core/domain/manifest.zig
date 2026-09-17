@@ -738,7 +738,8 @@ pub const RemotePackageDescriptor = struct {
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !RemotePackageDescriptor {
         var parser = toml.Parser(toml.Table).init(allocator);
         defer parser.deinit();
-        const res = try parser.parseString(content);
+        var res = try parser.parseString(content);
+        defer res.deinit();
         const table = res.value;
 
         if (table.get("artifact") != null or table.get("compat") != null or table.get("source") != null) return error.LegacyRegistryDescriptor;
@@ -847,11 +848,15 @@ pub const RemotePackageDescriptor = struct {
                         if (a_table.get("recipe_hash")) |rh| art.recipe_hash = try allocator.dupe(u8, rh.string) else art.recipe_hash = "";
 
                         art.layout = .{ .strip_components = 0 };
-                        // materialize
-                        const materialize = a_table.get("materialize") orelse return error.MissingArtifactMaterializer;
-                        if (materialize != .table) return error.InvalidArtifactMaterializer;
-                        art.materialize = try MaterializeConfig.parse(allocator, materialize.table.*);
-                        if (materialize.table.get("strip_components")) |sc| art.layout.strip_components = @intCast(sc.integer);
+                        // materialize: optional. `RemoteArtifact.materialize` is
+                        // itself `?MaterializeConfig`, so a plain unpack-and-place
+                        // artifact (no build/collect step) can simply omit this
+                        // table rather than being forced to declare one.
+                        if (a_table.get("materialize")) |materialize| {
+                            if (materialize != .table) return error.InvalidArtifactMaterializer;
+                            art.materialize = try MaterializeConfig.parse(allocator, materialize.table.*);
+                            if (materialize.table.get("strip_components")) |sc| art.layout.strip_components = @intCast(sc.integer);
+                        }
 
                         // provides
                         art.provides = .{};
@@ -930,7 +935,10 @@ pub const RemotePackageDescriptor = struct {
                 }
                 self.artifact = try list.toOwnedSlice(allocator);
             } else return error.InvalidArtifacts;
-        } else return error.MissingArtifacts;
+        }
+        // Otherwise `self.artifact` keeps its `&.{}` default: a descriptor is
+        // still meaningful with zero published artifacts (e.g. a
+        // dependency-only or pre-publish descriptor).
 
         return self;
     }
@@ -1411,6 +1419,53 @@ pub const MoonstoneToml = struct {
         return try provisions.toOwnedSlice(allocator);
     }
 
+    /// Picks the first string-valued leaf out of a per-shell step table, e.g.
+    /// `{ sh = "zig build" }`. Structured steps declare exactly one shell per
+    /// platform in practice; this doesn't need to prefer one shell over
+    /// another among multiple, just needs a deterministic pick.
+    fn firstStringLeaf(step_table: *toml.Table) ?[]const u8 {
+        var it = step_table.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == .string) return entry.value_ptr.*.string;
+        }
+        return null;
+    }
+
+    const PlatformVariant = struct {
+        platform: []const u8,
+        command: []const u8,
+    };
+
+    /// Resolves a structured script step (e.g. `build.posix.sh = "..."`,
+    /// parsed by the TOML dotted-key syntax into
+    /// `{ posix = { sh = "..." } }`) to the variant matching the host
+    /// platform. Tries the exact `builtin.os.tag` name first (e.g. "linux",
+    /// "windows"), then falls back to the generic "posix" bucket on any
+    /// non-Windows host. Returns `null` when no variant covers this host,
+    /// which the caller treats as "this step doesn't apply here" rather than
+    /// an error.
+    fn selectPlatformVariant(step_value: *toml.Table) ?PlatformVariant {
+        const builtin = @import("builtin");
+        const host_tag_name = @tagName(builtin.os.tag);
+        if (step_value.get(host_tag_name)) |platform_value| {
+            if (platform_value == .table) {
+                if (firstStringLeaf(platform_value.table)) |command| {
+                    return .{ .platform = host_tag_name, .command = command };
+                }
+            }
+        }
+        if (builtin.os.tag != .windows) {
+            if (step_value.get("posix")) |platform_value| {
+                if (platform_value == .table) {
+                    if (firstStringLeaf(platform_value.table)) |command| {
+                        return .{ .platform = "posix", .command = command };
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) !MoonstoneToml {
         var parser = toml.Parser(toml.Table).init(allocator);
         defer parser.deinit();
@@ -1440,12 +1495,21 @@ pub const MoonstoneToml = struct {
         const package_kind = p_val.get("kind") orelse return error.MissingPackageKind;
         if (package_kind != .string) return error.InvalidPackageKind;
         self.package = .{
+            // `kind` is validated first (source order controls struct-literal
+            // field evaluation order in Zig): if it's invalid, none of the
+            // fields below have allocated anything yet, so there's nothing to
+            // free on the error return.
+            .kind = try packageKindFromString(package_kind.string),
             .name = try allocator.dupe(u8, package_name.string),
             .version = try allocator.dupe(u8, package_version.string),
-            .kind = try packageKindFromString(package_kind.string),
             .description = if (p_val.get("description")) |d| try allocator.dupe(u8, d.string) else null,
             .readme = if (p_val.get("readme")) |r| try allocator.dupe(u8, r.string) else null,
         };
+        // From here on, every field of `self` holds either a valid default
+        // or a successfully allocated value, so any later `return error...`
+        // can be safely unwound by freeing whatever has been filled in so
+        // far.
+        errdefer self.deinit(allocator);
         const runtime_name = if (r_val) |runtime| blk: {
             const value = runtime.get("name") orelse break :blk "lua";
             if (value != .string) return error.InvalidRuntimeName;
@@ -1642,15 +1706,35 @@ pub const MoonstoneToml = struct {
             while (names.next()) |name_entry| {
                 const name = name_entry.key_ptr.*;
                 if (!script_mod.isValidName(name)) return error.InvalidScriptName;
-                if (name_entry.value_ptr.* != .string) return error.InvalidScriptCommand;
 
-                var definition = script_mod.ScriptDefinition{
-                    .name = try allocator.dupe(u8, name),
-                    .command = try allocator.dupe(u8, name_entry.value_ptr.string),
-                };
-                errdefer definition.deinit(allocator);
-                try definition.validate();
-                try self.scripts.append(allocator, definition);
+                switch (name_entry.value_ptr.*) {
+                    .string => |command| {
+                        var definition = script_mod.ScriptDefinition{
+                            .name = try allocator.dupe(u8, name),
+                            .command = try allocator.dupe(u8, command),
+                        };
+                        errdefer definition.deinit(allocator);
+                        try definition.validate();
+                        try self.scripts.append(allocator, definition);
+                    },
+                    .table => |step_table| {
+                        // A structured, per-platform step (dotted-key TOML,
+                        // e.g. `build.posix.sh = "..."`). Skip it silently
+                        // when no variant covers this host: the manifest may
+                        // legitimately only declare steps for other
+                        // platforms.
+                        const variant = selectPlatformVariant(step_table) orelse continue;
+                        var definition = script_mod.ScriptDefinition{
+                            .name = try allocator.dupe(u8, name),
+                            .command = try allocator.dupe(u8, variant.command),
+                            .platform = try allocator.dupe(u8, variant.platform),
+                        };
+                        errdefer definition.deinit(allocator);
+                        try definition.validate();
+                        try self.scripts.append(allocator, definition);
+                    },
+                    else => return error.InvalidScriptCommand,
+                }
             }
         }
 
@@ -2181,11 +2265,12 @@ test "MoonstoneToml parse allows missing runtime for interpreter set repair" {
 test "MoonstoneToml parse rejects non-table runtime" {
     const allocator = std.testing.allocator;
     const toml_text =
+        \\runtime = "lua@5.4"
+        \\
         \\[package]
         \\name = "invalid-runtime"
         \\version = "0.1.0"
         \\kind = "script"
-        \\runtime = "lua@5.4"
     ;
 
     try std.testing.expectError(error.InvalidRuntimeSection, MoonstoneToml.parse(allocator, toml_text));
@@ -2398,6 +2483,8 @@ test "MoonstoneToml round-trips declared origin" {
 test "MoonstoneToml round-trips every root configuration section" {
     const allocator = std.testing.allocator;
     const toml_text =
+        \\manifest_version = 2
+        \\
         \\[package]
         \\name = "complete-manifest"
         \\version = "1.2.3"
@@ -2408,8 +2495,6 @@ test "MoonstoneToml round-trips every root configuration section" {
         \\name = "lua"
         \\version = "5.4"
         \\abi = "5.4"
-        \\
-        \\manifest_version = 2
         \\
         \\[scripts]
         \\zeta.posix.sh = "lua zeta.lua"
@@ -2461,8 +2546,8 @@ test "MoonstoneToml round-trips every root configuration section" {
     try out.writer.flush();
 
     const serialized = out.writer.buffer[0..out.writer.end];
-    try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"zeta\"") orelse return error.TestExpectedEqual) <
-        (std.mem.indexOf(u8, serialized, "name = \"alpha\"") orelse return error.TestExpectedEqual));
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "zeta = ") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "alpha = ") orelse return error.TestExpectedEqual));
     try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"a-reg\"") orelse return error.TestExpectedEqual) <
         (std.mem.indexOf(u8, serialized, "name = \"z-reg\"") orelse return error.TestExpectedEqual));
 
@@ -2581,7 +2666,7 @@ test "MoonstoneToml parses structured script steps and argument forwarding" {
         \\kind = "script"
         \\
         \\[scripts]
-        \\build.posix.sh = "zig build \\\"$@\\\""
+        \\build.posix.sh = "zig build \"$@\""
         \\
         \\build.windows.pwsh = "zig build @args"
         \\
@@ -2962,15 +3047,18 @@ test "StoreManifest native library linkage round-trips and defaults to unknown" 
         "name = \"native-probe\"\n" ++
         "version = \"1.0.0\"\n" ++
         "kind = \"lib\"\n" ++
+        "source_hash = \"b3:source\"\n" ++
+        "recipe_hash = \"b3:recipe\"\n" ++
         "artifact_hash = \"b3:artifact\"\n" ++
-        "target = \"x86_64-linux-gnu\"\n" ++
+        "target = \"x86_64-linux-gnu\"\n\n" ++
+        "[origin]\n" ++
+        "resolver = \"rocks\"\n" ++
+        "source = \"https://example.invalid/native-probe\"\n\n" ++
+        "[compat]\n" ++
         "lua_abi = \"lua54\"\n" ++
         "lua_api = \"5.4\"\n" ++
-        "runtime = \"lua@5.4.7\"\n" ++
-        "runtime_artifact_hash = \"b3:runtime\"\n" ++
-        "resolver = \"rocks\"\n" ++
-        "source = \"https://example.invalid/native-probe\"\n" ++
-        "recipe_hash = \"b3:recipe\"\n\n" ++
+        "runtime_version = \"lua@5.4.7\"\n" ++
+        "runtime_artifact_hash = \"b3:runtime\"\n\n" ++
         "[provides]\n";
     const explicit_linkage = prefix ++ "native_lib = [{ name = \"nativeprobe\", path = \"lib/native/libnativeprobe.so\", linkage = \"shared\" }]\n";
 
