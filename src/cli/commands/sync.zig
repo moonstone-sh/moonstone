@@ -3727,6 +3727,7 @@ pub const SyncCommand = struct {
                 .edges = &.{},
             });
             try next_lock.validateProfiles();
+            next_lock.pruneUnreferencedRealizations();
             var aw = std.Io.Writer.Allocating.init(allocator);
             defer aw.deinit();
             try next_lock.serialize(allocator, &aw.writer);

@@ -140,6 +140,45 @@ pub const LockFile = struct {
         try self.profiles.append(self.allocator, profile);
     }
 
+    /// Removes any realization no profile currently references. v3's
+    /// `next_lock` (sync.zig) starts as a full clone of the previous lock
+    /// -- preserving every OTHER profile's realizations -- before
+    /// upsertProfile() replaces just the profile being resolved this run
+    /// with freshly-computed realization_hashes; a package bumped to a new
+    /// version by that update leaves its OLD realization sitting in the
+    /// file, referenced by nothing. That orphan is not just dead weight:
+    /// lockedDependenciesMatch (sync.zig, `moon sync --locked`) matches a
+    /// declared dependency's constraint against the FIRST same-name
+    /// realization it finds in file order, with no notion of "which
+    /// profile is this build for" -- so a stale orphan sorting before the
+    /// real one it was superseded by makes `--locked` report a spurious
+    /// mismatch even when every profile is genuinely up to date. A no-op
+    /// on a v2 lockfile, which has no profiles to check references
+    /// against at all (every v2 package would otherwise look "orphaned").
+    pub fn pruneUnreferencedRealizations(self: *LockFile) void {
+        if (self.version != 3) return;
+
+        var i: usize = 0;
+        while (i < self.packages.items.len) {
+            const hash = self.packages.items[i].realization_hash;
+            var referenced = false;
+            outer: for (self.profiles.items) |profile| {
+                for (profile.packages) |reference| {
+                    if (std.mem.eql(u8, reference.realization_hash, hash)) {
+                        referenced = true;
+                        break :outer;
+                    }
+                }
+            }
+            if (referenced) {
+                i += 1;
+            } else {
+                const old = self.packages.orderedRemove(i);
+                old.deinit(self.allocator);
+            }
+        }
+    }
+
     /// Use the canonical lock representation as the cloning boundary. This
     /// keeps all target profiles and realization records independent of the
     /// legacy v2 storage layout.

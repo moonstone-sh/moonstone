@@ -33,7 +33,8 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
         std.mem.eql(u8, source_kind, "archive") or
         std.mem.eql(u8, source_kind, "builtin") or
         std.mem.eql(u8, source_kind, "luarocks_src_rock") or
-        std.mem.eql(u8, source_kind, "upstream_archive"))
+        std.mem.eql(u8, source_kind, "upstream_archive") or
+        std.mem.eql(u8, source_kind, "command"))
     {
         return .source_replay_supported;
     }
