@@ -3,10 +3,16 @@ const std = @import("std");
 pub const ScriptDefinition = struct {
     name: []const u8,
     command: []const u8,
+    /// Set when this script was declared as a structured, per-platform step
+    /// (e.g. `build.posix.sh = "..."`) and resolved to the variant matching
+    /// the host platform at parse time. `null` for a plain `name = "command"`
+    /// declaration.
+    platform: ?[]const u8 = null,
 
     pub fn deinit(self: *ScriptDefinition, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.command);
+        if (self.platform) |platform| allocator.free(platform);
     }
 
     pub fn validate(self: ScriptDefinition) !void {

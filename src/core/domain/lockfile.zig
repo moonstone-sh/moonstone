@@ -613,6 +613,7 @@ test "realization lockfile v3 validates profile references" {
         \\lua_abi = "lua54"
         \\target = "x86_64-linux-gnu"
         \\constellation = "default"
+        \\replay_mode = "artifact_only"
         \\
         \\[[profile]]
         \\id = "x86_64-linux-gnu+lua@5.4+lua54"
