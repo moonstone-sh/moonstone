@@ -170,7 +170,23 @@ pub const assets = struct {
 // expected and documents real, pre-existing dead-code bugs, not a
 // regression introduced here.
 fn refAllDeclsRecursive(comptime T: type) void {
+    refAllDeclsRecursiveVisiting(T, &.{});
+}
+
+// `visited` is the chain of types currently being walked (the ancestors of
+// T, not a global "already fully processed" set) -- enough to break a
+// genuine cycle (a type reachable from itself through some path of nested
+// declarations) without needing a real comptime set type. A type reached via
+// two different, non-cyclic paths is simply walked twice, which is
+// redundant but harmless; the alternative (missing real cycles) crashed the
+// whole test binary with a stack-overflow segfault the one time this
+// codebase's module graph actually had one.
+fn refAllDeclsRecursiveVisiting(comptime T: type, comptime visited: []const type) void {
     if (!@import("builtin").is_test) return;
+    inline for (visited) |seen| {
+        if (seen == T) return;
+    }
+    const next_visited = visited ++ .{T};
     inline for (comptime std.meta.declarations(T)) |decl| {
         if (@TypeOf(@field(T, decl.name)) == type) {
             const Field = @field(T, decl.name);
@@ -193,7 +209,7 @@ fn refAllDeclsRecursive(comptime T: type) void {
                     // is a reliable signal this is a C translation unit
                     // rather than hand-written Zig with tests to surface.
                     if (!@hasDecl(Field, "__builtin_va_list")) {
-                        refAllDeclsRecursive(Field);
+                        refAllDeclsRecursiveVisiting(Field, next_visited);
                     }
                 },
                 else => {},
