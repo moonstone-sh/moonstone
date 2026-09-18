@@ -142,7 +142,7 @@ pub const CompletionsCommand = struct {
             \\    if (( CURRENT > name_index )); then
             \\      shift $((name_index - 1)) words
             \\      (( CURRENT -= name_index - 1 ))
-            \\      local PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
+            \\      local -x PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
             \\
             \\      local delegate="$words[1]"
             \\      if (( ! $+_comps[$delegate] )); then
@@ -163,7 +163,7 @@ pub const CompletionsCommand = struct {
             \\      _normal -p moon
             \\      return
             \\    elif (( CURRENT == name_index )); then
-            \\      local PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
+            \\      local -x PATH="$(moon env --paths ${{global_flag[@]}} 2>/dev/null):$PATH"
             \\      local -a bin_runtime_names
             \\      bin_runtime_names=(${{(f)"$(moon env --bin-runtime-names ${{global_flag[@]}} 2>/dev/null)"}})
             \\      _command_names
