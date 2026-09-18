@@ -142,6 +142,9 @@ jobs:
       - name: Verify zsh completion delegation
         run: tests/e2e/commands/completions_zsh_delegate.sh
 
+      - name: Verify moon exec --global resolves relative paths against the caller's CWD
+        run: tests/e2e/commands/exec_global_relative_cwd.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 

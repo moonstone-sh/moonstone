@@ -357,6 +357,17 @@ pub const ExecCommand = struct {
             }
         }
 
+        // Canonicalize argv[0] to an absolute path before any CWD change below:
+        // it may still be relative to the environment root that was resolved
+        // it (e.g. run_env.bin_path is built from "." for the current
+        // project), and both std.process.replace and std.process.spawn below
+        // resolve a non-absolute argv[0] against whatever the CURRENT process
+        // CWD is at the moment they run, not the CWD it was resolved against.
+        if (!std.fs.path.isAbsolute(argv[0])) {
+            const abs_argv0 = std.Io.Dir.cwd().realPathFileAlloc(io, argv[0], allocator) catch null;
+            if (abs_argv0) |resolved| argv[0] = resolved;
+        }
+
         var prepared_argv = try moonstone.platform.process.prepareArgv(allocator, argv);
         defer prepared_argv.deinit(allocator);
 
@@ -366,6 +377,19 @@ pub const ExecCommand = struct {
             try e.emit(io, .STATUS, "exec", "starting", .{ .resolved_argv = prepared_argv.argv });
             try e.terminate(io, name, "executing", .{});
             try stdout.flush();
+        }
+
+        // `moon exec --global` temporarily changes the process CWD to the
+        // internal global-tools bookkeeping project (see enterProject) so
+        // its own environment resolution above works. That CWD change must
+        // not leak into the child: restore the caller's real CWD right
+        // before actually running it, so a relative positional argument the
+        // user typed (e.g. `hydronium-create ./my-app`) resolves against
+        // their own shell, not moonstone's internal bookkeeping directory.
+        // `leaveProject`'s `defer` is too late for this -- std.process.replace
+        // never returns on success, so it would never even run.
+        if (global_project) |gp| {
+            std.process.setCurrentPath(io, gp.previous) catch {};
         }
 
         if (comptime std.process.can_replace) {
