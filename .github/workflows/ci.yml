@@ -145,6 +145,9 @@ jobs:
       - name: Verify moon exec --global resolves relative paths against the caller's CWD
         run: tests/e2e/commands/exec_global_relative_cwd.sh
 
+      - name: Verify a tool's own transitive runtime dependencies are reachable
+        run: tests/e2e/commands/tool_transitive_runtime_deps.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 

@@ -348,6 +348,21 @@ fn scopeArtifactAbiCompatible(owner_abi: ?[]const u8, artifact_abi: ?[]const u8,
 }
 
 fn provisionModuleRoot(allocator: std.mem.Allocator, provision: manifest.FeatureProvision) !?[]const u8 {
+    // Some publishers (e.g. ballad's `convention.tree` collector, used by
+    // several hydronium/* packages) record `name` identical to `path` --
+    // already a slash-and-extension file path relative to the artifact's
+    // own `files/` root, not a dotted Lua require-name. Treating that as
+    // dotted below mangles the extension itself (`"foo/init.lua".replace(
+    // ".", "/")` turns the ".lua" into "/lua" too), so the suffix check
+    // never matches and every such provision was silently dropped -- latent
+    // until a caller actually needed the resulting lua_path/lua_cpath entry
+    // (a bin-runtime scope's own transitive closure; a project's own direct
+    // dependency happens to be projected by a different, directory-based
+    // mechanism instead). When name and path are identical there is no
+    // wrapping prefix to strip: the provision is already relative to the
+    // artifact root, so that root is the module root.
+    if (std.mem.eql(u8, provision.name, provision.path)) return try allocator.dupe(u8, "");
+
     const module_relative_path = try std.mem.replaceOwned(u8, allocator, provision.name, ".", "/");
     defer allocator.free(module_relative_path);
     const extension = std.fs.path.extension(provision.path);
@@ -1452,6 +1467,21 @@ pub fn link_project_env_at(
         } else false;
         if (needs_isolated_scope) {
             try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
+        } else {
+            // Runtimes match, so no *isolation* is needed -- but this
+            // package's OWN transitive `role=runtime` dependencies still
+            // need to be reachable. The project's own `share/lua/` only
+            // ever contains the PROJECT's own declared dependencies, never
+            // a bin/tool dependency's, so a library needed only
+            // transitively by this binary (and not otherwise used by the
+            // consuming project) would otherwise be invisible to it. Write
+            // that closure to a separate "bin-deps" scope, distinct from
+            // "bin-runtime": `--bin-runtime-names`/tool_role_flat_bin.sh's
+            // own contract is specifically that a same-runtime tool gets
+            // NO bin-runtime scope (it's flat-PATH-discoverable and not
+            // "isolated"), so reusing that directory here would wrongly
+            // start reporting it as isolated too.
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, target_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts);
         }
     }
 
@@ -1461,7 +1491,9 @@ pub fn link_project_env_at(
     // dependency is still a real executable dependency — it should be
     // flat-PATH-discoverable (`which <name>` works, `moon exec <name>` works
     // without needing the isolated-scope special case) whenever its runtime
-    // matches the project's own.
+    // matches the project's own. It still always gets a "bin-deps" scope for
+    // its own transitive `role=runtime` closure regardless (see the comment
+    // on the public-binary loop above).
     var tit = tool_bin_map.iterator();
     while (tit.next()) |entry| {
         const name = entry.key_ptr.*;
@@ -1487,6 +1519,8 @@ pub fn link_project_env_at(
         } else false;
         if (needs_isolated_scope) {
             try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, provision_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
+        } else {
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, provision_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts);
         }
     }
 
@@ -2409,6 +2443,34 @@ test "scope module roots preserve dotted Lua module paths" {
     })).?;
     defer allocator.free(c_root);
     try std.testing.expectEqualStrings("lib/lua/5.4", c_root);
+}
+
+test "scope module roots resolve provisions whose name equals path" {
+    // Some publishers (ballad's `convention.tree` collector, used by several
+    // hydronium/* packages, and the synthetic-make-module/synthetic-cmake
+    // test fixtures' own lua_cmodule entries) record `name` identical to
+    // `path` -- already a slash-and-extension file path relative to the
+    // artifact's own `files/` root, not a dotted Lua require-name. Before
+    // this test's fix, treating that as dotted mangled the extension itself
+    // ("hydronium_ink/init.lua".replace(".", "/") turns the ".lua" into
+    // "/lua" too), so the suffix check never matched and the provision was
+    // silently dropped -- latent until a caller actually needed the
+    // resulting lua_path/lua_cpath entry.
+    const allocator = std.testing.allocator;
+
+    const root = (try provisionModuleRoot(allocator, .{
+        .name = "hydronium_ink/init.lua",
+        .path = "hydronium_ink/init.lua",
+    })).?;
+    defer allocator.free(root);
+    try std.testing.expectEqualStrings("", root);
+
+    const submodule_root = (try provisionModuleRoot(allocator, .{
+        .name = "hydronium_ink/clock.lua",
+        .path = "hydronium_ink/clock.lua",
+    })).?;
+    defer allocator.free(submodule_root);
+    try std.testing.expectEqualStrings("", submodule_root);
 }
 
 test "scope closures permit pure Lua dependencies across ABI boundaries" {

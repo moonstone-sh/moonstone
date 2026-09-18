@@ -9,6 +9,92 @@ fn pathSeparator() u8 {
     return if (builtin.os.tag == .windows) ';' else ':';
 }
 
+/// Applies a linker-written scope's `env.toml` (`path_prepend`/`lua_path`/
+/// `lua_cpath`) to `run_env`, if that scope exists for `bin_name` under
+/// `scope_root_rel` (a project-relative path, e.g. ".moonstone/env/bin-runtime"
+/// or ".moonstone/env/bin-deps"). A no-op when the scope file doesn't exist --
+/// most binaries have neither, some have one, and a same-runtime tool with its
+/// own transitive `role=runtime` closure can have both bin-runtime (absent)
+/// and bin-deps (present) at once.
+fn applyBinScopeEnv(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    run_env: *moonstone.project.run_env.RunEnv,
+    scope_root_name: []const u8,
+    bin_name: []const u8,
+) !void {
+    const scope_env_path = try std.fs.path.join(allocator, &.{ ".moonstone", "env", scope_root_name, bin_name, "env.toml" });
+    defer allocator.free(scope_env_path);
+
+    std.Io.Dir.cwd().access(io, scope_env_path, .{}) catch return;
+
+    const env_content = try std.Io.Dir.cwd().readFileAlloc(io, scope_env_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(env_content);
+
+    var parser = toml.Parser(toml.Table).init(allocator);
+    defer parser.deinit();
+    var res = try parser.parseString(env_content);
+    defer res.deinit();
+
+    const env_val = res.value.get("env") orelse return;
+    const env_table = env_val.table;
+
+    if (env_table.get("path_prepend")) |pp| {
+        for (pp.array.items) |item| {
+            const path_to_prepend = item.string;
+            const old_path = run_env.env_map.get("PATH") orelse "";
+            const new_path = if (old_path.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ path_to_prepend, pathSeparator(), old_path })
+            else
+                try allocator.dupe(u8, path_to_prepend);
+            defer allocator.free(new_path);
+            try run_env.env_map.put("PATH", new_path);
+        }
+    }
+
+    if (env_table.get("lua_path")) |lp| {
+        var lua_path_list = std.ArrayList(u8).empty;
+        defer lua_path_list.deinit(allocator);
+        for (lp.array.items, 0..) |item, i| {
+            if (i > 0) try lua_path_list.appendSlice(allocator, ";");
+            try lua_path_list.appendSlice(allocator, item.string);
+        }
+        // Prepend to existing project LUA_PATH
+        if (run_env.env_map.get("LUA_PATH")) |old_lp| {
+            if (old_lp.len > 0) {
+                try lua_path_list.appendSlice(allocator, ";");
+                try lua_path_list.appendSlice(allocator, old_lp);
+            }
+        }
+        try lua_path_list.appendSlice(allocator, ";;");
+        try run_env.env_map.put("LUA_PATH", lua_path_list.items);
+        const lua_path_key = try std.fmt.allocPrint(allocator, "LUA_PATH_{s}", .{run_env.lua_ver_suffix});
+        defer allocator.free(lua_path_key);
+        try run_env.env_map.put(lua_path_key, lua_path_list.items);
+    }
+
+    if (env_table.get("lua_cpath")) |lp| {
+        var lua_cpath_list = std.ArrayList(u8).empty;
+        defer lua_cpath_list.deinit(allocator);
+        for (lp.array.items, 0..) |item, i| {
+            if (i > 0) try lua_cpath_list.appendSlice(allocator, ";");
+            try lua_cpath_list.appendSlice(allocator, item.string);
+        }
+        // Prepend to existing project LUA_CPATH
+        if (run_env.env_map.get("LUA_CPATH")) |old_lp| {
+            if (old_lp.len > 0) {
+                try lua_cpath_list.appendSlice(allocator, ";");
+                try lua_cpath_list.appendSlice(allocator, old_lp);
+            }
+        }
+        try lua_cpath_list.appendSlice(allocator, ";;");
+        try run_env.env_map.put("LUA_CPATH", lua_cpath_list.items);
+        const lua_cpath_key = try std.fmt.allocPrint(allocator, "LUA_CPATH_{s}", .{run_env.lua_ver_suffix});
+        defer allocator.free(lua_cpath_key);
+        try run_env.env_map.put(lua_cpath_key, lua_cpath_list.items);
+    }
+}
+
 /// Whether this target carries POSIX permission bits worth reporting.
 const reports_modes: bool = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 
@@ -213,78 +299,15 @@ pub const ExecCommand = struct {
         defer allocator.free(depth_val);
         try run_env.env_map.put("MOONSTONE_EXEC_DEPTH", depth_val);
 
-        // Check for isolated runtime env metadata for this binary
-        const bin_runtime_env_path = try std.fs.path.join(allocator, &.{ ".moonstone", "env", "bin-runtime", self.positionals[0], "env.toml" });
-        defer allocator.free(bin_runtime_env_path);
-
-        if (std.Io.Dir.cwd().access(io, bin_runtime_env_path, .{})) |_| {
-            const env_content = try std.Io.Dir.cwd().readFileAlloc(io, bin_runtime_env_path, allocator, std.Io.Limit.limited(1024 * 1024));
-            defer allocator.free(env_content);
-
-            var parser = toml.Parser(toml.Table).init(allocator);
-            defer parser.deinit();
-            var res = try parser.parseString(env_content);
-            defer res.deinit();
-
-            if (res.value.get("env")) |env_val| {
-                const env_table = env_val.table;
-
-                if (env_table.get("path_prepend")) |pp| {
-                    for (pp.array.items) |item| {
-                        const path_to_prepend = item.string;
-                        const old_path = run_env.env_map.get("PATH") orelse "";
-                        const new_path = if (old_path.len > 0)
-                            try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ path_to_prepend, pathSeparator(), old_path })
-                        else
-                            try allocator.dupe(u8, path_to_prepend);
-                        defer allocator.free(new_path);
-                        try run_env.env_map.put("PATH", new_path);
-                    }
-                }
-
-                if (env_table.get("lua_path")) |lp| {
-                    var lua_path_list = std.ArrayList(u8).empty;
-                    defer lua_path_list.deinit(allocator);
-                    for (lp.array.items, 0..) |item, i| {
-                        if (i > 0) try lua_path_list.appendSlice(allocator, ";");
-                        try lua_path_list.appendSlice(allocator, item.string);
-                    }
-                    // Prepend to existing project LUA_PATH
-                    if (run_env.env_map.get("LUA_PATH")) |old_lp| {
-                        if (old_lp.len > 0) {
-                            try lua_path_list.appendSlice(allocator, ";");
-                            try lua_path_list.appendSlice(allocator, old_lp);
-                        }
-                    }
-                    try lua_path_list.appendSlice(allocator, ";;");
-                    try run_env.env_map.put("LUA_PATH", lua_path_list.items);
-                    const lua_path_key = try std.fmt.allocPrint(allocator, "LUA_PATH_{s}", .{run_env.lua_ver_suffix});
-                    defer allocator.free(lua_path_key);
-                    try run_env.env_map.put(lua_path_key, lua_path_list.items);
-                }
-
-                if (env_table.get("lua_cpath")) |lp| {
-                    var lua_cpath_list = std.ArrayList(u8).empty;
-                    defer lua_cpath_list.deinit(allocator);
-                    for (lp.array.items, 0..) |item, i| {
-                        if (i > 0) try lua_cpath_list.appendSlice(allocator, ";");
-                        try lua_cpath_list.appendSlice(allocator, item.string);
-                    }
-                    // Prepend to existing project LUA_CPATH
-                    if (run_env.env_map.get("LUA_CPATH")) |old_lp| {
-                        if (old_lp.len > 0) {
-                            try lua_cpath_list.appendSlice(allocator, ";");
-                            try lua_cpath_list.appendSlice(allocator, old_lp);
-                        }
-                    }
-                    try lua_cpath_list.appendSlice(allocator, ";;");
-                    try run_env.env_map.put("LUA_CPATH", lua_cpath_list.items);
-                    const lua_cpath_key = try std.fmt.allocPrint(allocator, "LUA_CPATH_{s}", .{run_env.lua_ver_suffix});
-                    defer allocator.free(lua_cpath_key);
-                    try run_env.env_map.put(lua_cpath_key, lua_cpath_list.items);
-                }
-            }
-        } else |_| {}
+        // Check for isolated runtime env metadata for this binary. "bin-runtime"
+        // holds a genuinely isolated interpreter (runtime differs from the
+        // project's); "bin-deps" (see linker.zig's tool/public-bin loops)
+        // holds the same-runtime case's own transitive `role=runtime`
+        // closure, which the project's own `share/lua/` never includes since
+        // it's only ever built from the PROJECT's own declared dependencies.
+        // A binary can have either, both, or neither.
+        try applyBinScopeEnv(allocator, io, &run_env, "bin-runtime", self.positionals[0]);
+        try applyBinScopeEnv(allocator, io, &run_env, "bin-deps", self.positionals[0]);
 
         // Filter out shims directory from PATH to avoid looping back to them if absolute resolution fails
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
