@@ -873,6 +873,7 @@ const DownloadPool = struct {
             .runtime_path = self.runtime_path,
             .on_event = onAttributedResolveEvent,
             .on_event_context = null,
+            .lock_target = self.target,
         };
         var progress_context = AttributedResolveProgressContext{
             .wctx = self.wctx,
@@ -2158,6 +2159,7 @@ pub const SyncCommand = struct {
             .environ_map = env,
             .on_event = on_resolve_cb,
             .on_event_context = on_resolve_ctx,
+            .lock_target = lock_target,
         };
 
         const selected_runtime_is_remote = runtimeRequiresProgressRecord(&rt_res);

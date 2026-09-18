@@ -96,6 +96,15 @@ pub const Materializer = struct {
     runtime_path: ?[]const u8 = null,
     on_event: ?resolver.ResolveCallback = null,
     on_event_context: ?*anyopaque = null,
+    /// The target this materialization is being locked/resolved for, when
+    /// the caller is `moon sync` (and therefore knows one) -- null for
+    /// callers with no such notion (e.g. a one-off artifact export). Used
+    /// only by the "command" materializer kind below: unlike a real
+    /// cross-compilation toolchain, a "command" materializer just runs a
+    /// declared shell command on WHATEVER machine is doing the resolving,
+    /// so its result (and the recipe hash recorded for it) is only valid
+    /// for that machine's own real host target, never a foreign one.
+    lock_target: ?[]const u8 = null,
 
     fn sourcePayloadOptions(
         self: *Materializer,
@@ -464,6 +473,27 @@ pub const Materializer = struct {
                     return MaterializeResult{ .path = final_path, .artifact_hash = try self.allocator.dupe(u8, art_hash) };
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "command")) {
+                // A "command" materializer has no cross-compilation concept:
+                // it just runs a declared shell command on whatever machine
+                // is doing the resolving, and the recipe hash it records
+                // (including `target`) describes THAT machine's real host,
+                // not whichever target this lock is being written for. Cross-
+                // locking it for a foreign target (e.g. `moon sync --update
+                // --target x86_64-linux-gnu` run on an aarch64-macos host)
+                // silently produces a lock entry whose recorded recipe can
+                // never match what that foreign host computes when it later
+                // replays the same lock -- refuse loudly instead of writing
+                // that inconsistency.
+                if (self.lock_target) |requested_target| {
+                    if (!std.mem.eql(u8, requested_target, host_target)) {
+                        @import("../diagnostics/error_context.zig").setFmt(
+                            self.allocator,
+                            "{s}@{s} uses a \"command\" materializer, which runs locally and cannot be cross-locked for `{s}` from this `{s}` host. Run `moon sync --update --target {s}` from an actual `{s}` host (e.g. in CI, or a matching container) instead.",
+                            .{ desc.package.name, desc.package.version, requested_target, host_target, requested_target, requested_target },
+                        );
+                        return error.CannotCrossLockCommandMaterializer;
+                    }
+                }
                 if (self.runtime_path) |rt_path| {
                     const runtime_hash = if (had_runtime)
                         try @import("../identity/hash.zig").blake3_file(self.allocator, self.io, try std.fs.path.join(self.allocator, &.{ rt_path, "manifest.toml" }))
