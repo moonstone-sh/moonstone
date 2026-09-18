@@ -1898,7 +1898,22 @@ pub fn link_project_env_at(
         const pa_local = packageLocalName(pa2.name);
         const libexec_source = try storePackageLibexecRoot(allocator, io, payload_path, pa_local);
         defer allocator.free(libexec_source);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, pa_local, libexec_source);
+        // storePackageLibexecRoot may have resolved to a libexec child named
+        // differently than pa_local (see its own doc comment -- a package's
+        // build can publish its self-contained runtime under any name it
+        // likes). The mounted symlink's OWN name must match that real name,
+        // not pa_local, since every one of that package's own launcher
+        // scripts hardcodes `$ROOT/libexec/<that real name>` at build time.
+        // Only the "no libexec dir at all" fallback (source == payload_path
+        // itself) still wants pa_local -- there is no real name to recover
+        // there, and this preserves this project's own existing dependency
+        // alias as the mount point in that case, same as before this
+        // distinction existed.
+        const libexec_link_name = if (std.mem.eql(u8, libexec_source, payload_path))
+            pa_local
+        else
+            std.fs.path.basename(libexec_source);
+        try linkPackageIntoLibexec(allocator, io, libexec_dir, libexec_link_name, libexec_source);
     }
 
     // 7. Generate env.toml
@@ -2080,6 +2095,21 @@ fn linkPackageIntoLibexec(
 /// `<payload>/libexec/<package>`.  Other package layouts expose their payload
 /// directly.  Normalize that difference here rather than making callers infer
 /// the CAS or archive layout themselves.
+///
+/// `<package>` here is usually `local_name` (the package name with any
+/// `namespace/` prefix stripped -- see packageLocalName), but a package's own
+/// build is free to publish its self-contained runtime under a DIFFERENT
+/// name than that (Ballad's own `layout.exec`/`layout.libexec` take an
+/// explicit `name`/`bin` option a package can set to anything, e.g.
+/// hydronium/create ships as `libexec/hydronium-create`, not
+/// `libexec/create`, deliberately choosing a more distinctive global command
+/// name than its own bare package name would give it) -- so a `local_name`
+/// miss falls back to whatever the ONE actual entry under `libexec/` is,
+/// rather than silently mounting the whole payload root (which is missing
+/// the `libexec/<real-name>` prefix every one of that package's own launcher
+/// scripts unconditionally expects, e.g. `LIBEXEC="$ROOT/libexec/hydronium-
+/// create"` -- baked into the artifact at build time, unaware of whatever
+/// alias this project happens to depend on it under).
 fn storePackageLibexecRoot(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -2097,7 +2127,42 @@ fn storePackageLibexecRoot(
         }
     }
     allocator.free(layout_root);
+
+    if (try soleLibexecChildRoot(allocator, io, payload_root)) |sole_root| return sole_root;
+
     return try allocator.dupe(u8, payload_root);
+}
+
+/// If `<payload_root>/libexec` exists and has EXACTLY one entry, returns its
+/// full path (owned, caller frees) -- unambiguously the package's own
+/// self-contained runtime root under whatever name its build actually chose,
+/// regardless of what this project's dependency declaration calls it.
+/// Returns null (not an error) for "no libexec dir", "empty", or "more than
+/// one entry, genuinely ambiguous which one a caller wants" -- all of which
+/// fall through to storePackageLibexecRoot's own plain-payload-root fallback.
+fn soleLibexecChildRoot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    payload_root: []const u8,
+) !?[]const u8 {
+    const libexec_dir_path = try std.fs.path.join(allocator, &.{ payload_root, "libexec" });
+    defer allocator.free(libexec_dir_path);
+
+    var libexec_dir = std.Io.Dir.openDirAbsolute(io, libexec_dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return null;
+        return err;
+    };
+    defer libexec_dir.close(io);
+
+    var it = libexec_dir.iterate();
+    var sole_name: ?[]const u8 = null;
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (sole_name != null) return null; // more than one candidate: ambiguous
+        sole_name = entry.name;
+    }
+    const name = sole_name orelse return null;
+    return try std.fs.path.join(allocator, &.{ payload_root, "libexec", name });
 }
 
 test "store package libexec mount prefers the executable layout" {
@@ -2115,6 +2180,61 @@ test "store package libexec mount prefers the executable layout" {
     const expected = try std.fs.path.join(allocator, &.{ payload_root, "libexec", "valua" });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, executable_root);
+}
+
+test "store package libexec mount falls back to the payload root when there is no libexec dir at all" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "payload");
+    const payload_root = try tmp.dir.realPathFileAlloc(io, "payload", allocator);
+    defer allocator.free(payload_root);
+
+    const fallback_root = try storePackageLibexecRoot(allocator, io, payload_root, "plain-library");
+    defer allocator.free(fallback_root);
+    try std.testing.expectEqualStrings(payload_root, fallback_root);
+}
+
+test "store package libexec mount uses the sole libexec entry when the dependency's own name doesn't match it" {
+    // A package's OWN build is free to publish its self-contained runtime
+    // under a name that differs from whatever a dependent project's own
+    // moonstone.toml happens to call it -- e.g. hydronium/create ships as
+    // `libexec/hydronium-create`, deliberately choosing a more distinctive
+    // global command name than its bare package name ("create") would give
+    // it. storePackageLibexecRoot must still find it via `local_name`
+    // mismatching, not silently fall back to the whole payload root (which
+    // is missing the `libexec/hydronium-create` prefix every one of that
+    // package's own launcher scripts unconditionally expects).
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "payload/libexec/hydronium-create");
+    const payload_root = try tmp.dir.realPathFileAlloc(io, "payload", allocator);
+    defer allocator.free(payload_root);
+
+    const executable_root = try storePackageLibexecRoot(allocator, io, payload_root, "create");
+    defer allocator.free(executable_root);
+    const expected = try std.fs.path.join(allocator, &.{ payload_root, "libexec", "hydronium-create" });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, executable_root);
+}
+
+test "store package libexec mount falls back to the payload root when libexec has more than one entry and none match" {
+    // Genuinely ambiguous: refuse to guess which of several libexec
+    // children this unrelated dependency name is supposed to mean.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "payload/libexec/foo");
+    try tmp.dir.createDirPath(io, "payload/libexec/bar");
+    const payload_root = try tmp.dir.realPathFileAlloc(io, "payload", allocator);
+    defer allocator.free(payload_root);
 
     const fallback_root = try storePackageLibexecRoot(allocator, io, payload_root, "plain-library");
     defer allocator.free(fallback_root);
