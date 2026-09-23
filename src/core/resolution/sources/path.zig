@@ -4,6 +4,45 @@ const error_context = @import("../../diagnostics/error_context.zig");
 const options_mod = @import("../options.zig");
 const candidate_mod = @import("../candidate.zig");
 
+/// Convert the absolute path used while resolving/materializing a local
+/// dependency into the locator persisted in moonstone.lock. A relative
+/// locator is stable when a checkout (including sibling path dependencies) is
+/// moved as a unit. Windows paths on another volume cannot be made relative;
+/// std.fs.path.relative intentionally preserves those as absolute paths.
+pub fn lockSource(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    resolved_path: []const u8,
+) ![]const u8 {
+    const relative = try std.fs.path.relative(allocator, project_root, null, project_root, resolved_path);
+    if (relative.len != 0) return relative;
+
+    allocator.free(relative);
+    return allocator.dupe(u8, ".");
+}
+
+/// Resolve a path source from moonstone.lock against the current project
+/// root. Absolute sources from older lockfiles remain supported, while new
+/// relative sources follow a relocated checkout.
+pub fn resolveLockSource(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    source: []const u8,
+) ![]const u8 {
+    return std.fs.path.resolve(allocator, &.{ project_root, source });
+}
+
+pub fn lockSourceNeedsMigration(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    source: []const u8,
+) !bool {
+    if (!std.fs.path.isAbsolute(source)) return false;
+    const portable = try lockSource(allocator, project_root, source);
+    defer allocator.free(portable);
+    return !std.fs.path.isAbsolute(portable);
+}
+
 /// Resolve a package from a local filesystem path.
 /// Reads moonstone.toml at the target path to discover name/version/kind.
 /// Falls back to directory basename if no moonstone.toml is present.
@@ -59,4 +98,42 @@ pub fn resolve(
         .local_path = try allocator.dupe(u8, abs_path),
         .origin = .{ .path = try allocator.dupe(u8, abs_path) },
     };
+}
+
+test "path lock source is relative to the project and resolves after relocation" {
+    const allocator = std.testing.allocator;
+    const project_root = if (@import("builtin").os.tag == .windows)
+        "C:\\work\\checkout\\app"
+    else
+        "/work/checkout/app";
+    const dependency = if (@import("builtin").os.tag == .windows)
+        "C:\\work\\checkout\\packages\\shared"
+    else
+        "/work/checkout/packages/shared";
+    const relocated_root = if (@import("builtin").os.tag == .windows)
+        "C:\\other\\clone\\app"
+    else
+        "/other/clone/app";
+    const relocated_dependency = if (@import("builtin").os.tag == .windows)
+        "C:\\other\\clone\\packages\\shared"
+    else
+        "/other/clone/packages/shared";
+
+    const source = try lockSource(allocator, project_root, dependency);
+    defer allocator.free(source);
+    try std.testing.expect(!std.fs.path.isAbsolute(source));
+
+    const resolved = try resolveLockSource(allocator, relocated_root, source);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(relocated_dependency, resolved);
+}
+
+test "path lock source preserves legacy absolute replay" {
+    const allocator = std.testing.allocator;
+    const project_root = if (@import("builtin").os.tag == .windows) "C:\\clone\\app" else "/clone/app";
+    const absolute_source = if (@import("builtin").os.tag == .windows) "C:\\legacy\\shared" else "/legacy/shared";
+
+    const resolved = try resolveLockSource(allocator, project_root, absolute_source);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(absolute_source, resolved);
 }

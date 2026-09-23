@@ -4,7 +4,8 @@ set -euo pipefail
 MOON_BIN="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}/zig-out/bin/moon"
 
 WORKDIR="$(mktemp -d /tmp/moonstone-deep-path-closure.XXXXXX)"
-trap 'rm -rf "$WORKDIR"' EXIT
+RELOCATED="$(mktemp -d /tmp/moonstone-deep-path-relocated.XXXXXX)"
+trap 'rm -rf "$WORKDIR" "$RELOCATED"' EXIT
 mkdir -p "$WORKDIR/leaf/src" "$WORKDIR/middle/src" "$WORKDIR/parent/src" "$WORKDIR/app"
 
 cat > "$WORKDIR/leaf/moonstone.toml" <<'TOML'
@@ -71,5 +72,26 @@ test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/closure_middle.lua"
 test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/closure_leaf.lua"
 (
     cd "$WORKDIR/app"
+    "$MOON_BIN" exec -- lua -e 'print(require("closure_parent").value)'
+) | grep -qx 'parent+middle+leaf'
+
+# The lock is project-relative even though direct and transitive candidates
+# use absolute paths while the resolver and linker are running.
+if grep -Fq "$WORKDIR" "$WORKDIR/app/moonstone.lock"; then
+    echo "path dependency lock leaked its original workspace root" >&2
+    exit 1
+fi
+grep -Fq 'source = "../parent"' "$WORKDIR/app/moonstone.lock"
+grep -Fq 'source = "../middle"' "$WORKDIR/app/moonstone.lock"
+grep -Fq 'source = "../leaf"' "$WORKDIR/app/moonstone.lock"
+
+# Simulate a foreign checkout by copying the complete source topology, then
+# removing the original so stale absolute paths and old environment symlinks
+# cannot accidentally make the replay pass.
+cp -R "$WORKDIR/." "$RELOCATED/"
+rm -rf "$WORKDIR"
+(
+    cd "$RELOCATED/app"
+    "$MOON_BIN" sync --locked
     "$MOON_BIN" exec -- lua -e 'print(require("closure_parent").value)'
 ) | grep -qx 'parent+middle+leaf'

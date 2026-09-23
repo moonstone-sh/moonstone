@@ -910,6 +910,52 @@ fn packageLocalName(pkg_name: []const u8) []const u8 {
     return pkg_name;
 }
 
+/// A path/link dependency has no artifact provision index to tell us its Lua
+/// module names.  Package names are not a reliable substitute: for example,
+/// `hydronium/core` exports `hydronium`, while `hydronium/ink-lab` exports
+/// `hydronium_ink_lab`.  Project every top-level Lua module under `src/` so a
+/// local development dependency has the same import surface as its packaged
+/// artifact.  Existing explicit projections win, which preserves collision
+/// precedence for the consuming project.
+fn projectLiveSourceModules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_dir: std.Io.Dir,
+    source_path: []const u8,
+    lua_ver_dot: []const u8,
+) !void {
+    const source_src = try std.fs.path.join(allocator, &.{ source_path, "src" });
+    defer allocator.free(source_src);
+    // Local path locators may be project-relative after locked replay.  Use
+    // the working directory just as the other live-link projections below do;
+    // openDirAbsolute asserts on a valid relative locator.
+    var source_dir = std.Io.Dir.cwd().openDir(io, source_src, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    defer source_dir.close(io);
+
+    var entries = source_dir.iterate();
+    while (try entries.next(io)) |entry| {
+        if (entry.kind != .directory and (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".lua"))) continue;
+        const destination = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot, entry.name });
+        defer allocator.free(destination);
+        env_dir.access(io, destination, .{}) catch |err| {
+            if (err != error.FileNotFound) return err;
+            const source = try std.fs.path.join(allocator, &.{ source_src, entry.name });
+            defer allocator.free(source);
+            if (entry.kind == .directory) {
+                try env_dir.createDirPath(io, destination);
+                var destination_dir = try env_dir.openDir(io, destination, .{});
+                defer destination_dir.close(io);
+                try projectTree(allocator, io, destination_dir, source);
+            } else {
+                try projectFile(io, env_dir, source, destination);
+            }
+        };
+    }
+}
+
 fn writeTomlString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
     for (value) |ch| {
@@ -1737,6 +1783,8 @@ pub fn link_project_env_at(
                     if (err != error.FileNotFound) return err;
                 }
             }
+
+            try projectLiveSourceModules(allocator, io, env_dir, ll.source_path, lua_ver_dot);
         }
     }
 

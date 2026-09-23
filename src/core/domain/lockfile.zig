@@ -179,6 +179,29 @@ pub const LockFile = struct {
         }
     }
 
+    /// A profile replacement can re-introduce a realization already retained
+    /// by another profile (or by the profile being replaced).  The hash is the
+    /// complete semantic identity, so retain one canonical record per hash.
+    /// Profile references name the hash and therefore need no rewriting.
+    pub fn deduplicateRealizations(self: *LockFile) void {
+        var i: usize = 0;
+        while (i < self.packages.items.len) {
+            var duplicate = false;
+            for (self.packages.items[0..i]) |existing| {
+                if (std.mem.eql(u8, existing.realization_hash, self.packages.items[i].realization_hash)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                const old = self.packages.orderedRemove(i);
+                old.deinit(self.allocator);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     /// Use the canonical lock representation as the cloning boundary. This
     /// keeps all target profiles and realization records independent of the
     /// legacy v2 storage layout.

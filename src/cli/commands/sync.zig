@@ -2549,7 +2549,8 @@ pub const SyncCommand = struct {
             if (!lock_runtime_matches) profiler.mark("sync.lock.replay.skip.runtime_mismatch");
             if (!lock_deps_match) profiler.mark("sync.lock.replay.skip.dependencies_changed");
         }
-        const can_replay_lock = !self.update and !self.reconcile and existing_lock.version == 3 and selected_profile != null and replay_entries.items.len > 0 and lock_runtime_matches and lock_deps_match and lock_target_state == .compatible;
+        const path_sources_need_migration = try lockPathSourcesNeedMigration(allocator, project_root.path, &existing_lock);
+        const can_replay_lock = !self.update and !self.reconcile and !path_sources_need_migration and existing_lock.version == 3 and selected_profile != null and replay_entries.items.len > 0 and lock_runtime_matches and lock_deps_match and lock_target_state == .compatible;
         const replay_lock = self.locked or can_replay_lock;
 
         if (replay_lock) {
@@ -2574,7 +2575,11 @@ pub const SyncCommand = struct {
 
                 if (is_link or is_path) {
                     // Link/path entries are reconstructed directly from lockfile metadata
-                    const source_path = if (entry.source.len > 0) entry.source else "";
+                    const source_path = if (is_path)
+                        try moonstone.resolution.sources.path.resolveLockSource(allocator, project_root.path, entry.source)
+                    else
+                        try allocator.dupe(u8, entry.source);
+                    defer allocator.free(source_path);
                     try checkLocalSourceAvailableForReplay(allocator, io, entry.name, entry.version, if (is_link) "link" else "path", source_path);
                     try checkLinkedRuntimeAbiForReplay(allocator, io, ctx, &mt, active_lua_abi, entry.name, entry.version, source_path);
                     // These entries never enter the remote replay scheduler.
@@ -3337,6 +3342,12 @@ pub const SyncCommand = struct {
         else
             moonstone.domain.lockfile.LockFile.init(allocator);
         defer next_lock.deinit();
+        // A v3 lock retains realizations for every recorded target profile.
+        // Re-solving only the active profile must not leave an obsolete
+        // absolute path locator behind in another profile: that still leaks
+        // the original checkout and makes the lock non-portable. Normalize
+        // every retained path realization before serializing the new lock.
+        try migratePathLockSources(allocator, project_root.path, &next_lock);
         const new_realization_start = next_lock.packages.items.len;
 
         if (!replay_lock) {
@@ -3415,7 +3426,10 @@ pub const SyncCommand = struct {
                         .constellation = try allocator.dupe(u8, "default"),
                         .resolver = try allocator.dupe(u8, if (is_link) "link" else "path"),
                         .registry = try lockRegistryForPackage(allocator, &pkg, &existing_lock),
-                        .source = try allocator.dupe(u8, lp),
+                        .source = if (is_path)
+                            try moonstone.resolution.sources.path.lockSource(allocator, project_root.path, lp)
+                        else
+                            try allocator.dupe(u8, lp),
                         .source_kind = try allocator.dupe(u8, if (is_link) "live_link" else "local_path"),
                         .source_payload = &.{},
                         .source_url = &.{},
@@ -3728,6 +3742,7 @@ pub const SyncCommand = struct {
                 .packages = try profile_refs.toOwnedSlice(allocator),
                 .edges = &.{},
             });
+            next_lock.deduplicateRealizations();
             try next_lock.validateProfiles();
             next_lock.pruneUnreferencedRealizations();
             var aw = std.Io.Writer.Allocating.init(allocator);
@@ -3970,6 +3985,105 @@ fn lockedDependenciesMatch(
         if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
     }
     return true;
+}
+
+fn lockPathSourcesNeedMigration(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    lf: *const moonstone.domain.lockfile.LockFile,
+) !bool {
+    for (lf.packages.items) |entry| {
+        if (!std.mem.eql(u8, entry.resolver, "path") and !std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (entry.source.len == 0) continue;
+        if (try moonstone.resolution.sources.path.lockSourceNeedsMigration(allocator, project_root, entry.source)) return true;
+    }
+    return false;
+}
+
+fn migratePathLockSources(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    lf: *moonstone.domain.lockfile.LockFile,
+) !void {
+    for (lf.packages.items) |*entry| {
+        if (!std.mem.eql(u8, entry.resolver, "path") and !std.mem.eql(u8, entry.artifact_hash, "path")) continue;
+        if (!std.fs.path.isAbsolute(entry.source)) continue;
+        const portable = try moonstone.resolution.sources.path.lockSource(allocator, project_root, entry.source);
+        if (std.fs.path.isAbsolute(portable)) {
+            allocator.free(portable);
+            continue;
+        }
+        // `source` participates in the realization identity.  A migration
+        // from an absolute locator to a project-relative one must therefore
+        // move every profile reference to the newly computed identity; leaving
+        // the old hash behind makes the lock impossible to parse on its next
+        // read (RealizationHashMismatch).
+        const previous_hash = entry.realization_hash;
+        allocator.free(entry.source);
+        entry.source = portable;
+        entry.realization_hash = try moonstone.domain.lockfile.computeRealizationHash(allocator, entry.*);
+        for (lf.profiles.items) |*profile| {
+            for (profile.packages) |*reference| {
+                if (!std.mem.eql(u8, reference.realization_hash, previous_hash)) continue;
+                allocator.free(reference.realization_hash);
+                reference.realization_hash = try allocator.dupe(u8, entry.realization_hash);
+            }
+        }
+        allocator.free(previous_hash);
+    }
+}
+
+test "path lock migration rehashes retained profile references" {
+    const allocator = std.testing.allocator;
+    var lock = moonstone.domain.lockfile.LockFile.init(allocator);
+    defer lock.deinit();
+
+    var entry = moonstone.domain.lockfile.LockEntry{
+        .name = try allocator.dupe(u8, "local-lib"),
+        .version = try allocator.dupe(u8, "1.0.0"),
+        .kind = .lib,
+        .artifact_hash = try allocator.dupe(u8, "path"),
+        .runtime = try allocator.dupe(u8, "lua@5.4"),
+        .lua_abi = try allocator.dupe(u8, "5.4"),
+        .target = try allocator.dupe(u8, "x86_64-macos"),
+        .constellation = try allocator.dupe(u8, "default"),
+        .resolver = try allocator.dupe(u8, "path"),
+        .source = try allocator.dupe(u8, "/tmp/portable-lock/app/../local-lib"),
+    };
+    entry.realization_hash = try moonstone.domain.lockfile.computeRealizationHash(allocator, entry);
+    const old_hash = try allocator.dupe(u8, entry.realization_hash);
+    try lock.packages.append(allocator, entry);
+
+    inline for ([_][]const u8{ "active", "retained" }) |id| {
+        try lock.profiles.append(allocator, .{
+            .id = try allocator.dupe(u8, id),
+            .target = try allocator.dupe(u8, if (std.mem.eql(u8, id, "active")) "x86_64-macos" else "x86_64-linux-gnu"),
+            .runtime = try allocator.dupe(u8, "lua@5.4"),
+            .lua_abi = try allocator.dupe(u8, "5.4"),
+            .packages = try allocator.dupe(moonstone.domain.resolution_profile.ProfilePackageRef, &.{.{
+                .package_name = try allocator.dupe(u8, "local-lib"),
+                .package_version = try allocator.dupe(u8, "1.0.0"),
+                .realization_hash = try allocator.dupe(u8, old_hash),
+            }}),
+        });
+    }
+    defer allocator.free(old_hash);
+
+    try migratePathLockSources(allocator, "/tmp/portable-lock/app", &lock);
+    try lock.validateProfiles();
+    const migrated = lock.packages.items[0].realization_hash;
+    try std.testing.expect(!std.mem.eql(u8, old_hash, migrated));
+    try std.testing.expectEqualStrings("../local-lib", lock.packages.items[0].source);
+    for (lock.profiles.items) |profile| {
+        try std.testing.expectEqualStrings(migrated, profile.packages[0].realization_hash);
+    }
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try lock.serialize(allocator, &writer.writer);
+    var replay = try moonstone.domain.lockfile.LockFile.parse(allocator, writer.written());
+    defer replay.deinit();
+    try replay.validateProfiles();
 }
 
 fn findReplayEntry(entries: []const *const moonstone.domain.lockfile.LockEntry, name: []const u8) ?*const moonstone.domain.lockfile.LockEntry {
