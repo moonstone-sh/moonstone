@@ -9,6 +9,11 @@ const manifest_cache_mod = @import("../cache/manifest_cache.zig");
 const archive = @import("../archive/root.zig");
 
 var registry_payload_cache: std.StringHashMapUnmanaged([]u8) = .empty;
+// Registry clients are created per materialization worker, but payloads are
+// cached process-wide. Protect the shared map; network/file reads deliberately
+// happen outside this lock, so concurrent cache misses may duplicate a fetch
+// but never mutate the hash map concurrently.
+var registry_payload_cache_mutex: std.Io.Mutex = .init;
 var compact_index_staging_counter: std.atomic.Value(u64) = .init(0);
 
 /// Joins a remote registry root and its relative resource path. This is
@@ -406,9 +411,9 @@ pub const RegistryClient = struct {
     fn read_file_from_registry(self: *RegistryClient, sub_path: []const u8) ![]u8 {
         const cache_key = try std.fmt.allocPrint(self.allocator, "{s}\x00{s}", .{ self.registry_root, sub_path });
         defer self.allocator.free(cache_key);
-        if (registry_payload_cache.get(cache_key)) |cached| {
+        if (try self.cached_payload(cache_key)) |cached| {
             profiler.mark("registry.payload.cache_hit");
-            return try self.allocator.dupe(u8, cached);
+            return cached;
         }
 
         const span = profiler.now();
@@ -417,7 +422,7 @@ pub const RegistryClient = struct {
             if (std.mem.startsWith(u8, sub_path, "http")) {
                 const content = try self.get_url(sub_path);
                 errdefer self.allocator.free(content);
-                try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+                try self.cache_payload(cache_key, content);
                 profiler.span("registry.payload.fetch", span);
                 return content;
             }
@@ -425,7 +430,7 @@ pub const RegistryClient = struct {
             defer self.allocator.free(url);
             const content = try self.get_url(url);
             errdefer self.allocator.free(content);
-            try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+            try self.cache_payload(cache_key, content);
             profiler.span("registry.payload.fetch", span);
             return content;
         } else {
@@ -449,10 +454,28 @@ pub const RegistryClient = struct {
                 return err;
             };
             errdefer self.allocator.free(content);
-            try registry_payload_cache.put(self.allocator, try self.allocator.dupe(u8, cache_key), try self.allocator.dupe(u8, content));
+            try self.cache_payload(cache_key, content);
             profiler.span("registry.payload.read", span);
             return content;
         }
+    }
+
+    fn cached_payload(self: *RegistryClient, cache_key: []const u8) !?[]u8 {
+        registry_payload_cache_mutex.lockUncancelable(self.io);
+        defer registry_payload_cache_mutex.unlock(self.io);
+        const cached = registry_payload_cache.get(cache_key) orelse return null;
+        return try self.allocator.dupe(u8, cached);
+    }
+
+    fn cache_payload(self: *RegistryClient, cache_key: []const u8, content: []const u8) !void {
+        registry_payload_cache_mutex.lockUncancelable(self.io);
+        defer registry_payload_cache_mutex.unlock(self.io);
+        if (registry_payload_cache.contains(cache_key)) return;
+        try registry_payload_cache.put(
+            self.allocator,
+            try self.allocator.dupe(u8, cache_key),
+            try self.allocator.dupe(u8, content),
+        );
     }
 
     const ProgressAdapterCtx = struct {
