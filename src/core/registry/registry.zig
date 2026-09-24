@@ -603,3 +603,86 @@ test "registry progress adapter forwards download_progress events" {
     try std.testing.expectEqual(@as(usize, 512), tracker.downloaded);
     try std.testing.expectEqual(@as(?usize, 1024), tracker.total);
 }
+
+test "parallel materialization workers safely share registry payload cache" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const payload_count = 96;
+    const worker_count = 8;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const registry_root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(registry_root);
+
+    for (0..payload_count) |index| {
+        var name_buf: [64]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "payload-{d}.txt", .{index});
+        var content_buf: [64]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf, "registry payload {d}\n", .{index});
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = content });
+    }
+
+    const Worker = struct {
+        registry_root: []const u8,
+        worker_index: usize,
+        ready: *std.atomic.Value(usize),
+        start: *std.atomic.Value(bool),
+        failed: *std.atomic.Value(bool),
+
+        fn run(self: @This()) void {
+            const thread_allocator = std.heap.page_allocator;
+            var client = RegistryClient.init(thread_allocator, std.testing.io, self.registry_root, null, null);
+            defer client.deinit();
+
+            _ = self.ready.fetchAdd(1, .release);
+            while (!self.start.load(.acquire)) std.atomic.spinLoopHint();
+
+            // Every worker reads every payload in a different order. This
+            // forces simultaneous cache misses, growth, hits, and duplicate
+            // insert attempts just like parallel remote materialization.
+            for (0..payload_count) |offset| {
+                const index = (offset + self.worker_index * 17) % payload_count;
+                var name_buf: [64]u8 = undefined;
+                const name = std.fmt.bufPrint(&name_buf, "payload-{d}.txt", .{index}) catch {
+                    self.failed.store(true, .release);
+                    return;
+                };
+                const content = client.read_file_from_registry(name) catch {
+                    self.failed.store(true, .release);
+                    return;
+                };
+                defer thread_allocator.free(content);
+
+                var expected_buf: [64]u8 = undefined;
+                const expected = std.fmt.bufPrint(&expected_buf, "registry payload {d}\n", .{index}) catch {
+                    self.failed.store(true, .release);
+                    return;
+                };
+                if (!std.mem.eql(u8, content, expected)) {
+                    self.failed.store(true, .release);
+                    return;
+                }
+            }
+        }
+    };
+
+    var ready = std.atomic.Value(usize).init(0);
+    var start = std.atomic.Value(bool).init(false);
+    var failed = std.atomic.Value(bool).init(false);
+    var threads: [worker_count]std.Thread = undefined;
+    for (&threads, 0..) |*thread, worker_index| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{Worker{
+            .registry_root = registry_root,
+            .worker_index = worker_index,
+            .ready = &ready,
+            .start = &start,
+            .failed = &failed,
+        }});
+    }
+    while (ready.load(.acquire) != worker_count) std.atomic.spinLoopHint();
+    start.store(true, .release);
+    for (threads) |thread| thread.join();
+
+    try std.testing.expect(!failed.load(.acquire));
+}
