@@ -398,11 +398,23 @@ fn findResolvedDependency(
     return null;
 }
 
+/// A live path/link dependency is projected into the root environment rather
+/// than materialized into the store.  A scoped tool inherits that root
+/// environment, so it is a valid closure edge even though it has no store
+/// artifact to add to the scope's own paths.
+fn hasLiveDependency(live_links: []const LiveLink, dependency: manifest.StoreDependency) bool {
+    for (live_links) |link| {
+        if (std.ascii.eqlIgnoreCase(link.pkg_name, dependency.name)) return true;
+    }
+    return false;
+}
+
 fn appendScopeClosure(
     allocator: std.mem.Allocator,
     io: std.Io,
     index: driver_mod.StoreDriver,
     projected_artifacts: []const ProjectedArtifact,
+    live_links: []const LiveLink,
     owner_abi: ?[]const u8,
     artifact: *const ProjectedArtifact,
     visited: *std.StringHashMapUnmanaged(void),
@@ -435,8 +447,12 @@ fn appendScopeClosure(
 
     for (store_manifest.dependencies) |dependency| {
         if (dependency.optional) continue;
-        const resolved_dependency = findResolvedDependency(projected_artifacts, dependency) orelse return error.ScopeDependencyNotResolved;
-        try appendScopeClosure(allocator, io, index, projected_artifacts, owner_abi, resolved_dependency, visited, closure);
+        const resolved_dependency = findResolvedDependency(projected_artifacts, dependency);
+        if (resolved_dependency) |resolved| {
+            try appendScopeClosure(allocator, io, index, projected_artifacts, live_links, owner_abi, resolved, visited, closure);
+        } else if (!hasLiveDependency(live_links, dependency)) {
+            return error.ScopeDependencyNotResolved;
+        }
     }
 }
 
@@ -445,6 +461,7 @@ fn collectScopeClosure(
     io: std.Io,
     index: driver_mod.StoreDriver,
     projected_artifacts: []const ProjectedArtifact,
+    live_links: []const LiveLink,
     artifact_hash: []const u8,
 ) !std.ArrayList(*const ProjectedArtifact) {
     const owner = findProjectedArtifact(projected_artifacts, artifact_hash) orelse return error.ScopeOwnerNotResolved;
@@ -452,7 +469,7 @@ fn collectScopeClosure(
     errdefer closure.deinit(allocator);
     var visited = std.StringHashMapUnmanaged(void).empty;
     defer visited.deinit(allocator);
-    try appendScopeClosure(allocator, io, index, projected_artifacts, owner.lua_abi, owner, &visited, &closure);
+    try appendScopeClosure(allocator, io, index, projected_artifacts, live_links, owner.lua_abi, owner, &visited, &closure);
     return closure;
 }
 
@@ -488,6 +505,7 @@ fn writeRuntimeScope(
     include_module_paths: bool,
     runtime_bin_path: ?[]const u8,
     projected_artifacts: []const ProjectedArtifact,
+    live_links: []const LiveLink,
 ) !void {
     const scope_dir_rel = try std.fs.path.join(allocator, &.{ scope_root, bin_name });
     defer allocator.free(scope_dir_rel);
@@ -508,7 +526,7 @@ fn writeRuntimeScope(
         break :blk computed_runtime_bin_path;
     };
 
-    var scope_closure = try collectScopeClosure(allocator, io, index, projected_artifacts, artifact_hash);
+    var scope_closure = try collectScopeClosure(allocator, io, index, projected_artifacts, live_links, artifact_hash);
     defer scope_closure.deinit(allocator);
 
     var path_prepend = std.ArrayList([]const u8).empty;
@@ -1519,7 +1537,7 @@ pub fn link_project_env_at(
             break :blk true;
         } else false;
         if (needs_isolated_scope) {
-            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, target_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts, live_links);
         } else {
             // Runtimes match, so no *isolation* is needed -- but this
             // package's OWN transitive `role=runtime` dependencies still
@@ -1534,7 +1552,7 @@ pub fn link_project_env_at(
             // NO bin-runtime scope (it's flat-PATH-discoverable and not
             // "isolated"), so reusing that directory here would wrongly
             // start reporting it as isolated too.
-            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, target_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts);
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, target_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts, live_links);
         }
     }
 
@@ -1571,9 +1589,9 @@ pub fn link_project_env_at(
             break :blk true;
         } else false;
         if (needs_isolated_scope) {
-            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, provision_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts);
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-runtime", name, provision_path, entry.value_ptr.artifact_hash, true, scoped_runtime_bin_path, projected_artifacts, live_links);
         } else {
-            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, provision_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts);
+            try writeRuntimeScope(allocator, io, env_dir, index, "bin-deps", name, provision_path, entry.value_ptr.artifact_hash, true, null, projected_artifacts, live_links);
         }
     }
 
@@ -1582,7 +1600,7 @@ pub fn link_project_env_at(
     while (hit.next()) |entry| {
         const bin_name = entry.key_ptr.*;
         const bin_info = entry.value_ptr.*;
-        try writeRuntimeScope(allocator, io, env_dir, index, "bin-helper", bin_name, bin_info.path, bin_info.artifact_hash, true, null, projected_artifacts);
+        try writeRuntimeScope(allocator, io, env_dir, index, "bin-helper", bin_name, bin_info.path, bin_info.artifact_hash, true, null, projected_artifacts, live_links);
     }
 
     // 4b. Link C modules from store artifacts
