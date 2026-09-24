@@ -657,7 +657,13 @@ fn reportLockedReplayReady(
     const resolver = if (entry.resolver.len > 0) entry.resolver else "locked";
     var task_buffer: [512]u8 = undefined;
     const task_id = task_protocol.formatId(&task_buffer, .replay, target, resolver, canon_name, entry.version) catch return;
-    reporter.report(io, task_id, 1, "completed", "reused local link/path", .{
+    // Workspace members replay through here too, so name the source by what
+    // the lock actually recorded rather than hardcoding "link/path".
+    const source_label = if (std.mem.eql(u8, entry.source_kind, "workspace"))
+        "reused workspace member"
+    else
+        "reused local link/path";
+    reporter.report(io, task_id, 1, "completed", source_label, .{
         .package = canon_name,
         .version = entry.version,
         .resolver = resolver,
@@ -2613,16 +2619,34 @@ pub const SyncCommand = struct {
             for (replay_entries.items) |entry| {
                 const is_link = std.mem.eql(u8, entry.artifact_hash, "link");
                 const is_path = std.mem.eql(u8, entry.artifact_hash, "path");
+                // Keyed on source_kind, not artifact_hash: the sentinel is a
+                // lockfile artifact_hash value, not something to reason from.
+                const is_workspace = std.mem.eql(u8, entry.source_kind, "workspace");
 
-                if (is_link or is_path) {
-                    // Link/path entries are reconstructed directly from lockfile metadata
-                    const source_path = if (is_path)
-                        try moonstone.resolution.sources.path.resolveLockSource(allocator, project_root.path, entry.source)
+                if (is_link or is_path or is_workspace) {
+                    // Reconstructed directly from lockfile metadata. All three
+                    // are already-on-disk sources, so there is nothing to fetch
+                    // and no artifact to look up by hash -- without this branch
+                    // a workspace member falls through to the remote replay
+                    // scheduler and fails as PackageNotFound on the SECOND
+                    // `moon sync`, once the first one has written a lock to
+                    // replay. Resolution worked; only replay was missing.
+                    const source_path = if (is_link)
+                        try allocator.dupe(u8, entry.source)
                     else
-                        try allocator.dupe(u8, entry.source);
+                        // Workspace `source` is the member's workspace-relative
+                        // rel_path, resolved against the root exactly like a
+                        // path dependency's.
+                        try moonstone.resolution.sources.path.resolveLockSource(allocator, project_root.path, entry.source);
                     defer allocator.free(source_path);
-                    try checkLocalSourceAvailableForReplay(allocator, io, entry.name, entry.version, if (is_link) "link" else "path", source_path);
-                    try checkLinkedRuntimeAbiForReplay(allocator, io, ctx, &mt, active_lua_abi, entry.name, entry.version, source_path);
+                    const source_label = if (is_link) "link" else if (is_path) "path" else "workspace";
+                    try checkLocalSourceAvailableForReplay(allocator, io, entry.name, entry.version, source_label, source_path);
+                    // A workspace member deliberately does not carry its own
+                    // interpreter triple -- the root workspace's runtime governs
+                    // every member -- so there is no per-member ABI to check.
+                    if (!is_workspace) {
+                        try checkLinkedRuntimeAbiForReplay(allocator, io, ctx, &mt, active_lua_abi, entry.name, entry.version, source_path);
+                    }
                     // These entries never enter the remote replay scheduler.
                     // They still belong to the replay closure, already ready,
                     // and must be inventoried before the direct insertion into
@@ -2638,6 +2662,14 @@ pub const SyncCommand = struct {
                         .local_path = if (source_path.len > 0) try allocator.dupe(u8, source_path) else null,
                         .origin = if (is_link)
                             .{ .link = try allocator.dupe(u8, source_path) }
+                        else if (is_workspace)
+                            // rel_path stays workspace-relative: an absolute
+                            // path here is what makes a checkout mean different
+                            // things on different machines.
+                            .{ .workspace = .{
+                                .member = try allocator.dupe(u8, entry.name),
+                                .rel_path = try allocator.dupe(u8, entry.source),
+                            } }
                         else
                             .{ .path = try allocator.dupe(u8, source_path) },
                         .location = .{ .local_path = try allocator.dupe(u8, source_path) },
@@ -3491,6 +3523,29 @@ pub const SyncCommand = struct {
                     });
                     report.path_link_projections += 1;
                     continue;
+                }
+
+                // A workspace member is live source on disk too, so it needs
+                // the same environment projection a path dependency gets --
+                // otherwise it resolves and locks correctly but never lands on
+                // package.path, and `require`ing the member you just declared
+                // fails while `moon sync` reports success.
+                //
+                // Unlike link/path this does NOT `continue`: the generic branch
+                // below already writes the right lock entry for a member
+                // (resolver/source_kind `workspace`, workspace-relative source,
+                // portable_source replay), so only the projection was missing.
+                if (pkg.origin == .workspace) {
+                    try live_links.append(allocator, .{
+                        .name = try allocator.dupe(u8, pkg_name_sol),
+                        .source_path = try allocator.dupe(u8, lp),
+                        .mode = try allocator.dupe(u8, "workspace"),
+                        .pkg_name = try allocator.dupe(u8, pkg.name),
+                        .pkg_version = try allocator.dupe(u8, pkg.version),
+                        .pkg_kind = pkg.kind,
+                        .role = roleForResolvedPackage(&mt, pkg_name_sol),
+                    });
+                    report.path_link_projections += 1;
                 }
 
                 if (pkg.artifact_hash.len > 0) {
