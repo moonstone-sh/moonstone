@@ -176,23 +176,23 @@ environment="$(wine_moon -C "${project_win}" env --json)"
 }
 
 wine_moon -C "${project_win}" run check
-wine_moon -C "${project_win}" exec cmd /d /s /c 'exit /b 0'
+wine_moon -C "${project_win}" exec -- cmd /d /s /c 'exit /b 0'
 
 cmd_exe="$(winepath -u 'C:\\windows\\system32\\cmd.exe')"
 cp "${cmd_exe}" "${project}/.moonstone/env/bin/probe.exe"
-wine_moon -C "${project_win}" exec probe /d /s /c 'exit /b 0'
+wine_moon -C "${project_win}" exec -- probe /d /s /c 'exit /b 0'
 
 cat >"${project}/.moonstone/env/bin/live-tool.cmd" <<'CMD'
 @echo off
 exit /b 0
 CMD
-wine_moon -C "${project_win}" exec live-tool
+wine_moon -C "${project_win}" exec -- live-tool
 
 cat >"${project}/.moonstone/env/bin/live-tool-bat.bat" <<'BAT'
 @echo off
 exit /b 0
 BAT
-wine_moon -C "${project_win}" exec live-tool-bat
+wine_moon -C "${project_win}" exec -- live-tool-bat
 
 native_library_dir="${project}/.moonstone/env/lib/native"
 mkdir -p "${native_library_dir}"
@@ -204,7 +204,7 @@ native_environment="$(wine_moon -C "${project_win}" env --json)"
     echo "native library environment path was not exposed" >&2
     exit 1
 }
-native_output="$(wine_moon -C "${project_win}" exec native-loader-probe)"
+native_output="$(wine_moon -C "${project_win}" exec -- native-loader-probe)"
 [[ "${native_output}" == *'native loader projected'* ]] || {
     echo "native DLL was not visible through Moonstone PATH projection" >&2
     exit 1

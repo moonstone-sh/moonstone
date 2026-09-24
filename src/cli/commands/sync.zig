@@ -4517,6 +4517,29 @@ fn runtimeSpecFromLinkedPackage(
     return null;
 }
 
+/// Registry metadata is allowed to omit a package runtime once its artifact
+/// has been materialized: the store manifest remains the authoritative
+/// compatibility record.  Isolated tool scopes must consult it, otherwise a
+/// `role = "tool"` binary silently runs without the interpreter it declares.
+fn runtimeSpecFromStoredArtifact(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source_path: []const u8,
+) !?[]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ source_path, "manifest.toml" });
+    defer allocator.free(manifest_path);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        if (err == error.FileNotFound) return null;
+        return err;
+    };
+    defer allocator.free(content);
+
+    var stored = try moonstone.domain.manifest.StoreManifest.parse(allocator, content);
+    defer stored.deinit(allocator);
+    if (!isResolvableRuntimeSpec(stored.compat.runtime_version)) return null;
+    return try allocator.dupe(u8, stored.compat.runtime_version);
+}
+
 fn runtimeInStore(
     allocator: std.mem.Allocator,
     index: moonstone.store.driver.StoreDriver,
@@ -4704,6 +4727,11 @@ fn ensureIsolatedRuntimes(
             }
             if (pkg.runtime) |r| {
                 if (isResolvableRuntimeSpec(r)) break :blk try allocator.dupe(u8, r);
+            }
+            if (pkg.local_path) |lp| {
+                if (try runtimeSpecFromStoredArtifact(allocator, io, lp)) |stored_rt| {
+                    break :blk stored_rt;
+                }
             }
             break :blk null;
         };
