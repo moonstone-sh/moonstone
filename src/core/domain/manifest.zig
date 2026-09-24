@@ -398,6 +398,14 @@ pub const MaterializeConfig = struct {
                 }
                 self.collect.native_lib = try flist.toOwnedSlice(allocator);
             }
+            if (ct.get("assets")) |v| {
+                var flist = std.ArrayList(FeatureProvision).empty;
+                for (v.array.items) |fv| try flist.append(allocator, .{
+                    .name = try allocator.dupe(u8, fv.table.get("name").?.string),
+                    .path = try allocator.dupe(u8, fv.table.get("path").?.string),
+                });
+                self.collect.assets = try flist.toOwnedSlice(allocator);
+            }
         }
 
         return self;
@@ -505,6 +513,8 @@ pub const MaterializeConfig = struct {
         allocator.free(self.collect.headers);
         for (self.collect.native_lib) |p| p.deinit(allocator);
         allocator.free(self.collect.native_lib);
+        for (self.collect.assets) |p| p.deinit(allocator);
+        allocator.free(self.collect.assets);
 
         for (self.ldflags) |ca| allocator.free(ca);
         allocator.free(self.ldflags);
@@ -2777,6 +2787,41 @@ test "RemotePackageDescriptor parses collected native library linkage" {
     try std.testing.expectEqual(@as(usize, 2), collected.len);
     try std.testing.expectEqual(NativeLibraryLinkage.shared, collected[0].linkage);
     try std.testing.expectEqual(NativeLibraryLinkage.static, collected[1].linkage);
+}
+
+test "RemotePackageDescriptor parses collected assets" {
+    const allocator = std.testing.allocator;
+    const toml_text =
+        \\[package]
+        \\name = "typed-source"
+        \\version = "1.0.0"
+        \\kind = "lib"
+        \\
+        \\[[artifacts]]
+        \\id = "source"
+        \\kind = "source"
+        \\target = "source"
+        \\format = "tar.gz"
+        \\url = "blobs/b3/00/00/fake.tar.gz"
+        \\hash = "b3:fake"
+        \\recipe_hash = "b3:recipe"
+        \\bytes = 1
+        \\
+        \\[artifacts.materialize]
+        \\type = "command"
+        \\command = "true"
+        \\
+        \\[artifacts.materialize.collect]
+        \\assets = [{ name = "types/package.d.lua", path = "types/package.d.lua" }]
+    ;
+
+    var desc = try RemotePackageDescriptor.parse(allocator, toml_text);
+    defer desc.deinit(allocator);
+
+    const collected = desc.artifact[0].materialize.?.collect.assets;
+    try std.testing.expectEqual(@as(usize, 1), collected.len);
+    try std.testing.expectEqualStrings("types/package.d.lua", collected[0].name);
+    try std.testing.expectEqualStrings("types/package.d.lua", collected[0].path);
 }
 
 test "RemotePackageDescriptor accepts canonical dependency registries" {

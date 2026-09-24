@@ -286,6 +286,7 @@ fn collectOutputs(
         .{ .items = collect.bins, .executable = true },
         .{ .items = collect.headers, .executable = false },
         .{ .items = collect.native_lib, .executable = false },
+        .{ .items = collect.assets, .executable = false },
     };
 
     for (categories) |category| {

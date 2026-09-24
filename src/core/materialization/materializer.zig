@@ -568,8 +568,24 @@ pub const Materializer = struct {
                         });
                         new_provides.bin = try clist.toOwnedSlice(self.allocator);
                     }
+                    if (new_provides.headers.len == 0 and m.collect.headers.len > 0) {
+                        var clist = std.ArrayList(manifest.FeatureProvision).empty;
+                        for (m.collect.headers) |p| try clist.append(self.allocator, .{
+                            .name = try self.allocator.dupe(u8, p.name),
+                            .path = try self.allocator.dupe(u8, p.name),
+                        });
+                        new_provides.headers = try clist.toOwnedSlice(self.allocator);
+                    }
                     if (new_provides.native_lib.len == 0 and m.collect.native_lib.len > 0) {
                         new_provides.native_lib = try collectedNativeLibProvides(self.allocator, m.collect.native_lib);
+                    }
+                    if (new_provides.asset.len == 0 and m.collect.assets.len > 0) {
+                        var clist = std.ArrayList(manifest.FeatureProvision).empty;
+                        for (m.collect.assets) |p| try clist.append(self.allocator, .{
+                            .name = try self.allocator.dupe(u8, p.name),
+                            .path = try self.allocator.dupe(u8, p.name),
+                        });
+                        new_provides.asset = try clist.toOwnedSlice(self.allocator);
                     }
 
                     const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
