@@ -1094,7 +1094,14 @@ pub fn link_project_env_at(
 
         if (policy.metadata_only) continue;
 
-        const art_path = try index.get_artifact_path(hash) orelse return error.ArtifactMissingFromStoreIndex;
+        // A locally-sourced package (path, link, workspace member) has no
+        // entry in the content-addressed store -- it is live source on disk --
+        // but it already carries the path it lives at. Prefer that over a
+        // store lookup that can only fail for it.
+        const art_path = if (pa.path) |p|
+            try allocator.dupe(u8, p)
+        else
+            try index.get_artifact_path(hash) orelse return error.ArtifactMissingFromStoreIndex;
         defer allocator.free(art_path);
 
         // Runtime artifacts that are not the project's selected runtime are

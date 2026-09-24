@@ -2469,8 +2469,22 @@ pub const SyncCommand = struct {
             if (!target_is_host) @ptrCast(&lazy_rockspec_parser) else null,
             targets.items,
         );
+        // Declared orbit members resolve locally, before the store, links or
+        // any registry. Loaded here because this provider is what resolves the
+        // whole dependency graph, so membership applies transitively: a member
+        // depending on a sibling member resolves locally at every depth.
+        //
+        // Empty for a standalone project, which leaves resolution byte-for-byte
+        // as it was.
+        provider_impl.workspace = try moonstone.resolution.sources.workspace.load(
+            allocator,
+            io,
+            project_root.path,
+            &mt,
+        );
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
+            provider_impl.workspace.deinit(allocator);
             provider_impl.deinit();
             allocator.destroy(provider_impl);
         }
@@ -2947,7 +2961,7 @@ pub const SyncCommand = struct {
                             });
                         }
                     } else if (pkg.local_path) |lp| {
-                        if (std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path")) {
+                        if (std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path") or std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
                             const manifest_path = try std.fs.path.join(allocator, &.{ lp, "moonstone.toml" });
                             defer allocator.free(manifest_path);
                             var content: ?[]const u8 = null;
@@ -3532,13 +3546,16 @@ pub const SyncCommand = struct {
                                 .artifact_hash => &.{},
                                 .workspace => |w| try allocator.dupe(u8, w.rel_path),
                             },
-                            .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                            .source_kind = if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                             .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
                             .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                             .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
                             .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
                             .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
                             .replay_mode = blk: {
+                                if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
+                                    break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
+                                }
                                 const sk = if (store_source_kind.len > 0) store_source_kind else "";
                                 if (std.mem.eql(u8, sk, "zig_cc") or std.mem.eql(u8, sk, "cmake") or std.mem.eql(u8, sk, "native_cmodule")) {
                                     break :blk moonstone.domain.replay_contract.ReplayMode.declared_host;
@@ -3657,13 +3674,21 @@ pub const SyncCommand = struct {
                         .artifact_hash => &.{},
                         .workspace => |w| try allocator.dupe(u8, w.rel_path),
                     },
-                    .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                    .source_kind = if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                     .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
                     .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                     .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
                     .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
                     .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
                     .replay_mode = blk: {
+                        // A workspace member replays from the repository
+                        // itself, not from an artifact: the source is right
+                        // there at `source` (workspace-relative). Marking it
+                        // artifact_only would make replay demand a registry
+                        // artifact that will never exist for a member.
+                        if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
+                            break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
+                        }
                         const sk = if (store_source_kind.len > 0) store_source_kind else "";
                         if (std.mem.eql(u8, sk, "zig_cc") or std.mem.eql(u8, sk, "cmake") or std.mem.eql(u8, sk, "native_cmodule")) {
                             break :blk moonstone.domain.replay_contract.ReplayMode.declared_host;

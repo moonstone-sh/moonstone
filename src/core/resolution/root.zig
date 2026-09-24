@@ -17,6 +17,7 @@ pub const sources = struct {
     pub const path = @import("sources/path.zig");
     pub const link = @import("sources/link.zig");
     pub const artifact_hash = @import("sources/artifact_hash.zig");
+    pub const workspace = @import("sources/workspace.zig");
 };
 
 pub const provider = struct {

@@ -44,6 +44,11 @@ pub const Member = struct {
     /// path in resolved state is what makes a checkout mean different things
     /// on different machines.
     rel_path: []const u8,
+    /// Absolute path on this machine. Used ONLY at runtime, to read the
+    /// member's files during materialization. It is never serialized: the
+    /// lock and every exported descriptor carry `rel_path` instead, so a
+    /// checkout means the same thing on every machine.
+    abs_path: []const u8,
     /// The member's own manifest version, which a declared constraint is
     /// checked against.
     version: []const u8,
@@ -52,6 +57,7 @@ pub const Member = struct {
     pub fn deinit(self: *Member, allocator: std.mem.Allocator) void {
         allocator.free(self.package_name);
         allocator.free(self.rel_path);
+        allocator.free(self.abs_path);
         allocator.free(self.version);
     }
 };
@@ -103,18 +109,34 @@ pub fn load(
 
     for (root_manifest.orbits.items) |orbit_cfg| {
         const abs_dir = try std.fs.path.join(allocator, &.{ project_root, orbit_cfg.path });
-        defer allocator.free(abs_dir);
+        errdefer allocator.free(abs_dir);
         const manifest_path = try std.fs.path.join(allocator, &.{ abs_dir, "moonstone.toml" });
         defer allocator.free(manifest_path);
+        var keep_abs = false;
+        defer if (!keep_abs) allocator.free(abs_dir);
 
-        var member_manifest = manifest.parseFile(allocator, io, manifest_path) catch continue;
+        // Same read-then-parse orbits.zig uses. A member whose directory has
+        // no readable manifest is SKIPPED rather than failing the load: a
+        // half-created member must not make every unrelated dependency in the
+        // workspace unresolvable, and `moon orbit list` reports those already.
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            manifest_path,
+            allocator,
+            std.Io.Limit.limited(1024 * 1024),
+        ) catch continue;
+        defer allocator.free(content);
+
+        var member_manifest = manifest.MoonstoneToml.parse(allocator, content) catch continue;
         defer member_manifest.deinit(allocator);
 
         if (member_manifest.package.name.len == 0) continue;
 
+        keep_abs = true;
         try out.append(allocator, .{
             .package_name = try allocator.dupe(u8, member_manifest.package.name),
             .rel_path = try allocator.dupe(u8, orbit_cfg.path),
+            .abs_path = abs_dir,
             .version = try allocator.dupe(u8, member_manifest.package.version),
             // Enum, not a string: no allocation, and nothing to free.
             .kind = member_manifest.package.kind,
@@ -164,6 +186,9 @@ pub fn candidateFor(
         .runtime_artifact_hash = try allocator.dupe(u8, ""),
         .lua_abi = try allocator.dupe(u8, ""),
         .lua_api = try allocator.dupe(u8, ""),
+        // Absolute, for reading files during materialization. The lock gets
+        // rel_path from `origin` below, never this.
+        .local_path = try allocator.dupe(u8, member.abs_path),
         .origin = .{ .workspace = .{
             .member = try allocator.dupe(u8, member.package_name),
             .rel_path = try allocator.dupe(u8, member.rel_path),
@@ -180,6 +205,7 @@ test "find matches on the fully qualified name only" {
         .{
             .package_name = try allocator.dupe(u8, "hydronium/meteorite"),
             .rel_path = try allocator.dupe(u8, "meteorite"),
+            .abs_path = try allocator.dupe(u8, "/tmp/ws/meteorite"),
             .version = try allocator.dupe(u8, "0.1.0"),
             .kind = .lib,
         },
@@ -201,6 +227,7 @@ test "constraint is an assertion over the member version" {
     var m = Member{
         .package_name = try allocator.dupe(u8, "acme/lib"),
         .rel_path = try allocator.dupe(u8, "lib"),
+        .abs_path = try allocator.dupe(u8, "/tmp/ws/lib"),
         .version = try allocator.dupe(u8, "0.2.0"),
         .kind = .lib,
     };

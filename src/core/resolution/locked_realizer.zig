@@ -34,7 +34,11 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
         std.mem.eql(u8, source_kind, "builtin") or
         std.mem.eql(u8, source_kind, "luarocks_src_rock") or
         std.mem.eql(u8, source_kind, "upstream_archive") or
-        std.mem.eql(u8, source_kind, "command"))
+        std.mem.eql(u8, source_kind, "command") or
+        // A workspace member replays from the repository itself: its source is
+        // already on disk at the lock's workspace-relative `source`. Nothing
+        // has to be fetched, so this is the most replayable kind there is.
+        std.mem.eql(u8, source_kind, "workspace"))
     {
         return .source_replay_supported;
     }
@@ -49,7 +53,8 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
 pub fn requiresExactArtifactHash(entry: *const LockEntry) bool {
     return entry.artifact_hash.len > 0 and
         !std.mem.eql(u8, entry.artifact_hash, "link") and
-        !std.mem.eql(u8, entry.artifact_hash, "path");
+        !std.mem.eql(u8, entry.artifact_hash, "path") and
+        !std.mem.eql(u8, entry.artifact_hash, "workspace");
 }
 
 /// A locked LuaRocks replay must retain the exact location that supplied the
@@ -114,7 +119,8 @@ pub fn ensureLockedArtifact(
     // 1. Check configured artifact providers / local store by hash.
     if (exact_artifact_hash.len > 0 and
         !std.mem.eql(u8, exact_artifact_hash, "link") and
-        !std.mem.eql(u8, exact_artifact_hash, "path"))
+        !std.mem.eql(u8, exact_artifact_hash, "path") and
+        !std.mem.eql(u8, exact_artifact_hash, "workspace"))
     {
         const req = package_provider.ArtifactRequest{
             .name = entry.name,

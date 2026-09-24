@@ -10,6 +10,8 @@ const candidate_mod = @import("../candidate.zig");
 const rocks_resolver = @import("../sources/luarocks.zig");
 const moonstone_registry_resolver = @import("../sources/moonstone_registry.zig");
 const path_resolver = @import("../sources/path.zig");
+const workspace_mod = @import("../sources/workspace.zig");
+const error_context = @import("../../diagnostics/error_context.zig");
 const links_mod = @import("../../store/links.zig");
 const platform_target = @import("../../platform/target.zig");
 const package_spec = @import("../../domain/package_spec.zig");
@@ -67,6 +69,15 @@ pub const RegistryProvider = struct {
     lua_metadata_interpreter_context: ?*anyopaque = null,
     rocks_metadata_prefetch: ?*const metadata_prefetch.RocksMetadataPrefetch = null,
     targets: []const term_mod.Term = &.{},
+    /// Declared orbit members of the current workspace. Empty for a standalone
+    /// project, which leaves every path below behaving exactly as before.
+    ///
+    /// Held here rather than only on the Coordinator because THIS is where
+    /// transitive dependencies are resolved: a member depending on a sibling
+    /// member (ink-lab -> lab -> core) must resolve locally at every depth, or
+    /// the workspace is only half local and the rest silently falls back to
+    /// published copies.
+    workspace: workspace_mod.Members = .{ .items = &.{} },
 
     // Arena for all package metadata (versions, strings, descriptors, artifacts)
     arena: std.heap.ArenaAllocator,
@@ -509,6 +520,42 @@ pub const RegistryProvider = struct {
             }
         }
 
+        // A declared workspace member resolves locally, at any depth, before
+        // any declared resolver kind is consulted. Membership is location; the
+        // constraint is only an assertion, checked inside candidateFor.
+        if (self.workspace.find(name)) |member| {
+            const member_version = try semver.Version.parseCloned(arena, member.version);
+
+            // Validate against the solver's OWN parsed range rather than
+            // re-parsing a constraint string, so a workspace constraint cannot
+            // drift from what the same constraint means everywhere else.
+            //
+            // A mismatch is fatal here and does not fall through: returning
+            // the version and letting the solver come up empty would be
+            // technically equivalent but would report "no matching version",
+            // which reads like a missing package rather than what it is -- a
+            // workspace that disagrees with its own declaration.
+            for (self.targets) |t| {
+                if (!std.mem.eql(u8, t.name, name)) continue;
+                if (!t.range.contains(member_version)) {
+                    error_context.setFmt(
+                        self.allocator,
+                        "workspace member `{s}` is version {s}, which does not satisfy the declared constraint. " ++
+                            "It is declared at `{s}/moonstone.toml`. Either update the constraint or the member's version -- " ++
+                            "a member is never substituted from a registry.",
+                        .{ name, member.version, member.rel_path },
+                    );
+                    return error.WorkspaceMemberVersionMismatch;
+                }
+                break;
+            }
+
+            const candidate = try workspace_mod.candidateFor(arena, member, "*");
+            try self.artifacts.append(arena, candidate);
+            try versions.append(self.allocator, member_version);
+            return try versions.toOwnedSlice(self.allocator);
+        }
+
         if (res_constraint == .path) {
             const path = reg_constraint orelse return error.MissingPathDependency;
             const candidate = try path_resolver.resolve(arena, self.io, path, "*", self.options);
@@ -619,7 +666,7 @@ pub const RegistryProvider = struct {
                 if (res_constraint) |rc| {
                     if (rc == .link and !std.mem.eql(u8, cand.artifact_hash, "link")) continue;
                     if (rc == .path and !std.mem.eql(u8, cand.artifact_hash, "path")) continue;
-                    if (rc == .artifact and (std.mem.eql(u8, cand.artifact_hash, "link") or std.mem.eql(u8, cand.artifact_hash, "path"))) continue;
+                    if (rc == .artifact and (std.mem.eql(u8, cand.artifact_hash, "link") or std.mem.eql(u8, cand.artifact_hash, "path") or std.mem.eql(u8, cand.artifact_hash, "workspace"))) continue;
                 }
                 if (!storeCandidateCompatible(cand, self.options)) continue;
 
@@ -646,7 +693,7 @@ pub const RegistryProvider = struct {
                 // Store entries are usable only after their manifest has been
                 // committed. Prune interrupted/partial directories here so
                 // dependency expansion never fails on a missing manifest.
-                if (!std.mem.eql(u8, cand.artifact_hash, "link") and !std.mem.eql(u8, cand.artifact_hash, "path")) {
+                if (!std.mem.eql(u8, cand.artifact_hash, "link") and !std.mem.eql(u8, cand.artifact_hash, "path") and !std.mem.eql(u8, cand.artifact_hash, "workspace")) {
                     const manifest_path = try std.fs.path.join(self.allocator, &.{ cand.path, "manifest.toml" });
                     defer self.allocator.free(manifest_path);
                     std.Io.Dir.cwd().access(self.io, manifest_path, .{}) catch |err| {
@@ -1220,7 +1267,7 @@ pub const RegistryProvider = struct {
                 return try terms.toOwnedSlice(self.allocator);
             }
 
-            if (std.mem.eql(u8, art.artifact_hash, "link") or std.mem.eql(u8, art.artifact_hash, "path")) {
+            if (std.mem.eql(u8, art.artifact_hash, "link") or std.mem.eql(u8, art.artifact_hash, "path") or std.mem.eql(u8, art.artifact_hash, "workspace")) {
                 if (art.local_path) |lp| {
                     const manifest_path = try std.fs.path.join(self.allocator, &.{ lp, "moonstone.toml" });
                     defer self.allocator.free(manifest_path);
