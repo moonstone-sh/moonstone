@@ -666,7 +666,7 @@ pub const RegistryProvider = struct {
                 if (res_constraint) |rc| {
                     if (rc == .link and !std.mem.eql(u8, cand.artifact_hash, "link")) continue;
                     if (rc == .path and !std.mem.eql(u8, cand.artifact_hash, "path")) continue;
-                    if (rc == .artifact and (std.mem.eql(u8, cand.artifact_hash, "link") or std.mem.eql(u8, cand.artifact_hash, "path") or std.mem.eql(u8, cand.artifact_hash, "workspace"))) continue;
+                    if (rc == .artifact and candidate_mod.isLocalSourceHash(cand.artifact_hash)) continue;
                 }
                 if (!storeCandidateCompatible(cand, self.options)) continue;
 
@@ -693,7 +693,7 @@ pub const RegistryProvider = struct {
                 // Store entries are usable only after their manifest has been
                 // committed. Prune interrupted/partial directories here so
                 // dependency expansion never fails on a missing manifest.
-                if (!std.mem.eql(u8, cand.artifact_hash, "link") and !std.mem.eql(u8, cand.artifact_hash, "path") and !std.mem.eql(u8, cand.artifact_hash, "workspace")) {
+                if (!candidate_mod.isLocalSourceHash(cand.artifact_hash)) {
                     const manifest_path = try std.fs.path.join(self.allocator, &.{ cand.path, "manifest.toml" });
                     defer self.allocator.free(manifest_path);
                     std.Io.Dir.cwd().access(self.io, manifest_path, .{}) catch |err| {
@@ -1267,7 +1267,7 @@ pub const RegistryProvider = struct {
                 return try terms.toOwnedSlice(self.allocator);
             }
 
-            if (std.mem.eql(u8, art.artifact_hash, "link") or std.mem.eql(u8, art.artifact_hash, "path") or std.mem.eql(u8, art.artifact_hash, "workspace")) {
+            if (art.origin.isLocalSource()) {
                 if (art.local_path) |lp| {
                     const manifest_path = try std.fs.path.join(self.allocator, &.{ lp, "moonstone.toml" });
                     defer self.allocator.free(manifest_path);

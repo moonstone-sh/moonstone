@@ -2984,7 +2984,7 @@ pub const SyncCommand = struct {
                             });
                         }
                     } else if (pkg.local_path) |lp| {
-                        if (std.mem.eql(u8, pkg.artifact_hash, "link") or std.mem.eql(u8, pkg.artifact_hash, "path") or std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
+                        if (pkg.origin.isLocalSource()) {
                             const manifest_path = try std.fs.path.join(allocator, &.{ lp, "moonstone.toml" });
                             defer allocator.free(manifest_path);
                             var content: ?[]const u8 = null;
@@ -3569,14 +3569,14 @@ pub const SyncCommand = struct {
                                 .artifact_hash => &.{},
                                 .workspace => |w| try allocator.dupe(u8, w.rel_path),
                             },
-                            .source_kind = if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                            .source_kind = if (pkg.origin == .workspace) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                             .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
                             .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                             .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
                             .rockspec_hash = if (store_rockspec_hash.len > 0) try allocator.dupe(u8, store_rockspec_hash) else if (pkg.rockspec_hash.len > 0) try allocator.dupe(u8, pkg.rockspec_hash) else &.{},
                             .rockspec_payload = if (store_rockspec_payload.len > 0) try allocator.dupe(u8, store_rockspec_payload) else &.{},
                             .replay_mode = blk: {
-                                if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
+                                if (pkg.origin == .workspace) {
                                     break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
                                 }
                                 const sk = if (store_source_kind.len > 0) store_source_kind else "";
@@ -3697,7 +3697,7 @@ pub const SyncCommand = struct {
                         .artifact_hash => &.{},
                         .workspace => |w| try allocator.dupe(u8, w.rel_path),
                     },
-                    .source_kind = if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
+                    .source_kind = if (pkg.origin == .workspace) try allocator.dupe(u8, "workspace") else if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                     .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
                     .source_url = if (store_source_url.len > 0) try allocator.dupe(u8, store_source_url) else &.{},
                     .rockspec = if (store_rockspec.len > 0) try allocator.dupe(u8, store_rockspec) else if (pkg.rockspec.len > 0) try allocator.dupe(u8, pkg.rockspec) else &.{},
@@ -3709,7 +3709,7 @@ pub const SyncCommand = struct {
                         // there at `source` (workspace-relative). Marking it
                         // artifact_only would make replay demand a registry
                         // artifact that will never exist for a member.
-                        if (std.mem.eql(u8, pkg.artifact_hash, "workspace")) {
+                        if (pkg.origin == .workspace) {
                             break :blk moonstone.domain.replay_contract.ReplayMode.portable_source;
                         }
                         const sk = if (store_source_kind.len > 0) store_source_kind else "";

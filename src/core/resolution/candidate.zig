@@ -46,6 +46,19 @@ pub const Origin = union(enum) {
         }
     }
 
+    /// Whether this origin's bytes are already on disk rather than needing
+    /// to be fetched or looked up in the content-addressed store by hash:
+    /// an explicit `path` dependency, a `moon link`ed directory, or a
+    /// resolved workspace member. These three are the only origins that can
+    /// carry the `"link"` / `"path"` / `"workspace"` artifact_hash
+    /// placeholders instead of a real hash.
+    pub fn isLocalSource(self: Origin) bool {
+        return switch (self) {
+            .path, .link, .workspace => true,
+            .moonstone_registry, .luarocks, .artifact_hash => false,
+        };
+    }
+
     pub fn clone(self: Origin, allocator: std.mem.Allocator) !Origin {
         return switch (self) {
             .moonstone_registry => |r| .{
@@ -176,6 +189,22 @@ pub const Candidate = struct {
         };
     }
 };
+
+/// Raw-string fallback for `Origin.isLocalSource`, for the handful of call
+/// sites that only ever have an `artifact_hash` string with no `Origin` in
+/// reach: the local store index's own row type (`store/driver.zig`'s
+/// `Candidate`, which has no origin field at all), and anywhere reasoning
+/// about a bare hash before a `Candidate` exists. Prefer `Origin.isLocalSource`
+/// whenever an `Origin` is available -- see its doc comment for what this
+/// category means. `LockEntry` replay should prefer `source_kind` instead of
+/// either of these: it carries the honest "how is this obtained" value
+/// (`"live_link"` / `"local_path"` / `"workspace"`), while `artifact_hash`
+/// there is only ever the placeholder tested here.
+pub fn isLocalSourceHash(hash: []const u8) bool {
+    return std.mem.eql(u8, hash, "link") or
+        std.mem.eql(u8, hash, "path") or
+        std.mem.eql(u8, hash, "workspace");
+}
 
 // Compatibility shim
 pub const ResolvedArtifact = Candidate;

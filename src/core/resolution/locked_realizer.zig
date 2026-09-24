@@ -50,11 +50,19 @@ pub fn assessMaterializerCapability(source_kind: []const u8) locked_pkg.Material
 /// verification on the host that replays that lock. A project moving to a
 /// different target must create a new target realization explicitly rather
 /// than silently accepting a different artifact under the same lock entry.
+///
+/// `link` and `path` are excluded by their `artifact_hash` placeholder, as
+/// before. A workspace member is excluded by `source_kind` instead: unlike
+/// `link`/`path`, `entry.artifact_hash` for a workspace member is not a
+/// value this function should be reasoning about at all -- `source_kind`
+/// is the field the lock actually carries "how is this obtained" in, and
+/// it is set to `"workspace"` exactly when this entry is one (see
+/// sync.zig's lock-entry construction).
 pub fn requiresExactArtifactHash(entry: *const LockEntry) bool {
     return entry.artifact_hash.len > 0 and
         !std.mem.eql(u8, entry.artifact_hash, "link") and
         !std.mem.eql(u8, entry.artifact_hash, "path") and
-        !std.mem.eql(u8, entry.artifact_hash, "workspace");
+        !std.mem.eql(u8, entry.source_kind, "workspace");
 }
 
 /// A locked LuaRocks replay must retain the exact location that supplied the
@@ -117,10 +125,14 @@ pub fn ensureLockedArtifact(
     const exact_artifact_hash = if (requiresExactArtifactHash(entry)) entry.artifact_hash else "";
     const requested_artifact_hash: ?[]const u8 = if (exact_artifact_hash.len > 0) exact_artifact_hash else null;
     // 1. Check configured artifact providers / local store by hash.
+    // Same three-way exclusion as requiresExactArtifactHash above (which
+    // already gated exact_artifact_hash to "" for all three) -- workspace is
+    // excluded via entry.source_kind, not entry.artifact_hash, for the same
+    // reason given there.
     if (exact_artifact_hash.len > 0 and
         !std.mem.eql(u8, exact_artifact_hash, "link") and
         !std.mem.eql(u8, exact_artifact_hash, "path") and
-        !std.mem.eql(u8, exact_artifact_hash, "workspace"))
+        !std.mem.eql(u8, entry.source_kind, "workspace"))
     {
         const req = package_provider.ArtifactRequest{
             .name = entry.name,
