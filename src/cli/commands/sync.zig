@@ -4524,8 +4524,11 @@ fn runtimeSpecFromLinkedPackage(
 fn runtimeSpecFromStoredArtifact(
     allocator: std.mem.Allocator,
     io: std.Io,
-    source_path: []const u8,
+    index: moonstone.store.driver.StoreDriver,
+    artifact_hash: []const u8,
 ) !?[]const u8 {
+    const source_path = try index.get_artifact_path(artifact_hash) orelse return null;
+    defer allocator.free(source_path);
     const manifest_path = try std.fs.path.join(allocator, &.{ source_path, "manifest.toml" });
     defer allocator.free(manifest_path);
     const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
@@ -4542,6 +4545,7 @@ fn runtimeSpecFromStoredArtifact(
 
 fn runtimeInStore(
     allocator: std.mem.Allocator,
+    io: std.Io,
     index: moonstone.store.driver.StoreDriver,
     rt_spec: []const u8,
 ) !bool {
@@ -4571,7 +4575,16 @@ fn runtimeInStore(
         }
         for (candidates) |cand| {
             const candidate_name = if (std.mem.startsWith(u8, cand.name, "moonstone/")) cand.name["moonstone/".len..] else cand.name;
-            if (std.mem.eql(u8, candidate_name, runtime_name) and moonstone.domain.semver.matches(cand.version, runtime_constraint)) return true;
+            if (!std.mem.eql(u8, candidate_name, runtime_name) or !moonstone.domain.semver.matches(cand.version, runtime_constraint)) continue;
+
+            // Registry metadata is indexed before its payload is materialized.
+            // It describes an available runtime, not an installed one; treating
+            // it as installed left tool scopes without their interpreter.
+            std.Io.Dir.cwd().access(io, cand.path, .{}) catch continue;
+            const bin_path = try std.fs.path.join(allocator, &.{ cand.path, "files", "bin" });
+            defer allocator.free(bin_path);
+            std.Io.Dir.cwd().access(io, bin_path, .{}) catch continue;
+            return true;
         }
     }
     return false;
@@ -4728,10 +4741,8 @@ fn ensureIsolatedRuntimes(
             if (pkg.runtime) |r| {
                 if (isResolvableRuntimeSpec(r)) break :blk try allocator.dupe(u8, r);
             }
-            if (pkg.local_path) |lp| {
-                if (try runtimeSpecFromStoredArtifact(allocator, io, lp)) |stored_rt| {
-                    break :blk stored_rt;
-                }
+            if (try runtimeSpecFromStoredArtifact(allocator, io, idx, pkg.artifact_hash)) |stored_rt| {
+                break :blk stored_rt;
             }
             break :blk null;
         };
@@ -4743,7 +4754,7 @@ fn ensureIsolatedRuntimes(
         }
         try seen.put(allocator, try allocator.dupe(u8, rt), {});
 
-        const in_store = try runtimeInStore(allocator, idx, rt);
+        const in_store = try runtimeInStore(allocator, io, idx, rt);
         if (in_store) continue;
 
         try resolveAndMaterializeRuntime(
