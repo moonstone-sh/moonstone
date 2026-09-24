@@ -2482,6 +2482,29 @@ pub const SyncCommand = struct {
             project_root.path,
             &mt,
         );
+        // Cycles are checked before resolution, not during it. Workspace
+        // resolution made `a -> b -> a` far easier to write by accident -- the
+        // registry/link friction that used to obscure it is gone -- and a
+        // cycle is a build-ORDER problem, so it is decided by these
+        // declarations rather than by the solver.
+        if (try moonstone.resolution.sources.workspace.detectCycle(allocator, provider_impl.workspace)) |cycle_found| {
+            var cycle = cycle_found;
+            defer cycle.deinit(allocator);
+            var msg = std.ArrayList(u8).empty;
+            defer msg.deinit(allocator);
+            try msg.appendSlice(allocator, "dependency cycle between workspace members:\n");
+            for (cycle.chain, 0..) |member_name, i| {
+                if (i == 0) {
+                    try msg.appendSlice(allocator, "  ");
+                } else {
+                    try msg.appendSlice(allocator, "    -> ");
+                }
+                try msg.appendSlice(allocator, member_name);
+                try msg.appendSlice(allocator, "\n");
+            }
+            moonstone.diagnostics.error_context.setFmt(allocator, "{s}", .{msg.items});
+            return error.WorkspaceDependencyCycle;
+        }
         profiler.spanCount("sync.provider.plan", profile_span, "targets", targets.items.len);
         defer {
             provider_impl.workspace.deinit(allocator);

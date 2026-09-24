@@ -53,12 +53,18 @@ pub const Member = struct {
     /// checked against.
     version: []const u8,
     kind: manifest.Kind,
+    /// Names of this member's declared dependencies that are THEMSELVES
+    /// members. Captured at load because it is the edge set the cycle check
+    /// walks, and re-reading every manifest to rebuild it would be wasteful.
+    member_deps: [][]const u8,
 
     pub fn deinit(self: *Member, allocator: std.mem.Allocator) void {
         allocator.free(self.package_name);
         allocator.free(self.rel_path);
         allocator.free(self.abs_path);
         allocator.free(self.version);
+        for (self.member_deps) |d| allocator.free(d);
+        allocator.free(self.member_deps);
     }
 };
 
@@ -132,8 +138,21 @@ pub fn load(
 
         if (member_manifest.package.name.len == 0) continue;
 
+        // Every declared dependency name, kept for the cycle check below.
+        // Filtered to actual members after the whole list is known -- a member
+        // declared later in the manifest is still a member.
+        var deps = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (deps.items) |d| allocator.free(d);
+            deps.deinit(allocator);
+        }
+        for (member_manifest.dependencies.items) |dep| {
+            try deps.append(allocator, try allocator.dupe(u8, dep.name));
+        }
+
         keep_abs = true;
         try out.append(allocator, .{
+            .member_deps = try deps.toOwnedSlice(allocator),
             .package_name = try allocator.dupe(u8, member_manifest.package.name),
             .rel_path = try allocator.dupe(u8, orbit_cfg.path),
             .abs_path = abs_dir,
@@ -143,7 +162,128 @@ pub fn load(
         });
     }
 
-    return .{ .items = try out.toOwnedSlice(allocator) };
+    const items = try out.toOwnedSlice(allocator);
+
+    // Keep only edges that point at another member: a dependency on an
+    // external registry package cannot participate in a workspace cycle.
+    for (items) |*m| {
+        var kept: usize = 0;
+        for (m.member_deps) |dep_name| {
+            var is_member = false;
+            for (items) |other| {
+                if (std.mem.eql(u8, other.package_name, dep_name)) {
+                    is_member = true;
+                    break;
+                }
+            }
+            if (is_member) {
+                m.member_deps[kept] = dep_name;
+                kept += 1;
+            } else {
+                allocator.free(dep_name);
+            }
+        }
+        m.member_deps = allocator.remap(m.member_deps, kept) orelse m.member_deps[0..kept];
+    }
+
+    return .{ .items = items };
+}
+
+/// A member-to-member dependency cycle, as a chain ready to print.
+pub const Cycle = struct {
+    /// Member names in traversal order, with the repeated member last, e.g.
+    /// { "hydronium/cli", "hydronium/lab-cli", "hydronium/cli" }.
+    chain: [][]const u8,
+
+    pub fn deinit(self: *Cycle, allocator: std.mem.Allocator) void {
+        allocator.free(self.chain);
+        self.chain = &.{};
+    }
+};
+
+/// Depth-first search for a cycle among members.
+///
+/// WHY THIS IS CHECKED AT ALL, and why here. Workspace resolution made cycles
+/// far easier to create by accident: the registry/link friction that used to
+/// obscure `a -> b -> a` is gone, and a member can now name a sibling with one
+/// ordinary dependency line. This is a STATIC check over declared manifests,
+/// not an instrumented solver traversal -- the provider is a pull interface
+/// driven by pubgrub, which is not a depth-first walk and has no traversal
+/// stack to instrument. Version solving also tolerates cycles perfectly well;
+/// what a cycle actually breaks is build and materialization ORDER, and that
+/// is decided by these declarations, not by the solver.
+///
+/// GRAY SET, not a visited set. A package reached twice by different paths is
+/// an ordinary diamond and entirely valid; only a package already on the
+/// ACTIVE stack is a cycle.
+pub fn detectCycle(allocator: std.mem.Allocator, members: Members) !?Cycle {
+    const n = members.items.len;
+    if (n == 0) return null;
+
+    const State = enum { white, gray, black };
+    const state = try allocator.alloc(State, n);
+    defer allocator.free(state);
+    @memset(state, .white);
+
+    var stack = std.ArrayList([]const u8).empty;
+    defer stack.deinit(allocator);
+
+    const Walker = struct {
+        fn indexOf(ms: Members, name: []const u8) ?usize {
+            for (ms.items, 0..) |m, i| {
+                if (std.mem.eql(u8, m.package_name, name)) return i;
+            }
+            return null;
+        }
+
+        fn visit(
+            alloc: std.mem.Allocator,
+            ms: Members,
+            st: []State,
+            stk: *std.ArrayList([]const u8),
+            i: usize,
+        ) !?[][]const u8 {
+            st[i] = .gray;
+            try stk.append(alloc, ms.items[i].package_name);
+
+            for (ms.items[i].member_deps) |dep_name| {
+                const j = indexOf(ms, dep_name) orelse continue;
+                if (st[j] == .gray) {
+                    // Found it. Report from the first appearance of the
+                    // repeated member so the chain is the cycle itself, not
+                    // the whole path taken to reach it.
+                    var start: usize = 0;
+                    for (stk.items, 0..) |nm, k| {
+                        if (std.mem.eql(u8, nm, dep_name)) {
+                            start = k;
+                            break;
+                        }
+                    }
+                    var chain = std.ArrayList([]const u8).empty;
+                    errdefer chain.deinit(alloc);
+                    for (stk.items[start..]) |nm| try chain.append(alloc, nm);
+                    try chain.append(alloc, dep_name);
+                    return try chain.toOwnedSlice(alloc);
+                }
+                if (st[j] == .white) {
+                    if (try visit(alloc, ms, st, stk, j)) |found| return found;
+                }
+            }
+
+            st[i] = .black;
+            _ = stk.pop();
+            return null;
+        }
+    };
+
+    for (0..n) |i| {
+        if (state[i] != .white) continue;
+        stack.clearRetainingCapacity();
+        if (try Walker.visit(allocator, members, state, &stack, i)) |chain| {
+            return Cycle{ .chain = chain };
+        }
+    }
+    return null;
 }
 
 /// Checks a declared constraint against a member's own manifest version.
@@ -208,6 +348,7 @@ test "find matches on the fully qualified name only" {
             .abs_path = try allocator.dupe(u8, "/tmp/ws/meteorite"),
             .version = try allocator.dupe(u8, "0.1.0"),
             .kind = .lib,
+            .member_deps = try allocator.alloc([]const u8, 0),
         },
     };
     const members = Members{ .items = &items };
@@ -230,6 +371,7 @@ test "constraint is an assertion over the member version" {
         .abs_path = try allocator.dupe(u8, "/tmp/ws/lib"),
         .version = try allocator.dupe(u8, "0.2.0"),
         .kind = .lib,
+        .member_deps = try allocator.alloc([]const u8, 0),
     };
     defer m.deinit(allocator);
 
@@ -248,4 +390,56 @@ test "constraint is an assertion over the member version" {
 
     const err = candidateFor(allocator, m, "^1.0.0");
     try std.testing.expectError(Error.WorkspaceMemberVersionMismatch, err);
+}
+
+test "detectCycle ignores a diamond but catches a real cycle" {
+    const allocator = std.testing.allocator;
+
+    // Diamond: a -> b, a -> c, b -> d, c -> d. Reaching d twice by different
+    // paths is ordinary and must NOT be reported -- this is exactly what a
+    // plain visited-set would get wrong.
+    var d_deps = [_][]const u8{};
+    var b_deps = [_][]const u8{"d"};
+    var c_deps = [_][]const u8{"d"};
+    var a_deps = [_][]const u8{ "b", "c" };
+    var diamond = [_]Member{
+        .{ .package_name = "a", .rel_path = "a", .abs_path = "/a", .version = "1.0.0", .kind = .lib, .member_deps = &a_deps },
+        .{ .package_name = "b", .rel_path = "b", .abs_path = "/b", .version = "1.0.0", .kind = .lib, .member_deps = &b_deps },
+        .{ .package_name = "c", .rel_path = "c", .abs_path = "/c", .version = "1.0.0", .kind = .lib, .member_deps = &c_deps },
+        .{ .package_name = "d", .rel_path = "d", .abs_path = "/d", .version = "1.0.0", .kind = .lib, .member_deps = &d_deps },
+    };
+    var found = try detectCycle(allocator, .{ .items = &diamond });
+    if (found) |*cyc| {
+        defer cyc.deinit(allocator);
+        std.debug.print("unexpected cycle of {d} members\n", .{cyc.chain.len});
+        return error.TestUnexpectedResult;
+    }
+
+    // Real cycle: x -> y -> z -> x, with w hanging off it as a non-member.
+    var x_deps = [_][]const u8{"y"};
+    var y_deps = [_][]const u8{"z"};
+    var z_deps = [_][]const u8{"x"};
+    var cyclic = [_]Member{
+        .{ .package_name = "x", .rel_path = "x", .abs_path = "/x", .version = "1.0.0", .kind = .lib, .member_deps = &x_deps },
+        .{ .package_name = "y", .rel_path = "y", .abs_path = "/y", .version = "1.0.0", .kind = .lib, .member_deps = &y_deps },
+        .{ .package_name = "z", .rel_path = "z", .abs_path = "/z", .version = "1.0.0", .kind = .lib, .member_deps = &z_deps },
+    };
+    var cyc2 = (try detectCycle(allocator, .{ .items = &cyclic })) orelse return error.TestExpectedCycle;
+    defer cyc2.deinit(allocator);
+
+    // The chain is the cycle itself and closes on the member it repeats.
+    try std.testing.expectEqual(@as(usize, 4), cyc2.chain.len);
+    try std.testing.expectEqualStrings(cyc2.chain[0], cyc2.chain[cyc2.chain.len - 1]);
+}
+
+test "detectCycle catches a member depending on itself" {
+    const allocator = std.testing.allocator;
+    var self_deps = [_][]const u8{"solo"};
+    var members = [_]Member{
+        .{ .package_name = "solo", .rel_path = "solo", .abs_path = "/solo", .version = "1.0.0", .kind = .lib, .member_deps = &self_deps },
+    };
+    var cyc = (try detectCycle(allocator, .{ .items = &members })) orelse return error.TestExpectedCycle;
+    defer cyc.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), cyc.chain.len);
+    try std.testing.expectEqualStrings("solo", cyc.chain[0]);
 }
