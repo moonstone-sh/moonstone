@@ -2002,8 +2002,6 @@ pub const SyncCommand = struct {
         };
         defer existing_lock.deinit();
 
-        if (self.locked and !lockedDependenciesMatch(mt.dependencies.items, &existing_lock)) return error.LockfileOutOfSync;
-
         const build_env = try mt.resolveBuildEnv(allocator, env);
         defer {
             for (build_env) |be| {
@@ -2591,6 +2589,7 @@ pub const SyncCommand = struct {
                     return error.LockedTargetIncompatible;
                 },
             }
+            if (!lock_runtime_matches or !lock_deps_match) return error.LockfileOutOfSync;
         }
         if (!self.update and existing_lock.packages.items.len > 0 and (!lock_runtime_matches or !lock_deps_match)) {
             if (!lock_runtime_matches) profiler.mark("sync.lock.replay.skip.runtime_mismatch");
@@ -4083,16 +4082,16 @@ fn lockedDependenciesMatch(
             if (std.mem.eql(u8, r, "link") or std.mem.eql(u8, r, "path") or std.mem.eql(u8, r, "artifact")) continue;
         }
 
-        var found_entry: ?*const moonstone.domain.lockfile.LockEntry = null;
+        var satisfies_constraint = false;
         for (lf.packages.items) |*entry| {
-            if (packageNamesMatch(entry.name, dep_name)) {
-                found_entry = entry;
+            if (!packageNamesMatch(entry.name, dep_name)) continue;
+            const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
+            if (moonstone.domain.semver.matches(entry.version, constraint)) {
+                satisfies_constraint = true;
                 break;
             }
         }
-        const lock_entry = found_entry orelse return false;
-        const constraint = normalizedLockConstraint(if (dep.constraint.len > 0) dep.constraint else "*");
-        if (!moonstone.domain.semver.matches(lock_entry.version, constraint)) return false;
+        if (!satisfies_constraint) return false;
     }
     return true;
 }
