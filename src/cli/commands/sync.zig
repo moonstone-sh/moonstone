@@ -157,6 +157,7 @@ fn projectedArtifactFromPkg(
             .link => "link",
             .path => "path",
             .artifact_hash => "store",
+            .workspace => "workspace",
         });
     }
     const pa_path = if (art_path) |p| try allocator.dupe(u8, p) else null;
@@ -611,6 +612,9 @@ fn queueResolvedPackageInventory(
         .link => "link",
         .path => "path",
         .artifact_hash => "store",
+        // Reported distinctly so a workspace member is visible as such in
+        // task output, rather than masquerading as a path or link dependency.
+        .workspace => "workspace",
     };
     var task_buffer: [512]u8 = undefined;
     const task_id = try task_protocol.formatId(&task_buffer, kind, target, resolver, canon_name, pkg.version);
@@ -3506,6 +3510,7 @@ pub const SyncCommand = struct {
                                 .moonstone_registry => "moonstone",
                                 .link => "link",
                                 .path => "path",
+                                .workspace => "workspace",
                                 .artifact_hash => blk: {
                                     if (existing_lock.find(pkg.name)) |ex_pkg| {
                                         if (ex_pkg.resolver.len > 0 and !std.mem.eql(u8, ex_pkg.resolver, "store")) {
@@ -3525,6 +3530,7 @@ pub const SyncCommand = struct {
                                 .link => |p| try allocator.dupe(u8, p),
                                 .path => |p| try allocator.dupe(u8, p),
                                 .artifact_hash => &.{},
+                                .workspace => |w| try allocator.dupe(u8, w.rel_path),
                             },
                             .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                             .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},
@@ -3649,6 +3655,7 @@ pub const SyncCommand = struct {
                         .link => |p| try allocator.dupe(u8, p),
                         .path => |p| try allocator.dupe(u8, p),
                         .artifact_hash => &.{},
+                        .workspace => |w| try allocator.dupe(u8, w.rel_path),
                     },
                     .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                     .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},

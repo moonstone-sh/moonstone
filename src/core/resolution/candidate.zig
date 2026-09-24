@@ -16,6 +16,14 @@ pub const Origin = union(enum) {
     path: []const u8,
     link: []const u8,
     artifact_hash: []const u8,
+    /// A declared orbit member of the current workspace. `rel_path` is
+    /// workspace-relative and never absolute -- an absolute path in resolved
+    /// state is what makes a checkout mean different things on different
+    /// machines, which is the whole problem this variant removes.
+    workspace: struct {
+        member: []const u8,
+        rel_path: []const u8,
+    },
 
     pub fn deinit(self: Origin, allocator: std.mem.Allocator) void {
         switch (self) {
@@ -31,6 +39,10 @@ pub const Origin = union(enum) {
             .path => |p| allocator.free(p),
             .link => |l| allocator.free(l),
             .artifact_hash => |h| allocator.free(h),
+            .workspace => |w| {
+                allocator.free(w.member);
+                allocator.free(w.rel_path);
+            },
         }
     }
 
@@ -53,6 +65,10 @@ pub const Origin = union(enum) {
             .path => |p| .{ .path = try allocator.dupe(u8, p) },
             .link => |l| .{ .link = try allocator.dupe(u8, l) },
             .artifact_hash => |h| .{ .artifact_hash = try allocator.dupe(u8, h) },
+            .workspace => |w| .{ .workspace = .{
+                .member = try allocator.dupe(u8, w.member),
+                .rel_path = try allocator.dupe(u8, w.rel_path),
+            } },
         };
     }
 };

@@ -862,6 +862,12 @@ pub const add_command = struct {
                         kinds_len += 1;
                     },
                     .artifact_hash => {},
+                    // A workspace member is located by the orbit declaration,
+                    // not by any resolver kind in this list. There is nothing
+                    // to add to the fallback order: if the name still names a
+                    // member at resolve time it resolves locally, and if it
+                    // does not, the ordinary kinds below apply.
+                    .workspace => {},
                 }
             }
 
@@ -1029,6 +1035,7 @@ pub const add_command = struct {
                     .link => "link",
                     .path => "path",
                     .artifact_hash => "store",
+                    .workspace => "workspace",
                 }),
                 .source = if (store_source.len > 0) try allocator.dupe(u8, store_source) else switch (resolved.origin) {
                     .moonstone_registry => if (resolved.source.len > 0) try allocator.dupe(u8, resolved.source) else if (resolved.registry_url) |url| try allocator.dupe(u8, url) else &.{},
@@ -1036,6 +1043,9 @@ pub const add_command = struct {
                     .link => |p| try allocator.dupe(u8, p),
                     .path => |p| try allocator.dupe(u8, p),
                     .artifact_hash => &.{},
+                    // Workspace-RELATIVE, never absolute: the lock must mean
+                    // the same thing in every checkout of this repository.
+                    .workspace => |w| try allocator.dupe(u8, w.rel_path),
                 },
                 .source_kind = if (store_source_kind.len > 0) try allocator.dupe(u8, store_source_kind) else &.{},
                 .source_payload = if (store_source_payload.len > 0) try allocator.dupe(u8, store_source_payload) else &.{},

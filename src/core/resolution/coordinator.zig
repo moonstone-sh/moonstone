@@ -16,6 +16,7 @@ const rocks_resolver = @import("sources/luarocks.zig");
 const path_resolver = @import("sources/path.zig");
 const link_resolver = @import("sources/link.zig");
 const artifact_resolver = @import("sources/artifact_hash.zig");
+const workspace_mod = @import("sources/workspace.zig");
 
 pub const CoordinatorKind = enum {
     moonstone,
@@ -41,6 +42,10 @@ pub const CoordinatorKind = enum {
 pub const Coordinator = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    /// Declared orbit members of the current workspace, if any. Empty for a
+    /// standalone project, which makes every path below behave exactly as it
+    /// did before workspace resolution existed.
+    workspace: workspace_mod.Members = .{ .items = &.{} },
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Coordinator {
         return .{
@@ -58,6 +63,21 @@ pub const Coordinator = struct {
         options: options_mod.ResolveOptions,
         environ_map: *std.process.Environ.Map,
     ) !candidate_mod.Candidate {
+
+        // 0. A declared workspace member wins over everything else.
+        //
+        // Before the store, before links, before any registry: inside a
+        // workspace the orbit declaration IS the location, and a member must
+        // never be shadowed by a stale copy that happens to sit in the store
+        // or by a published artifact of the same name. The constraint is
+        // checked against the member's own manifest and a mismatch is fatal --
+        // it does NOT fall through to the registry, because a workspace whose
+        // members disagree with their declared constraints is internally
+        // inconsistent, and quietly substituting a published copy would make
+        // one machine's checkout mean something different from another's.
+        if (self.workspace.find(pkg_name)) |member| {
+            return workspace_mod.candidateFor(self.allocator, member, constraint);
+        }
 
         // 1. Try local store first
         if (try self.tryResolveFromStore(pkg_name, constraint, .moonstone, index, options, registries)) |cand| {
