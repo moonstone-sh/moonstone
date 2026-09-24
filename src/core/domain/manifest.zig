@@ -2163,7 +2163,10 @@ pub const RegistryConfig = struct {
 };
 
 fn isReservedRegistryName(name: []const u8) bool {
-    const reserved = [_][]const u8{ "moonstone", "rocks", "default", "path", "link", "artifact" };
+    // `moonstone` and `rocks` are ordinary, declarable registry identities.
+    // `path`, `link`, and `artifact` remain dependency source schemes, not
+    // registry transports; `default` has no stable project-level identity.
+    const reserved = [_][]const u8{ "default", "path", "link", "artifact" };
     for (reserved) |value| if (std.mem.eql(u8, name, value)) return true;
     return false;
 }
@@ -3189,9 +3192,9 @@ test "MoonstoneToml rejects dependency resolver fields" {
     try std.testing.expectError(error.DependencyResolverSyntaxUnsupported, MoonstoneToml.parse(allocator, toml_text));
 }
 
-test "MoonstoneToml rejects reserved registry aliases" {
+test "MoonstoneToml permits declared remote registries and rejects source schemes" {
     const allocator = std.testing.allocator;
-    const aliases = [_][]const u8{ "moonstone", "rocks", "default", "path", "link", "artifact" };
+    const aliases = [_][]const u8{ "default", "path", "link", "artifact" };
     for (aliases) |alias| {
         const toml_text = try std.fmt.allocPrint(allocator,
             \\[package]
@@ -3207,6 +3210,23 @@ test "MoonstoneToml rejects reserved registry aliases" {
         defer allocator.free(toml_text);
 
         try std.testing.expectError(error.ReservedRegistryName, MoonstoneToml.parse(allocator, toml_text));
+    }
+
+    for ([_][]const u8{ "moonstone", "rocks" }) |alias| {
+        const toml_text = try std.fmt.allocPrint(allocator,
+            \\[package]
+            \\name = "declared-registry"
+            \\version = "0.1.0"
+            \\kind = "script"
+            \\
+            \\[[registries]]
+            \\name = "{s}"
+            \\resolver = "moonstone"
+            \\path = "./registry"
+        , .{alias});
+        defer allocator.free(toml_text);
+        var parsed = try MoonstoneToml.parse(allocator, toml_text);
+        parsed.deinit(allocator);
     }
 }
 

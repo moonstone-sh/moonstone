@@ -495,6 +495,15 @@ pub const init_command = struct {
             .abi = try allocator.dupe(u8, runtime_abi),
         };
 
+        // A new project records the official supply-chain transport instead
+        // of depending on process-global configuration. Other registries are
+        // added only when a dependency actually uses them; `path:` and
+        // `link:` remain local dependency schemes, not registries.
+        try pkg.registries.put(allocator, try allocator.dupe(u8, "moonstone"), .{
+            .resolver = try allocator.dupe(u8, "moonstone"),
+            .url = try allocator.dupe(u8, "https://registry.moonstone.sh/registry/v0"),
+        });
+
         if (std.mem.eql(u8, template, "script")) {
             try setScript(&pkg, allocator, "dev", "lua ./src/main.lua \"$@\"");
         } else if (std.mem.eql(u8, template, "lua-zig")) {

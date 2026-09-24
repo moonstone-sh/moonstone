@@ -130,15 +130,26 @@ pub fn resolve(
         }
     }
 
-    // ── 3. Add the immutable built-in Moonstone identity ─────────────────
-    const default_url = environ_map.get("MOONSTONE_REGISTRY_PATH") orelse @import("build_options").default_registry_url;
-    try result.append(allocator, .{
-        .name = try allocator.dupe(u8, "moonstone"),
-        .resolver = try allocator.dupe(u8, "moonstone"),
-        .url = try allocator.dupe(u8, default_url),
-        .token = null,
-        .priority = 0,
-    });
+    // ── 3. Compatibility fallback for the official registry ─────────────
+    // New projects declare `moonstone` explicitly. Retain the fallback only
+    // for legacy manifests which do not, so a declared URL is authoritative.
+    var has_declared_moonstone = false;
+    for (result.items) |entry| {
+        if (std.mem.eql(u8, entry.name, "moonstone")) {
+            has_declared_moonstone = true;
+            break;
+        }
+    }
+    if (!has_declared_moonstone) {
+        const default_url = environ_map.get("MOONSTONE_REGISTRY_PATH") orelse @import("build_options").default_registry_url;
+        try result.append(allocator, .{
+            .name = try allocator.dupe(u8, "moonstone"),
+            .resolver = try allocator.dupe(u8, "moonstone"),
+            .url = try allocator.dupe(u8, default_url),
+            .token = null,
+            .priority = 0,
+        });
+    }
     if (do_trace) {
         trace("Final registry list ({d} entries):", .{result.items.len});
         for (result.items) |r| {

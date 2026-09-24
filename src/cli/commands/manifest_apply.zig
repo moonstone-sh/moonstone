@@ -230,7 +230,7 @@ fn applyOperation(allocator: std.mem.Allocator, manifest: *moonstone.domain.mani
 }
 
 fn isReservedRegistryName(name: []const u8) bool {
-    const reserved = [_][]const u8{ "moonstone", "rocks", "default", "path", "link", "artifact" };
+    const reserved = [_][]const u8{ "default", "path", "link", "artifact" };
     for (reserved) |value| if (std.mem.eql(u8, name, value)) return true;
     return false;
 }
