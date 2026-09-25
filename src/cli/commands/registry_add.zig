@@ -25,7 +25,14 @@ pub const RegistryAddCommand = struct {
             \\Flags:
             \\  --name <name>  Registry alias: lowercase letters, digits, internal hyphens
             \\  --url <uri>    Registry URL (http(s)://...) or local file path
-            \\  --default     Set as the default registry for resolution
+            \\  --default      Give this registry the highest priority in the
+            \\                 project (one more than the current maximum
+            \\                 declared `priority`, or 1 if none is declared),
+            \\                 so an unprefixed package spec or dependency
+            \\                 consults it before every other registry of the
+            \\                 same resolver kind. Priority is otherwise 0;
+            \\                 edit `priority` in moonstone.toml directly for
+            \\                 any other value.
             \\
         , .{});
     }
@@ -57,10 +64,28 @@ pub const RegistryAddCommand = struct {
         };
         if (std.mem.startsWith(u8, r_uri, "http")) {
             config.url = try allocator.dupe(u8, r_uri);
+        } else if (std.mem.startsWith(u8, r_uri, "file://")) {
+            // Strip the full "file://" scheme+authority separator (7 chars),
+            // not just "file:" (5 chars): a "file:///abs/path" URI's path
+            // component is "/abs/path", not "//abs/path". Stripping only
+            // "file:" left the two slashes of the (empty) authority
+            // attached to the path, which registry_resolver.zig's
+            // `"file://{s}"` reconstruction then duplicated into
+            // "file:////abs/path" the next time this registry was resolved.
+            config.path = try allocator.dupe(u8, r_uri[7..]);
         } else if (std.mem.startsWith(u8, r_uri, "file:")) {
             config.path = try allocator.dupe(u8, r_uri[5..]);
         } else {
             config.path = try allocator.dupe(u8, r_uri);
+        }
+
+        if (self.default) {
+            var max_priority: i32 = 0;
+            var it = mt.registries.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.priority > max_priority) max_priority = entry.value_ptr.priority;
+            }
+            config.priority = max_priority + 1;
         }
 
         try mt.registries.put(allocator, try allocator.dupe(u8, r_name), config);

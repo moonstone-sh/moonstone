@@ -41,6 +41,10 @@ pub const RegistryAddCommand = struct {
         };
         if (std.mem.startsWith(u8, self.uri, "http")) {
             config.url = try allocator.dupe(u8, self.uri);
+        } else if (std.mem.startsWith(u8, self.uri, "file://")) {
+            // See registry_add.zig's RegistryAddCommand for why "file://"
+            // (7 chars) must be stripped whole, not just "file:" (5 chars).
+            config.path = try allocator.dupe(u8, self.uri[7..]);
         } else if (std.mem.startsWith(u8, self.uri, "file:")) {
             config.path = try allocator.dupe(u8, self.uri[5..]);
         } else {
