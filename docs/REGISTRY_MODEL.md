@@ -784,9 +784,13 @@ When the user runs `moon add inspect` or `moon sync`:
 
 ```
 1. Parse package spec → detect a registry identity or local-source prefix.
-2. `registry:package` selects exactly that registry identity; a bare package
-   selects the built-in `moonstone` identity. `path:`, `link:`, and `artifact:`
-   are local-source forms, not registries.
+2. `registry:package` selects exactly that registry identity. A bare package
+   (no `name:` prefix, and no `registry = "..."` field on a `[[dependencies]]`
+   entry) selects EVERY declared registry of the `moonstone` resolver kind,
+   walked in descending `priority` order (ties broken by declaration order in
+   `[[registries]]`; see "Registry Priority" below) -- not a registry
+   literally named `moonstone`. `path:`, `link:`, and `artifact:` are
+   local-source forms, not registries.
 3. Feed every direct dependency, including `path:`, `link:`, and `artifact:`,
    into PubGrub. Dependencies discovered from registry descriptors, linked
    manifests, and complete store manifests become constraints in that same
@@ -828,15 +832,64 @@ directly instead of copying it into the CAS.
 
 | Package form | Meaning | Lockfile fields |
 |--------------|---------|-----------------|
-| `<name>` | built-in `moonstone` identity | `registry = "moonstone"`, `resolver = "moonstone"` |
-| `moonstone:<name>` | built-in Moonstone registry | `registry = "moonstone"`, `resolver = "moonstone"` |
+| `<name>` | any declared `moonstone`-kind registry, by priority (first with a satisfying version wins) | `registry = "<whichever registry actually served it>"`, `resolver = "moonstone"` |
+| `moonstone:<name>` | exactly the registry declared with name `moonstone` | `registry = "moonstone"`, `resolver = "moonstone"` |
 | `rocks:<name>` | built-in LuaRocks registry | `registry = "rocks"`, `resolver = "rocks"` |
 | `<custom>:<name>` | declared custom registry identity | its configured identity and resolver |
 | `path:`, `link:`, `artifact:` | local-source resolver forms | local resolver; no registry identity |
 
 The lockfile records both `registry` (the selected identity) and `resolver`
 (the implementation that produced the entry), alongside the canonical source,
-so that `moon sync` can replay resolution deterministically.
+so that `moon sync` can replay resolution deterministically. `moon sync
+--locked` always replays the exact `registry` recorded in the lock -- it
+never re-walks priority order, so adding, removing, or reprioritizing
+registries never changes what an existing lock resolves to.
+
+### Registry Priority
+
+Every registry declared in `moonstone.toml`'s `[[registries]]` has a
+`priority` (default `0`). A bare package spec, and a `[[dependencies]]` entry
+with no `registry` field, resolve by walking every registry of the relevant
+resolver kind (`moonstone`, unless a `resolver` field says otherwise) from
+highest priority to lowest, using the first one that has a version
+satisfying the constraint. Two registries declared at the same priority are
+walked in the order they appear in `[[registries]]` -- the earlier
+declaration wins, deterministically (not by name, and not by iteration order
+of some internal map).
+
+```toml
+[[registries]]
+name = "internal"
+resolver = "moonstone"
+url = "https://registry.internal.example/registry/v0"
+priority = 100
+
+[[registries]]
+name = "moonstone"
+resolver = "moonstone"
+url = "https://registry.moonstone.sh/registry/v0"
+priority = 0
+```
+
+With this configuration, `moon add some/package` (no prefix) tries
+`internal` first; only if `internal` has no satisfying version does it fall
+through to `moonstone`. `moon add moonstone:some/package` bypasses priority
+entirely and asks the `moonstone`-named registry specifically.
+
+**Security note: priority enables one registry to shadow another by
+design.** If both `internal` and `moonstone` publish a package under the
+same name, `internal` wins for every bare/unprefixed reference to it,
+including transitive dependencies pulled in from other packages' own
+descriptors -- silently, and without the shadowed package ever being
+consulted. This is intentional: `priority` is an explicit value the project
+author writes into `moonstone.toml`, not an accident of network order or
+map iteration. Anyone who can edit a project's `[[registries]]` (or ships a
+`moonstone.toml` a victim will `moon sync`) controls which registry serves
+every unprefixed dependency in that project. Prefer the explicit
+`registry:package` form (or a `registry = "..."` field on
+`[[dependencies]]`) for anything security-sensitive, and audit
+`[[registries]]` priorities with the same scrutiny as any other supply-chain
+configuration (e.g. an npm registry override or a pip index URL).
 
 ---
 
