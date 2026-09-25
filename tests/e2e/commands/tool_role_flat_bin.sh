@@ -34,6 +34,11 @@ mkdir -p "$WORKDIR/app"
 # synthetic-isolated-bin itself declares, then add it as a role="tool"
 # dependency.
 (cd "$WORKDIR/app" && moon init . --name my-app --no-git --no-sync)
+# `moon init` declares the real `moonstone` registry (registries became
+# declarative); point it at the local synthetic sandbox so `add` below
+# resolves the synthetic-only fixture package instead of silently finding
+# nothing on the real registry.
+(cd "$WORKDIR/app" && moon registry add moonstone "${MOONSTONE_REGISTRY_PATH}")
 (cd "$WORKDIR/app" && moon interpreter set luajit@2.1.1783773675 --no-sync)
 (cd "$WORKDIR/app" && moon add synthetic-isolated-bin --tool)
 

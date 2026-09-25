@@ -50,6 +50,13 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 # mismatched instead of matched, so isolation actually triggers.
 mkdir -p "${WORKDIR}/app-store"
 (cd "${WORKDIR}/app-store" && "${MOON_BIN}" init . --name my-app --no-git --no-sync >/dev/null)
+# `moon init` declares the real `moonstone` registry (registries became
+# declarative; see foreign_target_pure_lua_rocks.sh's own `registry add`
+# calls for the same fix applied to the LuaRocks foreign-registry scenario).
+# Point it at the local synthetic sandbox so `add` below resolves the
+# synthetic-only fixture package instead of silently finding nothing on the
+# real registry.
+(cd "${WORKDIR}/app-store" && "${MOON_BIN}" registry add moonstone "${MOONSTONE_REGISTRY_PATH}" >/dev/null)
 (cd "${WORKDIR}/app-store" && "${MOON_BIN}" interpreter set lua@5.4.7 --no-sync >/dev/null)
 (cd "${WORKDIR}/app-store" && "${MOON_BIN}" add synthetic-isolated-bin --tool >/dev/null)
 
