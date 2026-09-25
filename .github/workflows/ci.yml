@@ -148,6 +148,9 @@ jobs:
       - name: Verify a tool's own transitive runtime dependencies are reachable
         run: tests/e2e/commands/tool_transitive_runtime_deps.sh
 
+      - name: Verify registry priority resolution (unprefixed specs, transitive deps, declaration-order ties, locked replay)
+        run: tests/e2e/commands/registry_priority_resolution.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
