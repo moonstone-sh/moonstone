@@ -60,8 +60,8 @@ pub const OrbitAddCommand = struct {
     }
 
     pub fn run(self: OrbitAddCommand, ctx: *router.Context) !void {
-        const orbit_name = self.name orelse return missingFlag(ctx, "--name");
-        const requested_path = self.path orelse return missingFlag(ctx, "--path");
+        const orbit_name = self.name orelse return missingFlag(ctx, "name");
+        const requested_path = self.path orelse return missingFlag(ctx, "path");
         if (orbit_name.len == 0) return fail(ctx, "Orbit name cannot be empty.");
 
         const project_root = try moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".");

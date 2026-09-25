@@ -135,6 +135,12 @@ pub const CliErrorSet = error{
     OfflineTransitiveArtifactMissing,
 } || anyerror;
 
+/// Returns the prefix a flag was actually typed with, so error messages echo
+/// `-c` back as `-c` instead of always assuming the long `--` form.
+fn flagPrefix(is_long: bool) []const u8 {
+    return if (is_long) "--" else "-";
+}
+
 fn formatMaybeResolverPrefix(resolver: ?[]const u8, name: []const u8, writer: anytype) !void {
     if (resolver) |r| {
         try writer.print("{s}:{s}", .{ r, name });
@@ -154,10 +160,16 @@ pub const CliErrorDetail = union(enum) {
     },
     missing_argument: struct {
         flag: []const u8,
+        /// Whether `flag` was spelled with `--name` (true) or `-n` (false),
+        /// so it's echoed back with the same prefix instead of always `--`.
+        is_long: bool = true,
     },
     unknown_flag: struct {
         flag: []const u8,
         command: []const u8,
+        /// Whether `flag` was spelled with `--name` (true) or `-n` (false),
+        /// so it's echoed back with the same prefix instead of always `--`.
+        is_long: bool = true,
     },
     unknown_command: struct {
         command: []const u8,
@@ -189,6 +201,10 @@ pub const CliErrorDetail = union(enum) {
     },
     missing_dashdash: struct {
         command: []const u8,
+        /// A corrected invocation built from the actual argv, with '--'
+        /// inserted right before the first token that needed it, e.g.
+        /// `moon exec -- sh -c 'echo ok'`.
+        suggestion: []const u8,
     },
 
     pub fn deinit(self: *CliErrorDetail, allocator: std.mem.Allocator) void {
@@ -220,7 +236,10 @@ pub const CliErrorDetail = union(enum) {
             .external_dependency_paths => |paths| paths.deinit(allocator),
             .script_not_found => |snf| allocator.free(snf.name),
             .orbit_not_found => |onf| allocator.free(onf.orbit),
-            .missing_dashdash => |md| allocator.free(md.command),
+            .missing_dashdash => |md| {
+                allocator.free(md.command);
+                allocator.free(md.suggestion);
+            },
         }
     }
 };
@@ -288,8 +307,8 @@ pub fn reportError(
             switch (d) {
                 .hash_mismatch => |hm| try emitter.fail(io, about, value, .{ .expected = hm.expected, .got = hm.got }),
                 .materializer_failed => |mf| try emitter.fail(io, about, value, .{ .exit_code = mf.exit_code, .error_detail = mf.stderr, .recovery = recoveryHint(err) }),
-                .missing_argument => |ma| try emitter.fail(io, about, value, .{ .flag = ma.flag }),
-                .unknown_flag => |uf| try emitter.fail(io, about, value, .{ .flag = uf.flag, .command = uf.command }),
+                .missing_argument => |ma| try emitter.fail(io, about, value, .{ .flag = ma.flag, .is_long = ma.is_long }),
+                .unknown_flag => |uf| try emitter.fail(io, about, value, .{ .flag = uf.flag, .command = uf.command, .is_long = uf.is_long }),
                 .unknown_command => |uc| try emitter.fail(io, about, value, .{ .command = uc.command }),
                 .message => |m| try emitter.fail(io, about, value, .{ .error_detail = m.msg }),
                 .offline_transitive_missing => |otm| try emitter.fail(io, about, value, .{
@@ -321,7 +340,7 @@ pub fn reportError(
                 }),
                 .script_not_found => |snf| try emitter.fail(io, about, value, .{ .script = snf.name, .recovery = recoveryHint(err) }),
                 .orbit_not_found => |onf| try emitter.fail(io, about, value, .{ .orbit = onf.orbit, .recovery = recoveryHint(err) }),
-                .missing_dashdash => |md| try emitter.fail(io, about, value, .{ .command = md.command, .recovery = recoveryHint(err) }),
+                .missing_dashdash => |md| try emitter.fail(io, about, value, .{ .command = md.command, .suggestion = md.suggestion, .recovery = recoveryHint(err) }),
             }
         } else if (contextual_detail) |msg| {
             try emitter.fail(io, about, value, .{ .error_name = err_name, .error_detail = msg });
@@ -357,8 +376,8 @@ pub fn reportError(
                     try stdout.print("Error: Moonstone could not materialize {s} (exit code {d}).\n", .{ about, mf.exit_code });
                     try stdout.print("Details:\n{s}\n", .{mf.stderr});
                 },
-                .missing_argument => |ma| try stdout.print("Error: missing argument for flag --{s}\n", .{ma.flag}),
-                .unknown_flag => |uf| try stdout.print("Error: unknown flag --{s} for command '{s}'\n", .{ uf.flag, uf.command }),
+                .missing_argument => |ma| try stdout.print("Error: missing argument for flag {s}{s}\n", .{ flagPrefix(ma.is_long), ma.flag }),
+                .unknown_flag => |uf| try stdout.print("Error: unknown flag {s}{s} for command '{s}'\n", .{ flagPrefix(uf.is_long), uf.flag, uf.command }),
                 .unknown_command => |uc| try stdout.print("Error: unknown command '{s}'\n", .{uc.command}),
                 .message => |m| try stdout.print("Error: {s}\n", .{m.msg}),
                 .offline_transitive_missing => |otm| {
@@ -417,8 +436,8 @@ pub fn reportError(
                 },
                 .missing_dashdash => |md| {
                     try stdout.print(
-                        "Error: '{s}' requires a mandatory '--' separator before the command it runs. Nothing before '--' is ever passed to the child process, and Moonstone cannot tell where its own options end without it.\n",
-                        .{md.command},
+                        "Error: '{s}' requires a mandatory '--' separator before the command it runs. Nothing before '--' is ever passed to the child process, and Moonstone cannot tell where its own options end without it.\nTry: {s}\n",
+                        .{ md.command, md.suggestion },
                     );
                 },
             }

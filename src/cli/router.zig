@@ -80,6 +80,12 @@ pub const CommandNode = struct {
                     var i: usize = 0;
                     var stop_parsing_flags = false;
                     var saw_dashdash = false;
+                    // Index (within `args`) of the first token collected as a
+                    // positional while `!saw_dashdash`. Once set, any further
+                    // token that looks like a flag is almost certainly meant
+                    // for the wrapped command (e.g. `-c` in `sh -c '...'`),
+                    // not for Moonstone itself.
+                    var first_positional_index: ?usize = null;
                     const requires_dashdash: bool = comptime @hasDecl(CmdType, "requires_dashdash") and CmdType.requires_dashdash;
                     while (i < args.len) : (i += 1) {
                         const arg = args[i];
@@ -125,7 +131,7 @@ pub const CommandNode = struct {
                                             i += 1;
                                             if (i >= args.len) {
                                                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                                                ctx.error_detail = .{ .missing_argument = .{ .flag = try ctx.allocator.dupe(u8, flag_name) } };
+                                                ctx.error_detail = .{ .missing_argument = .{ .flag = try ctx.allocator.dupe(u8, flag_name), .is_long = true } };
                                                 return reportAndStop(args, ctx, cmd, error.MissingArgument);
                                             }
                                             @field(cmd, field.name) = args[i];
@@ -134,11 +140,22 @@ pub const CommandNode = struct {
                                 }
                             }
                             if (!matched) {
+                                if (requires_dashdash and first_positional_index != null) {
+                                    const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
+                                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                                    const suggestion = try buildMissingDashDashSuggestion(ctx.allocator, ctx, args, first_positional_index.?);
+                                    ctx.error_detail = .{ .missing_dashdash = .{
+                                        .command = try ctx.allocator.dupe(u8, cmd_name),
+                                        .suggestion = suggestion,
+                                    } };
+                                    return reportAndStop(args, ctx, cmd, error.MissingDashDash);
+                                }
                                 const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
                                 ctx.error_detail = .{ .unknown_flag = .{
                                     .flag = try ctx.allocator.dupe(u8, flag_name),
                                     .command = try ctx.allocator.dupe(u8, cmd_name),
+                                    .is_long = true,
                                 } };
                                 return reportAndStop(args, ctx, cmd, error.UnknownFlag);
                             }
@@ -156,7 +173,7 @@ pub const CommandNode = struct {
                                             i += 1;
                                             if (i >= args.len) {
                                                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                                                ctx.error_detail = .{ .missing_argument = .{ .flag = try ctx.allocator.dupe(u8, short_flag) } };
+                                                ctx.error_detail = .{ .missing_argument = .{ .flag = try ctx.allocator.dupe(u8, short_flag), .is_long = false } };
                                                 return reportAndStop(args, ctx, cmd, error.MissingArgument);
                                             }
                                             @field(cmd, field.name) = args[i];
@@ -165,15 +182,29 @@ pub const CommandNode = struct {
                                 }
                             }
                             if (!matched) {
+                                if (requires_dashdash and first_positional_index != null) {
+                                    const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
+                                    if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
+                                    const suggestion = try buildMissingDashDashSuggestion(ctx.allocator, ctx, args, first_positional_index.?);
+                                    ctx.error_detail = .{ .missing_dashdash = .{
+                                        .command = try ctx.allocator.dupe(u8, cmd_name),
+                                        .suggestion = suggestion,
+                                    } };
+                                    return reportAndStop(args, ctx, cmd, error.MissingDashDash);
+                                }
                                 const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                                 if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
                                 ctx.error_detail = .{ .unknown_flag = .{
                                     .flag = try ctx.allocator.dupe(u8, short_flag),
                                     .command = try ctx.allocator.dupe(u8, cmd_name),
+                                    .is_long = false,
                                 } };
                                 return reportAndStop(args, ctx, cmd, error.UnknownFlag);
                             }
                         } else {
+                            if (requires_dashdash and !stop_parsing_flags and first_positional_index == null) {
+                                first_positional_index = i;
+                            }
                             try positionals.append(ctx.allocator, arg);
                         }
                     }
@@ -181,7 +212,11 @@ pub const CommandNode = struct {
                     if (requires_dashdash and positionals.items.len > 0 and !saw_dashdash) {
                         const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                         if (ctx.error_detail) |*old| old.deinit(ctx.allocator);
-                        ctx.error_detail = .{ .missing_dashdash = .{ .command = try ctx.allocator.dupe(u8, cmd_name) } };
+                        const suggestion = try buildMissingDashDashSuggestion(ctx.allocator, ctx, args, first_positional_index.?);
+                        ctx.error_detail = .{ .missing_dashdash = .{
+                            .command = try ctx.allocator.dupe(u8, cmd_name),
+                            .suggestion = suggestion,
+                        } };
                         return reportAndStop(args, ctx, cmd, error.MissingDashDash);
                     }
 
@@ -230,6 +265,85 @@ pub const CommandNode = struct {
         };
     }
 };
+
+fn isShellSafeArgChar(c: u8) bool {
+    return switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '-', '_', '.', '/', ':', '=', ',', '+', '@' => true,
+        else => false,
+    };
+}
+
+/// Appends `arg` to `out`, single-quoting it (shell-style) when it contains
+/// anything a shell would otherwise treat specially. Kept intentionally
+/// simple: this only has to produce a sensible, copy-pasteable suggestion,
+/// not handle every shell-quoting edge case.
+fn appendQuotedArg(allocator: std.mem.Allocator, out: *std.ArrayList(u8), arg: []const u8) !void {
+    var needs_quote = arg.len == 0;
+    for (arg) |c| {
+        if (!isShellSafeArgChar(c)) needs_quote = true;
+    }
+    if (!needs_quote) {
+        try out.appendSlice(allocator, arg);
+        return;
+    }
+    try out.append(allocator, '\'');
+    for (arg) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "'\\''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    try out.append(allocator, '\'');
+}
+
+/// Builds a corrected invocation for a `requires_dashdash` command that was
+/// called without its mandatory '--', e.g. `moon exec -- sh -c 'echo ok'`.
+/// `leaf_args` is exactly what this leaf command's own parse loop received
+/// (i.e. after `moon` and any parent group names were already consumed by
+/// dispatch); `offending_index` is the index within it of the first token
+/// that was collected as a positional before any '--' was seen. Inserting
+/// '--' there is always a valid fix regardless of how many such positionals
+/// a given command allows before the wrapped command itself (e.g. the orbit
+/// selector in `moon orbit exec <orbit> -- <command>`), because the router
+/// only ever tries to flag-parse tokens before '--' — a plain positional
+/// like an orbit name parses identically whether '--' precedes or follows
+/// it.
+fn buildMissingDashDashSuggestion(
+    allocator: std.mem.Allocator,
+    ctx: *Context,
+    leaf_args: []const []const u8,
+    offending_index: usize,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "moon");
+
+    // ctx.all_args is [program, ...subcommand path..., ...leaf_args]; the
+    // subcommand path (e.g. "exec" or "orbit exec") is whatever sits
+    // between the program name and leaf_args.
+    if (ctx.all_args.len >= leaf_args.len + 1) {
+        for (ctx.all_args[1 .. ctx.all_args.len - leaf_args.len]) |part| {
+            try out.append(allocator, ' ');
+            try out.appendSlice(allocator, part);
+        }
+    }
+
+    for (leaf_args[0..offending_index]) |arg| {
+        try out.append(allocator, ' ');
+        try appendQuotedArg(allocator, &out, arg);
+    }
+
+    try out.appendSlice(allocator, " --");
+
+    for (leaf_args[offending_index..]) |arg| {
+        try out.append(allocator, ' ');
+        try appendQuotedArg(allocator, &out, arg);
+    }
+
+    return out.toOwnedSlice(allocator);
+}
 
 pub fn dispatch(root: CommandNode, args: []const []const u8, ctx: *Context) anyerror!void {
     if (args.len == 0 or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
@@ -351,4 +465,194 @@ pub fn complete(root: *const CommandNode, args: []const []const u8, ctx: *Contex
     }
 
     return &.{};
+}
+
+const testing = std.testing;
+
+/// Minimal stand-in for `exec`'s shape: a `requires_dashdash` leaf with a
+/// couple of flags and a `positionals` field, but a no-op `run` so tests can
+/// exercise the router's own parsing/diagnostics without touching a real
+/// project or process.
+const TestExecLikeCommand = struct {
+    pub const name = "exec";
+    pub const requires_dashdash = true;
+
+    positionals: []const []const u8 = &.{},
+    dev: bool = false,
+    prod: bool = false,
+    interpreter: ?[]const u8 = null,
+
+    pub fn printHelp(stdout: *std.Io.Writer) !void {
+        try stdout.print("usage: test-exec\n", .{});
+    }
+
+    pub fn run(self: @This(), ctx: *Context) !void {
+        _ = self;
+        _ = ctx;
+    }
+};
+
+fn testContext(allocator: std.mem.Allocator, stdout: *std.Io.Writer, env_map: *std.process.Environ.Map, all_args: []const []const u8) Context {
+    return .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .stdout = stdout,
+        .stderr = stdout,
+        .env = env_map,
+        .all_args = all_args,
+    };
+}
+
+test "requires_dashdash: a positional followed by a flag-like token reports missing '--' with a corrected suggestion, not unknown flag" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "sh", "-c", "echo ok" };
+    const all_args = [_][]const u8{ "moon", "exec", "sh", "-c", "echo ok" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const node = CommandNode.from(TestExecLikeCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
+    try testing.expectEqualStrings("exec", detail.missing_dashdash.command);
+    try testing.expectEqualStrings("moon exec -- sh -c 'echo ok'", detail.missing_dashdash.suggestion);
+    try testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Try: moon exec -- sh -c 'echo ok'") != null);
+}
+
+test "requires_dashdash: a flagless command with no '--' at all still reports missing '--' with a suggestion" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "luajit", "x.lua" };
+    const all_args = [_][]const u8{ "moon", "exec", "luajit", "x.lua" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const node = CommandNode.from(TestExecLikeCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
+    try testing.expectEqualStrings("moon exec -- luajit x.lua", detail.missing_dashdash.suggestion);
+}
+
+test "requires_dashdash: moonstone's own flags before '--' still parse normally" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "--dev", "--", "sh", "-c", "x" };
+    const all_args = [_][]const u8{ "moon", "exec", "--dev", "--", "sh", "-c", "x" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const node = CommandNode.from(TestExecLikeCommand);
+    try node.run_fn.?(leaf_args[0..], &ctx);
+    try testing.expect(ctx.error_detail == null);
+}
+
+test "requires_dashdash: an unknown long flag before any positional still reports unknown flag" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "--bogus", "--", "x" };
+    const all_args = [_][]const u8{ "moon", "exec", "--bogus", "--", "x" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const node = CommandNode.from(TestExecLikeCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .unknown_flag);
+    try testing.expectEqualStrings("bogus", detail.unknown_flag.flag);
+    try testing.expect(detail.unknown_flag.is_long);
+    try testing.expect(std.mem.indexOf(u8, stdout_writer.buffered(), "Error: unknown flag --bogus for command 'exec'") != null);
+}
+
+test "an unknown short flag is echoed back with a single dash, not '--'" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{"-x"};
+    const all_args = [_][]const u8{ "moon", "exec", "-x" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const node = CommandNode.from(TestExecLikeCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .unknown_flag);
+    try testing.expectEqualStrings("x", detail.unknown_flag.flag);
+    try testing.expect(!detail.unknown_flag.is_long);
+    const printed = stdout_writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, printed, "Error: unknown flag -x for command 'exec'") != null);
+    try testing.expect(std.mem.indexOf(u8, printed, "--x") == null);
+}
+
+test "orbit exec: a wrapped command's flag before '--' suggests inserting '--' before the orbit selector" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "child", "lua", "-e", "print(1)" };
+    const all_args = [_][]const u8{ "moon", "orbit", "exec", "child", "lua", "-e", "print(1)" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const OrbitExecCommand = @import("commands/orbit_exec.zig").OrbitExecCommand;
+    const node = CommandNode.from(OrbitExecCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
+    try testing.expectEqualStrings("moon orbit exec -- child lua -e 'print(1)'", detail.missing_dashdash.suggestion);
+}
+
+test "orbit run: a wrapped script's flag before '--' suggests inserting '--' before the orbit selector" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var stdout_bytes: [1024]u8 = undefined;
+    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    const leaf_args = [_][]const u8{ "child", "hello", "-e", "x" };
+    const all_args = [_][]const u8{ "moon", "orbit", "run", "child", "hello", "-e", "x" };
+    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
+
+    const OrbitRunCommand = @import("commands/orbit_run.zig").OrbitRunCommand;
+    const node = CommandNode.from(OrbitRunCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
+
+    const detail = ctx.error_detail.?;
+    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
+    try testing.expectEqualStrings("moon orbit run -- child hello -e x", detail.missing_dashdash.suggestion);
 }
