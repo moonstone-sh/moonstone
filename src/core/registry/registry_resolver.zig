@@ -43,9 +43,16 @@ fn trace(comptime fmt: []const u8, args: anytype) void {
 }
 
 /// Read project registries from moonstone.toml and return an ordered list of
-/// registry URLs sorted by priority (highest first). Global config registries
-/// are intentionally not resolution fallbacks: projects declare their exact
-/// transports for reproducible installs.
+/// registry URLs sorted by priority (highest first). Ties (two registries
+/// declared at the same priority) resolve by declaration order in
+/// moonstone.toml's `[[registries]]` array -- the earlier entry wins. This
+/// order is what an unprefixed package spec (no `name:` prefix and no
+/// `registry = "..."` field) walks when it consults "every registry of this
+/// resolver kind": the first registry in this list that has a satisfying
+/// version wins, so a higher-priority registry can deliberately shadow a
+/// package that also exists in a lower-priority one. Global config
+/// registries are intentionally not resolution fallbacks: projects declare
+/// their exact transports for reproducible installs.
 ///
 /// Caller owns the returned memory and must call `deinit` on each entry
 /// and `allocator.free` on the slice itself.
@@ -157,12 +164,97 @@ pub fn resolve(
         }
     }
 
-    // Sort by priority descending
-    std.mem.sort(registry.ResolvedRegistry, result.items, {}, struct {
-        fn lessThan(_: void, a: registry.ResolvedRegistry, b: registry.ResolvedRegistry) bool {
-            return a.priority > b.priority;
+    try sortByPriorityThenDeclarationOrder(allocator, result.items);
+
+    return try result.toOwnedSlice(allocator);
+}
+
+/// Sort resolved registries by priority descending. Two registries declared
+/// at the same priority are ordered by their declaration order in
+/// moonstone.toml -- `items` must already be in that order (the order
+/// `[[registries]]` entries were appended in, above) when this is called:
+/// whichever registry comes first in the array wins ties.
+///
+/// This is an explicit secondary sort key rather than relying on
+/// `std.mem.sort`'s stability alone, so the tie-break cannot silently
+/// regress if a future change swaps in an unstable sort.
+///
+/// A higher-priority registry can therefore "shadow" a package that also
+/// exists in a lower-priority registry of the same resolver kind -- this is
+/// intentional: priority is an explicit choice the project author makes in
+/// moonstone.toml, not an accident of iteration order.
+fn sortByPriorityThenDeclarationOrder(allocator: std.mem.Allocator, items: []registry.ResolvedRegistry) !void {
+    const IndexedEntry = struct {
+        declared_index: usize,
+        entry: registry.ResolvedRegistry,
+    };
+    const indexed = try allocator.alloc(IndexedEntry, items.len);
+    defer allocator.free(indexed);
+    for (items, 0..) |entry, i| indexed[i] = .{ .declared_index = i, .entry = entry };
+
+    std.mem.sort(IndexedEntry, indexed, {}, struct {
+        fn lessThan(_: void, a: IndexedEntry, b: IndexedEntry) bool {
+            if (a.entry.priority != b.entry.priority) return a.entry.priority > b.entry.priority;
+            return a.declared_index < b.declared_index;
         }
     }.lessThan);
 
-    return try result.toOwnedSlice(allocator);
+    for (indexed, 0..) |item, i| items[i] = item.entry;
+}
+
+fn testRegistry(name: []const u8, priority: i32) registry.ResolvedRegistry {
+    return .{
+        .name = name,
+        .resolver = "moonstone",
+        .url = "file:///dev/null",
+        .token = null,
+        .priority = priority,
+    };
+}
+
+test "sortByPriorityThenDeclarationOrder orders by priority descending" {
+    const allocator = std.testing.allocator;
+    var items = [_]registry.ResolvedRegistry{
+        testRegistry("low", 0),
+        testRegistry("high", 100),
+        testRegistry("mid", 50),
+    };
+    try sortByPriorityThenDeclarationOrder(allocator, &items);
+
+    try std.testing.expectEqualStrings("high", items[0].name);
+    try std.testing.expectEqualStrings("mid", items[1].name);
+    try std.testing.expectEqualStrings("low", items[2].name);
+}
+
+test "sortByPriorityThenDeclarationOrder breaks equal-priority ties by declaration order" {
+    const allocator = std.testing.allocator;
+    // "zeta" is declared before "alpha" here; equal priority must preserve
+    // that order rather than falling back to something else (e.g.
+    // alphabetical, or whatever an unstable sort happens to produce).
+    var items = [_]registry.ResolvedRegistry{
+        testRegistry("zeta", 10),
+        testRegistry("alpha", 10),
+        testRegistry("beta", 10),
+    };
+    try sortByPriorityThenDeclarationOrder(allocator, &items);
+
+    try std.testing.expectEqualStrings("zeta", items[0].name);
+    try std.testing.expectEqualStrings("alpha", items[1].name);
+    try std.testing.expectEqualStrings("beta", items[2].name);
+}
+
+test "sortByPriorityThenDeclarationOrder combines priority with declaration-order ties" {
+    const allocator = std.testing.allocator;
+    var items = [_]registry.ResolvedRegistry{
+        testRegistry("low-first", 0),
+        testRegistry("high-first", 10),
+        testRegistry("low-second", 0),
+        testRegistry("high-second", 10),
+    };
+    try sortByPriorityThenDeclarationOrder(allocator, &items);
+
+    try std.testing.expectEqualStrings("high-first", items[0].name);
+    try std.testing.expectEqualStrings("high-second", items[1].name);
+    try std.testing.expectEqualStrings("low-first", items[2].name);
+    try std.testing.expectEqualStrings("low-second", items[3].name);
 }

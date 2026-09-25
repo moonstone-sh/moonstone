@@ -70,3 +70,20 @@ test "parsePackageSpec treats explicit prefixes as registry identities" {
     try std.testing.expectEqualStrings("LuaSocket", spec.name);
     try std.testing.expectEqualStrings("^3.1.0-1", spec.constraint.?);
 }
+
+test "parsePackageSpec leaves registry null for an unprefixed spec" {
+    // No `name:` prefix means "any registry of the resolver's kind, in
+    // priority order" everywhere a `PackageSpec.registry` of `null` is
+    // read (add.zig, sync.zig, graph_provider.zig). Callers must not
+    // synthesize a registry identity for this case -- that is the exact
+    // shape of the "unprefixed spec ignores registry priority" bug this
+    // test guards against regressing.
+    const allocator = std.testing.allocator;
+    const spec = try parsePackageSpec(allocator, "hydronium/create@^0.5.0");
+    defer spec.deinit(allocator);
+
+    try std.testing.expect(spec.resolver == null);
+    try std.testing.expect(spec.registry == null);
+    try std.testing.expectEqualStrings("hydronium/create", spec.name);
+    try std.testing.expectEqualStrings("^0.5.0", spec.constraint.?);
+}

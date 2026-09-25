@@ -565,10 +565,19 @@ pub const add_command = struct {
             try targets.append(allocator, .{
                 .name = try allocator.dupe(u8, if (path_candidate) |candidate| candidate.name else parsed.name),
                 .range = range,
+                // A bare spec (no `name:` prefix) must NOT pin the registry
+                // identity to the literal string "moonstone": that string
+                // means "any registry of the moonstone resolver kind, in
+                // descending priority order" everywhere resolution reads a
+                // `null` identity, but as a non-null identity it wrongly
+                // pins resolution to a registry that happens to be named
+                // exactly "moonstone", starving every other same-kind
+                // registry (e.g. a higher-priority local override) of a
+                // chance to serve the request. Leave it null so priority
+                // order decides. `rocks` keeps its existing pseudo-identity
+                // convention (unaffected by this fix; out of scope).
                 .registry = if (parsed.registry) |r|
                     try allocator.dupe(u8, r)
-                else if (selected_resolver == .moonstone)
-                    try allocator.dupe(u8, "moonstone")
                 else if (selected_resolver == .rocks)
                     try allocator.dupe(u8, "rocks")
                 else if (parsed.resolver == .path)

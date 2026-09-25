@@ -115,11 +115,47 @@ fn registryIdentityForPackageSpec(
             else => null,
         };
     }
-    return try allocator.dupe(u8, spec.registry orelse switch (resolver) {
-        .moonstone => "moonstone",
-        .rocks => "rocks",
-        else => return null,
-    });
+    // A `[[dependencies]]` entry with no explicit `registry = "..."` field
+    // and no `name:` prefix must resolve against every registry of the
+    // moonstone resolver kind, in priority order -- not get pinned to a
+    // registry literally named "moonstone". Returning null here (rather
+    // than defaulting to that string) is what lets the provider walk all
+    // moonstone-kind registries by priority. `rocks` keeps its existing
+    // pseudo-identity default (unaffected by this fix; out of scope).
+    if (spec.registry) |identity| return try allocator.dupe(u8, identity);
+    return switch (resolver) {
+        .rocks => try allocator.dupe(u8, "rocks"),
+        else => null,
+    };
+}
+
+test "registryIdentityForPackageSpec leaves an unprefixed moonstone dependency unpinned" {
+    const allocator = std.testing.allocator;
+    const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, "example/leaf@^1.0.0");
+    defer spec.deinit(allocator);
+
+    const identity = try registryIdentityForPackageSpec(allocator, spec, .moonstone);
+    try std.testing.expectEqual(@as(?[]const u8, null), identity);
+}
+
+test "registryIdentityForPackageSpec keeps an explicit registry prefix" {
+    const allocator = std.testing.allocator;
+    const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, "hydronium:example/leaf@^1.0.0");
+    defer spec.deinit(allocator);
+
+    const identity = try registryIdentityForPackageSpec(allocator, spec, .moonstone);
+    defer if (identity) |i| allocator.free(i);
+    try std.testing.expectEqualStrings("hydronium", identity.?);
+}
+
+test "registryIdentityForPackageSpec defaults an unprefixed rocks dependency to the rocks pseudo-identity" {
+    const allocator = std.testing.allocator;
+    const spec = try moonstone.domain.package_spec.parsePackageSpec(allocator, "dkjson@^2.9-1");
+    defer spec.deinit(allocator);
+
+    const identity = try registryIdentityForPackageSpec(allocator, spec, .rocks);
+    defer if (identity) |i| allocator.free(i);
+    try std.testing.expectEqualStrings("rocks", identity.?);
 }
 
 fn lockRegistryForPackage(

@@ -1008,8 +1008,30 @@ pub const StoreDependency = struct {
     /// Reconstruct a raw package-spec string suitable for parsePackageSpec.
     /// Handles both flat-array format (resolver + name + constraint) and
     /// sugar format (constraint may already contain resolver prefix).
+    ///
+    /// `self.resolver == "moonstone"` with `self.registry == null` means
+    /// "this came from a moonstone-kind registry, but no SPECIFIC one was
+    /// pinned" -- Moonstone's own registry export writes exactly this shape
+    /// for an ordinary dependency. Falling back to `self.resolver` here
+    /// (`self.registry orelse self.resolver`) would turn that resolver KIND
+    /// into a `moonstone:` prefix, i.e. a registry IDENTITY, pinning
+    /// resolution to whichever registry is literally named "moonstone" and
+    /// hiding every other moonstone-kind registry (including a
+    /// higher-priority local one) from `parsePackageSpec`'s caller. Omit the
+    /// prefix in that case instead, so the reconstructed spec has no
+    /// registry identity and resolution walks every moonstone-kind registry
+    /// by priority, exactly like a hand-typed unprefixed dependency does.
+    /// Every other resolver kind (rocks, path, link, artifact) keeps its
+    /// existing pseudo-prefix convention, unaffected by this distinction.
     pub fn toSpecString(self: StoreDependency, allocator: std.mem.Allocator) ![]const u8 {
-        if (self.registry orelse self.resolver) |registry| {
+        const prefix: ?[]const u8 = if (self.registry) |r|
+            r
+        else if (self.resolver) |r|
+            (if (std.mem.eql(u8, r, "moonstone")) null else r)
+        else
+            null;
+
+        if (prefix) |registry| {
             if (self.constraint.len > 0 and std.mem.startsWith(u8, self.constraint, registry) and self.constraint.len > registry.len and self.constraint[registry.len] == ':') {
                 return try allocator.dupe(u8, self.constraint);
             }
@@ -1029,6 +1051,82 @@ pub const StoreDependency = struct {
         }
     }
 };
+
+test "StoreDependency.toSpecString omits the registry prefix for a resolver-only moonstone dependency" {
+    const allocator = std.testing.allocator;
+    // This is the shape a registry-published descriptor's ordinary
+    // dependency parses into: a resolver KIND ("moonstone"), no specific
+    // registry pinned. The reconstructed spec must have no `moonstone:`
+    // prefix, so a caller re-parsing it with parsePackageSpec sees
+    // `registry == null` ("any moonstone-kind registry, by priority"), not
+    // `registry == "moonstone"` (a specific registry literally named
+    // "moonstone", which would starve every other moonstone-kind registry).
+    var dep = StoreDependency{
+        .name = try allocator.dupe(u8, "example/leaf"),
+        .constraint = try allocator.dupe(u8, "^1.0.0"),
+        .resolver = try allocator.dupe(u8, "moonstone"),
+        .registry = null,
+    };
+    defer dep.deinit(allocator);
+
+    const spec = try dep.toSpecString(allocator);
+    defer allocator.free(spec);
+    try std.testing.expectEqualStrings("example/leaf@^1.0.0", spec);
+}
+
+test "StoreDependency.toSpecString keeps an explicit registry pin as the prefix" {
+    const allocator = std.testing.allocator;
+    var dep = StoreDependency{
+        .name = try allocator.dupe(u8, "example/leaf"),
+        .constraint = try allocator.dupe(u8, "^1.0.0"),
+        .resolver = null,
+        .registry = try allocator.dupe(u8, "hydronium"),
+    };
+    defer dep.deinit(allocator);
+
+    const spec = try dep.toSpecString(allocator);
+    defer allocator.free(spec);
+    try std.testing.expectEqualStrings("hydronium:example/leaf@^1.0.0", spec);
+}
+
+test "StoreDependency.toSpecString keeps the rocks pseudo-prefix for a resolver-only rocks dependency" {
+    const allocator = std.testing.allocator;
+    var dep = StoreDependency{
+        .name = try allocator.dupe(u8, "dkjson"),
+        .constraint = try allocator.dupe(u8, "^2.9-1"),
+        .resolver = try allocator.dupe(u8, "rocks"),
+        .registry = null,
+    };
+    defer dep.deinit(allocator);
+
+    const spec = try dep.toSpecString(allocator);
+    defer allocator.free(spec);
+    try std.testing.expectEqualStrings("rocks:dkjson@^2.9-1", spec);
+}
+
+test "StoreDependency.toSpecString round-trips through parsePackageSpec with no registry identity" {
+    // The whole point of omitting the prefix: parsing it back must produce
+    // a null registry identity, not the literal string "moonstone".
+    const allocator = std.testing.allocator;
+    var dep = StoreDependency{
+        .name = try allocator.dupe(u8, "example/leaf"),
+        .constraint = try allocator.dupe(u8, "^1.0.0"),
+        .resolver = try allocator.dupe(u8, "moonstone"),
+        .registry = null,
+    };
+    defer dep.deinit(allocator);
+
+    const spec_str = try dep.toSpecString(allocator);
+    defer allocator.free(spec_str);
+
+    const package_spec = @import("package_spec.zig");
+    const spec = try package_spec.parsePackageSpec(allocator, spec_str);
+    defer spec.deinit(allocator);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), spec.registry);
+    try std.testing.expectEqualStrings("example/leaf", spec.name);
+    try std.testing.expectEqualStrings("^1.0.0", spec.constraint.?);
+}
 
 // Store manifests contain only values, optional values, structs, and slices.
 // Clone all slices out of the parser arena, including default-valued fields.
@@ -1957,43 +2055,34 @@ pub const MoonstoneToml = struct {
         }
 
         if (self.registries.count() > 0) {
-            const RegistryEntry = struct {
-                key: []const u8,
-                value: RegistryConfig,
-            };
-            var entries = std.ArrayList(RegistryEntry).empty;
-            defer entries.deinit(allocator);
-
+            // Preserve declaration order (`self.registries` is an
+            // insertion-ordered map: entries iterate in the order they were
+            // parsed from `[[registries]]`, or appended by `registry add`).
+            // Registry resolution uses this on-disk order as the tie-break
+            // between two registries declared at the same priority, so
+            // re-sorting here (e.g. alphabetically) would silently reshuffle
+            // that tie-break every time the manifest is rewritten by an
+            // unrelated command (`moon add`, `moon registry add`, ...).
             var it = self.registries.iterator();
             while (it.next()) |entry| {
-                try entries.append(allocator, .{
-                    .key = entry.key_ptr.*,
-                    .value = entry.value_ptr.*,
-                });
-            }
-            std.mem.sort(RegistryEntry, entries.items, {}, struct {
-                fn lessThan(_: void, left: RegistryEntry, right: RegistryEntry) bool {
-                    return std.mem.order(u8, left.key, right.key) == .lt;
-                }
-            }.lessThan);
-
-            for (entries.items) |entry| {
+                const key = entry.key_ptr.*;
+                const value = entry.value_ptr.*;
                 try writer.print("\n[[registries]]\nname = ", .{});
-                try writeTomlString(writer, entry.key);
+                try writeTomlString(writer, key);
                 try writer.print("\nresolver = ", .{});
-                try writeTomlString(writer, entry.value.resolver);
+                try writeTomlString(writer, value.resolver);
                 try writer.print("\n", .{});
-                if (entry.value.url) |url| {
+                if (value.url) |url| {
                     try writer.print("url = ", .{});
                     try writeTomlString(writer, url);
                     try writer.print("\n", .{});
                 }
-                if (entry.value.path) |path| {
+                if (value.path) |path| {
                     try writer.print("path = ", .{});
                     try writeTomlString(writer, path);
                     try writer.print("\n", .{});
                 }
-                try writer.print("priority = {d}\n", .{entry.value.priority});
+                try writer.print("priority = {d}\n", .{value.priority});
             }
         }
 
@@ -2561,8 +2650,12 @@ test "MoonstoneToml round-trips every root configuration section" {
     const serialized = out.writer.buffer[0..out.writer.end];
     try std.testing.expect((std.mem.indexOf(u8, serialized, "zeta = ") orelse return error.TestExpectedEqual) <
         (std.mem.indexOf(u8, serialized, "alpha = ") orelse return error.TestExpectedEqual));
-    try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"a-reg\"") orelse return error.TestExpectedEqual) <
-        (std.mem.indexOf(u8, serialized, "name = \"z-reg\"") orelse return error.TestExpectedEqual));
+    // Registries serialize in declaration order, not alphabetically: the
+    // source manifest above declares "z-reg" before "a-reg", and priority
+    // ties are broken by this on-disk order, so serialize must not reshuffle
+    // it.
+    try std.testing.expect((std.mem.indexOf(u8, serialized, "name = \"z-reg\"") orelse return error.TestExpectedEqual) <
+        (std.mem.indexOf(u8, serialized, "name = \"a-reg\"") orelse return error.TestExpectedEqual));
 
     var round_tripped = try MoonstoneToml.parse(allocator, serialized);
     defer round_tripped.deinit(allocator);
