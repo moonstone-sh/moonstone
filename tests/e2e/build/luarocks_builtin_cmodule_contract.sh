@@ -77,7 +77,13 @@ ARTIFACT_DIR="$(dirname "${ARTIFACT_MANIFEST}")"
 
 echo "━━━ assert normalized native artifact interface ━━━"
 grep -q '^resolver = "rocks"$' "${ARTIFACT_MANIFEST}"
-grep -q '^target = "native"$' "${ARTIFACT_MANIFEST}"
+# Artifacts record an explicit platform target (e.g. "aarch64-macos"); the
+# legacy "native" placeholder is migrated away (locked_target_migration.sh).
+grep -Eq '^target = "[a-z0-9_]+-[a-z0-9_.]+"$' "${ARTIFACT_MANIFEST}"
+if grep -q '^target = "native"$' "${ARTIFACT_MANIFEST}"; then
+    echo "ERROR: artifact kept the legacy native target"
+    exit 1
+fi
 grep -q '^lua_abi = "5.4"$' "${ARTIFACT_MANIFEST}"
 grep -q '^source_hash = "b3:' "${ARTIFACT_MANIFEST}"
 grep -q '^recipe_hash = "b3:' "${ARTIFACT_MANIFEST}"

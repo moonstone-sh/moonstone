@@ -81,7 +81,7 @@ echo "  ✓ Propagated exit code 42"
 
 echo "━━━ Test 6: Missing script errors ━━━"
 set +o pipefail
-moon run missing 2>&1 | grep "Error: script 'missing' not found"
+moon run missing 2>&1 | grep "Error: script 'missing' is not declared in moonstone.toml"
 set -o pipefail
 
 echo "━━━ ✓ moon run semantics passed ━━━"

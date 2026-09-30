@@ -191,11 +191,29 @@ pub const Solver = struct {
                     for (inc.terms) |term| {
                         if (!self.solution.isSatisfied(term)) {
                             const negated_range = try term.range.complement(arena);
+                            // A derivation narrows what is already known about
+                            // the package; it never replaces it. The partial
+                            // solution answers from each package's latest
+                            // assignment, so that assignment must carry the
+                            // intersection of every derivation so far --
+                            // storing only this one's range let two
+                            // incompatibilities overwrite each other forever
+                            // (the `moon interpreter set` hang).
+                            const prior = self.solution.findAssignment(term.name);
+                            const derived_range = if (prior) |p|
+                                try p.term.range.intersect(negated_range, arena)
+                            else
+                                negated_range;
+                            // No narrowing means no progress: skip rather than
+                            // re-append the same knowledge and loop.
+                            if (prior) |p| {
+                                if (p.term.range.isSubsetOf(derived_range)) break;
+                            }
 
                             try self.solution.assignments.append(arena, .{
                                 .term = .{
                                     .name = try arena.dupe(u8, term.name),
-                                    .range = negated_range,
+                                    .range = derived_range,
                                     .registry = if (term.registry) |r| try arena.dupe(u8, r) else null,
                                     .resolver = term.resolver,
                                 },
@@ -567,6 +585,55 @@ test "simple conflict" {
 
     const res = solver.solve(&.{Term{ .name = "A", .range = range }});
     try std.testing.expectError(error.NoSolution, res);
+}
+
+test "derivations on one package intersect instead of overwriting each other" {
+    // X needs A >=2, Y needs A <3. With each derivation replacing the last,
+    // propagate flipped A between the two ranges forever; accumulated, A
+    // settles on 2.0.0.
+    const allocator = std.testing.allocator;
+    var mp = MockProvider.init(allocator);
+    defer mp.deinit();
+
+    const one = try semver.Version.parse("1.0.0");
+    try mp.versions.put(allocator, "A", blk: {
+        var versions = try allocator.alloc(semver.Version, 3);
+        versions[0] = one;
+        versions[1] = try semver.Version.parse("2.0.0");
+        versions[2] = try semver.Version.parse("3.0.0");
+        break :blk versions;
+    });
+    inline for (.{ .{ "X", ">=2.0.0" }, .{ "Y", "<3.0.0" } }) |spec| {
+        try mp.versions.put(allocator, spec[0], blk: {
+            var versions = try allocator.alloc(semver.Version, 1);
+            versions[0] = one;
+            break :blk versions;
+        });
+        var deps = std.ArrayHashMapUnmanaged(semver.Version, []const Term, semver.Version.HashContext, true).empty;
+        try deps.put(allocator, one, blk: {
+            var terms = try allocator.alloc(Term, 1);
+            terms[0] = .{ .name = try allocator.dupe(u8, "A"), .range = try semver.VersionRange.parse(allocator, spec[1]) };
+            break :blk terms;
+        });
+        try mp.deps.put(allocator, spec[0], deps);
+    }
+
+    var solver = Solver.init(allocator, mp.get_provider(), .{});
+    defer solver.deinit();
+
+    const exact = try semver.VersionRange.parse(allocator, "1.0.0");
+    defer exact.deinit(allocator);
+
+    var result = try solver.solve(&.{ .{ .name = "X", .range = exact }, .{ .name = "Y", .range = exact } });
+    defer {
+        var iterator = result.iterator();
+        while (iterator.next()) |entry| {
+            selfFreeResolveResult(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        result.deinit(allocator);
+    }
+
+    try std.testing.expectEqualStrings("2.0.0", result.get("A").?.version);
 }
 
 test "exact root requirements expand transitive dependencies" {

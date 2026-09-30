@@ -11,7 +11,12 @@ trap 'rm -rf "$WORKDIR"' EXIT
 export MOONSTONE_HOME="$WORKDIR/moonstone-home"
 mkdir -p "$MOONSTONE_HOME"
 
-cp -r "$PROJECT_ROOT/examples/moonscript-ballad" "$WORKDIR/project"
+# Copy the example's sources only: its gitignored .moonstone/.ballad/dist are
+# derived state from someone's last sync (possibly dangling links into a
+# purged store), and the test re-syncs from scratch anyway.
+mkdir -p "$WORKDIR/project"
+(cd "$PROJECT_ROOT/examples/moonscript-ballad" && tar cf - --exclude ./.moonstone --exclude ./.ballad --exclude ./dist .) \
+  | (cd "$WORKDIR/project" && tar xf -)
 cd "$WORKDIR/project"
 
 echo "━━━ 1. Synchronizing project environment ━━━"

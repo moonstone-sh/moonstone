@@ -368,6 +368,18 @@ fn build_run_env(
         });
     }
 
+    // Children reach Moonstone itself through MOONSTONE_CLI, not by looking
+    // up `moon` on PATH: inside a project env another package may provide a
+    // `moon` executable (MoonScript does), which would otherwise shadow the
+    // CLI for tools like Ballad that shell out to Moonstone. An explicit value
+    // from the caller's environment is kept.
+    if (final_env.get("MOONSTONE_CLI") == null) {
+        if (std.process.executablePathAlloc(io, allocator)) |self_path| {
+            defer allocator.free(self_path);
+            try final_env.put("MOONSTONE_CLI", self_path);
+        } else |_| {}
+    }
+
     return RunEnv{
         .env_map = final_env,
         .allocator = allocator,

@@ -17,11 +17,14 @@ cd "${WORKDIR}"
 moon init . --name "run-test"
 moon interpreter set lua@5.4
 
-# Add scripts to moonstone.toml
-cat >> moonstone.toml << 'EOF'
+# Add scripts under [scripts]: `moon init` no longer leaves it as the
+# manifest's last table (a [[registries]] entry follows it).
+cat > /tmp/moonstone-test-run-scripts.toml << 'EOF'
 hello = "echo 'Hello from Moonstone script'"
 test_lua = "lua -e 'print(\"Lua execution works\")'"
 EOF
+awk 'FNR==NR { extra = extra $0 "\n"; next } { print } /^\[scripts\]$/ { printf "%s", extra }' \
+  /tmp/moonstone-test-run-scripts.toml moonstone.toml > moonstone.toml.new && mv moonstone.toml.new moonstone.toml
 
 echo "━━━ run simple script ━━━"
 moon run hello | grep "Hello from Moonstone script"

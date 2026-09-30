@@ -3,6 +3,7 @@ const toml = @import("toml");
 const manifest = @import("../domain/manifest.zig");
 const fs = @import("../platform/fs.zig");
 const registry = @import("registry.zig");
+const error_context = @import("../diagnostics/error_context.zig");
 
 fn expandEnv(allocator: std.mem.Allocator, text: []const u8, environ_map: *std.process.Environ.Map) ![]const u8 {
     var result = std.ArrayList(u8).empty;
@@ -40,6 +41,17 @@ fn traceEnabled(env: *std.process.Environ.Map) bool {
 
 fn trace(comptime fmt: []const u8, args: anytype) void {
     std.debug.print("[registry] " ++ fmt ++ "\n", args);
+}
+
+/// Is `url` the build's official registry location (trailing slash ignored)?
+fn isOfficialRegistryUrl(url: []const u8) bool {
+    const official = @import("build_options").default_registry_url;
+    const trim = struct {
+        fn f(value: []const u8) []const u8 {
+            return std.mem.trimEnd(u8, value, "/");
+        }
+    }.f;
+    return std.mem.eql(u8, trim(url), trim(official));
 }
 
 /// Read project registries from moonstone.toml and return an ordered list of
@@ -99,6 +111,16 @@ pub fn resolve(
                 }
                 manifest.extractRegistriesFromToml(allocator, regs_val, &temp_map) catch |err| {
                     if (do_trace) trace("moonstone.toml registry extraction error: {s}", .{@errorName(err)});
+                    // Silently dropping the project's registries turned this
+                    // into a misleading "registry not found" later on.
+                    if (err == error.RegistryTableSyntaxUnsupported) {
+                        error_context.setFmt(
+                            allocator,
+                            "moonstone.toml declares registries as a `[registries]` table, which is no longer supported. Declare each one as a `[[registries]]` entry with `name`, `resolver` and `url` or `path`.",
+                            .{},
+                        );
+                        return err;
+                    }
                 };
                 if (do_trace) trace("moonstone.toml loaded {d} registries", .{temp_map.count()});
                 var it = temp_map.iterator();
@@ -118,6 +140,22 @@ pub fn resolve(
                             try std.fs.path.join(allocator, &.{ ".", expanded_path });
                         defer allocator.free(abs_path);
                         url = try std.fmt.allocPrint(allocator, "file://{s}", .{abs_path});
+                    }
+
+                    // MOONSTONE_REGISTRY_PATH relocates the OFFICIAL registry
+                    // (a mirror, an offline copy, the synthetic test
+                    // sandbox). New projects declare the official URL
+                    // explicitly (`moon init`), so the override must apply to
+                    // that declaration too, not only to the legacy fallback
+                    // below; any other declared URL is left as written.
+                    if (url) |u| {
+                        if (environ_map.get("MOONSTONE_REGISTRY_PATH")) |override| {
+                            if (isOfficialRegistryUrl(u)) {
+                                allocator.free(u);
+                                url = try allocator.dupe(u8, override);
+                                if (do_trace) trace("project registry {s}: official URL relocated by MOONSTONE_REGISTRY_PATH", .{reg_name});
+                            }
+                        }
                     }
 
                     if (url) |u| {

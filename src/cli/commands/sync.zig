@@ -4033,7 +4033,18 @@ pub const SyncCommand = struct {
         for (deps) |dep| {
             const dep_name = dep.name;
 
-            if (dep.resolver) |resolver_name| {
+            // `moon add path:../lib` records only the constraint; infer the
+            // local resolver from its scheme so the check never compares a
+            // locked version against "path:..." as if it were a semver range.
+            const inferred_resolver: ?[]const u8 = if (dep.resolver) |r| r else if (std.mem.startsWith(u8, dep.constraint, "path:"))
+                "path"
+            else if (std.mem.startsWith(u8, dep.constraint, "link:"))
+                "link"
+            else if (std.mem.startsWith(u8, dep.constraint, "artifact:"))
+                "artifact"
+            else
+                null;
+            if (inferred_resolver) |resolver_name| {
                 const resolver = moonstone.resolution.ResolverKind.fromString(resolver_name) catch null;
                 if (resolver) |res| {
                     switch (res) {

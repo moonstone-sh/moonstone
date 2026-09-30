@@ -17,7 +17,8 @@ store, and deleting it is always safe.
   env.toml                 runtime identity and projected package roots
   dependencies.toml        the projected closure, for tooling
   bin/                     public binaries
-  libexec/<package>/       whole-package mounts, for stable references
+  libexec/<namespace>/<name>/  whole-package mounts, for stable references
+  libexec/<name>/          namespace-less packages, and compatibility aliases
   share/lua/<version>/     Lua modules            → LUA_PATH
   lib/lua/<version>/       Lua C modules          → LUA_CPATH
   lib/native/              loadable native libraries → host loader path
@@ -44,7 +45,31 @@ lrwxr-xr-x  init.lua     -> /workspace/hydronium/ink/src/hydronium_ink/init.lua
 lrwxr-xr-x  yoga_ffi.lua -> /workspace/hydronium/ink/src/hydronium_ink/yoga_ffi.lua
 ```
 
-`libexec/<package>` is instead a single directory link to the whole package.
+`libexec/<namespace>/<name>` is instead a single directory link to the whole
+package.
+
+### `libexec/` names cannot collide
+
+Each package is mounted at a path derived from its full name:
+`moonstone/meteorite` at `libexec/moonstone/meteorite`, `hydronium/ballad` at
+`libexec/hydronium/ballad`. Packages without a namespace (LuaRocks) keep
+`libexec/<name>`. Reference these paths from build scripts and configs.
+
+For compatibility, a namespaced package is also linked at its old flat path
+`libexec/<local name>` (or the name its build published its runtime under,
+such as `hydronium-create`), but only when exactly one package in the
+environment claims that name and it is not a namespace directory. Before
+0.5.9 every package was mounted flat, and a later package silently replaced
+an earlier one with the same local name (`hydronium/meteorite` vs
+`moonstone/meteorite`). Which package a path reached depended on projection
+order. A contested flat name is now absent rather than wrong, and `env.toml`
+lists it:
+
+```toml
+[[libexec_alias_conflict]]
+alias = "meteorite"
+packages = ["hydronium/meteorite", "moonstone/meteorite"]
+```
 
 This is deliberate: an environment that links rather than copies is cheap to
 rebuild, shares bytes between projects, and makes an edit in a linked working

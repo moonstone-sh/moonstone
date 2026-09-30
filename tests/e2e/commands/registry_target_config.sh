@@ -31,10 +31,23 @@ name = "lua"
 version = "5.4"
 abi = "5.4"
 
-[registries]
-project = { path = "${WORKDIR}/project-registry", priority = 10 }
-user = { path = "${WORKDIR}/user-registry", priority = 5 }
-profiled = { path = "${WORKDIR}/profiled-registry", priority = 4 }
+[[registries]]
+name = "project"
+resolver = "moonstone"
+path = "${WORKDIR}/project-registry"
+priority = 10
+
+[[registries]]
+name = "user"
+resolver = "moonstone"
+path = "${WORKDIR}/user-registry"
+priority = 5
+
+[[registries]]
+name = "profiled"
+resolver = "moonstone"
+path = "${WORKDIR}/profiled-registry"
+priority = 4
 TOML
 
 moon --config-file="${WORKDIR}/config.toml" config show > "${WORKDIR}/config-show.log"

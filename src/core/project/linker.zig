@@ -1813,12 +1813,29 @@ pub fn link_project_env_at(
         }
     }
 
-    // 5b. Link non-metadata live dependencies into libexec/ for stable references.
+    // 5b. Collect non-metadata live dependencies for libexec/ (mounted with
+    // the store packages below, so name conflicts are resolved across both).
+    var libexec_mounts = std.ArrayList(LibexecMount).empty;
+    defer {
+        for (libexec_mounts.items) |mount| {
+            allocator.free(mount.alias);
+            allocator.free(mount.source);
+        }
+        libexec_mounts.deinit(allocator);
+    }
+    var libexec_conflicts = std.ArrayList(LibexecAliasConflict).empty;
+    defer {
+        for (libexec_conflicts.items) |conflict| conflict.deinit(allocator);
+        libexec_conflicts.deinit(allocator);
+    }
     for (live_links) |ll| {
         const ll_policy = ll.role.getProjectionPolicy();
         if (ll_policy.metadata_only) continue;
-        const ll_local = packageLocalName(ll.pkg_name);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, ll_local, ll.source_path);
+        try libexec_mounts.append(allocator, .{
+            .name = ll.pkg_name,
+            .alias = try allocator.dupe(u8, packageLocalName(ll.pkg_name)),
+            .source = try allocator.dupe(u8, ll.source_path),
+        });
     }
 
     // 6. Fallback linking for artifacts without successful module metadata linking
@@ -2020,8 +2037,16 @@ pub fn link_project_env_at(
             pa_local
         else
             std.fs.path.basename(libexec_source);
-        try linkPackageIntoLibexec(allocator, io, libexec_dir, libexec_link_name, libexec_source);
+        try libexec_mounts.append(allocator, .{
+            .name = pa2.name,
+            // Both slices point into libexec_source, freed at the end of this
+            // iteration: the mount list owns its own copies.
+            .alias = try allocator.dupe(u8, libexec_link_name),
+            .source = try allocator.dupe(u8, libexec_source),
+        });
     }
+    // Namespaced mounts first; leaf aliases only where they are unambiguous.
+    try mountLibexec(allocator, io, libexec_dir, libexec_mounts.items, &libexec_conflicts);
 
     // 7. Generate env.toml
     const env_toml_file = try env_dir.createFile(io, "env.toml", .{});
@@ -2055,6 +2080,19 @@ pub fn link_project_env_at(
         try aw.writer.print("\nenv = ", .{});
         try writeTomlString(&aw.writer, entry.key);
         try aw.writer.print("\n", .{});
+    }
+
+    // A compatibility alias two packages claim is not created; record it so
+    // tooling can explain the missing `libexec/<alias>`.
+    for (libexec_conflicts.items) |conflict| {
+        try aw.writer.print("\n[[libexec_alias_conflict]]\nalias = ", .{});
+        try writeTomlString(&aw.writer, conflict.alias);
+        try aw.writer.print("\npackages = [", .{});
+        for (conflict.packages, 0..) |name, position| {
+            if (position > 0) try aw.writer.print(", ", .{});
+            try writeTomlString(&aw.writer, name);
+        }
+        try aw.writer.print("]\n", .{});
     }
 
     try aw.writer.flush();
@@ -2184,6 +2222,107 @@ fn refreshLspConfig(allocator: std.mem.Allocator, io: std.Io, project_root: std.
     const file = project_root.openFile(io, ".luarc.json", .{ .mode = .read_write }) catch return;
     defer file.close(io);
     file.setTimestampsNow(io) catch {};
+}
+
+/// One package to expose under `.moonstone/env/libexec/`.
+const LibexecMount = struct {
+    /// Full package name, e.g. `moonstone/meteorite` or a namespace-less rock.
+    name: []const u8,
+    /// Compatibility name: the package's local name, or the name its build
+    /// published its runtime under (see storePackageLibexecRoot). Owned by
+    /// the collecting list.
+    alias: []const u8,
+    /// Directory to link (owned by the collecting list).
+    source: []const u8,
+};
+
+const LibexecAliasConflict = struct {
+    alias: []const u8,
+    packages: []const []const u8,
+
+    fn deinit(self: LibexecAliasConflict, allocator: std.mem.Allocator) void {
+        allocator.free(self.alias);
+        for (self.packages) |name| allocator.free(name);
+        allocator.free(self.packages);
+    }
+};
+
+fn packageNamespace(pkg_name: []const u8) ?[]const u8 {
+    const pos = std.mem.lastIndexOfScalar(u8, pkg_name, '/') orelse return null;
+    return pkg_name[0..pos];
+}
+
+/// Mount every package at a path no other package can claim:
+///
+///   libexec/<namespace>/<name>   namespaced packages (moonstone/meteorite)
+///   libexec/<name>               namespace-less packages (LuaRocks)
+///
+/// Then add the historical `libexec/<alias>` path for namespaced packages as a
+/// compatibility link, but only when exactly one package claims that alias and
+/// it does not name a namespace directory. Before this, every package was
+/// mounted at `libexec/<alias>` and the last one silently replaced any other
+/// with the same alias (e.g. hydronium/meteorite vs moonstone/meteorite), so
+/// which package a path reached depended on projection order. An ambiguous
+/// alias is now absent (and recorded in env.toml), never wrong.
+fn mountLibexec(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    libexec_dir: std.Io.Dir,
+    mounts: []const LibexecMount,
+    conflicts: *std.ArrayList(LibexecAliasConflict),
+) !void {
+    // Namespace directories are reserved names at the top of libexec/.
+    var namespaces = std.StringHashMap(void).init(allocator);
+    defer namespaces.deinit();
+    for (mounts) |mount| {
+        if (packageNamespace(mount.name)) |namespace| try namespaces.put(namespace, {});
+    }
+
+    for (mounts) |mount| {
+        if (packageNamespace(mount.name)) |namespace| {
+            try libexec_dir.createDirPath(io, namespace);
+            const mounted = try std.fs.path.join(allocator, &.{ namespace, packageLocalName(mount.name) });
+            defer allocator.free(mounted);
+            try linkPackageIntoLibexec(allocator, io, libexec_dir, mounted, mount.source);
+        } else if (!namespaces.contains(mount.name)) {
+            try linkPackageIntoLibexec(allocator, io, libexec_dir, mount.name, mount.source);
+        }
+    }
+
+    // Top-level names in use: namespace-less packages plus aliases claimed.
+    for (mounts) |mount| {
+        if (packageNamespace(mount.name) == null) continue;
+        var claimants = std.ArrayList([]const u8).empty;
+        defer claimants.deinit(allocator);
+        for (mounts) |other| {
+            const other_top = if (packageNamespace(other.name) == null) other.name else other.alias;
+            if (std.mem.eql(u8, other_top, mount.alias)) {
+                var seen = false;
+                for (claimants.items) |name| {
+                    if (std.mem.eql(u8, name, other.name)) seen = true;
+                }
+                if (!seen) try claimants.append(allocator, other.name);
+            }
+        }
+        if (claimants.items.len == 1 and !namespaces.contains(mount.alias)) {
+            try linkPackageIntoLibexec(allocator, io, libexec_dir, mount.alias, mount.source);
+            continue;
+        }
+        // Record each conflicting alias once.
+        var recorded = false;
+        for (conflicts.items) |conflict| {
+            if (std.mem.eql(u8, conflict.alias, mount.alias)) recorded = true;
+        }
+        if (recorded) continue;
+        const names = try allocator.alloc([]const u8, claimants.items.len);
+        for (claimants.items, 0..) |name, index| names[index] = try allocator.dupe(u8, name);
+        std.mem.sort([]const u8, names, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        try conflicts.append(allocator, .{ .alias = try allocator.dupe(u8, mount.alias), .packages = names });
+    }
 }
 
 fn linkPackageIntoLibexec(
@@ -2346,6 +2485,80 @@ test "store package libexec mount falls back to the payload root when libexec ha
     const fallback_root = try storePackageLibexecRoot(allocator, io, payload_root, "plain-library");
     defer allocator.free(fallback_root);
     try std.testing.expectEqualStrings(payload_root, fallback_root);
+}
+
+fn expectLinkTarget(io: std.Io, dir: std.Io.Dir, name: []const u8, expected: []const u8) !void {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.readLink(io, name, &buffer);
+    try std.testing.expectEqualStrings(expected, buffer[0..len]);
+}
+
+test "libexec mounts packages under their namespace and never lets one shadow another" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "libexec");
+    var libexec = try tmp.dir.openDir(io, "libexec", .{});
+    defer libexec.close(io);
+
+    const mounts = [_]LibexecMount{
+        .{ .name = "moonstone/meteorite", .alias = "meteorite", .source = "/store/moonstone-meteorite" },
+        .{ .name = "hydronium/meteorite", .alias = "meteorite", .source = "/store/hydronium-meteorite" },
+        .{ .name = "hydronium/create", .alias = "hydronium-create", .source = "/store/hydronium-create" },
+        .{ .name = "moonstone/luajit", .alias = "luajit", .source = "/store/luajit" },
+        .{ .name = "lua-cjson", .alias = "lua-cjson", .source = "/store/lua-cjson" },
+    };
+    var conflicts = std.ArrayList(LibexecAliasConflict).empty;
+    defer {
+        for (conflicts.items) |conflict| conflict.deinit(allocator);
+        conflicts.deinit(allocator);
+    }
+    try mountLibexec(allocator, io, libexec, &mounts, &conflicts);
+
+    // Canonical namespaced paths, one per package.
+    try expectLinkTarget(io, libexec, "moonstone/meteorite", "/store/moonstone-meteorite");
+    try expectLinkTarget(io, libexec, "hydronium/meteorite", "/store/hydronium-meteorite");
+    try expectLinkTarget(io, libexec, "hydronium/create", "/store/hydronium-create");
+    try expectLinkTarget(io, libexec, "lua-cjson", "/store/lua-cjson");
+    // Unambiguous compatibility aliases keep existing references working.
+    try expectLinkTarget(io, libexec, "luajit", "/store/luajit");
+    try expectLinkTarget(io, libexec, "hydronium-create", "/store/hydronium-create");
+    // The contested alias is absent (never the wrong package) and recorded.
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    try std.testing.expectError(error.FileNotFound, libexec.readLink(io, "meteorite", &buffer));
+    try std.testing.expectEqual(@as(usize, 1), conflicts.items.len);
+    try std.testing.expectEqualStrings("meteorite", conflicts.items[0].alias);
+    try std.testing.expectEqualStrings("hydronium/meteorite", conflicts.items[0].packages[0]);
+    try std.testing.expectEqualStrings("moonstone/meteorite", conflicts.items[0].packages[1]);
+}
+
+test "libexec aliases never replace a namespace directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "libexec");
+    var libexec = try tmp.dir.openDir(io, "libexec", .{});
+    defer libexec.close(io);
+
+    // `acme/hydronium` would alias to `hydronium`, the directory holding
+    // hydronium/*'s namespaced mounts.
+    const mounts = [_]LibexecMount{
+        .{ .name = "hydronium/core", .alias = "core", .source = "/store/core" },
+        .{ .name = "acme/hydronium", .alias = "hydronium", .source = "/store/acme-hydronium" },
+    };
+    var conflicts = std.ArrayList(LibexecAliasConflict).empty;
+    defer {
+        for (conflicts.items) |conflict| conflict.deinit(allocator);
+        conflicts.deinit(allocator);
+    }
+    try mountLibexec(allocator, io, libexec, &mounts, &conflicts);
+    try expectLinkTarget(io, libexec, "hydronium/core", "/store/core");
+    try expectLinkTarget(io, libexec, "acme/hydronium", "/store/acme-hydronium");
+    try expectLinkTarget(io, libexec, "core", "/store/core");
+    try std.testing.expectEqual(@as(usize, 1), conflicts.items.len);
+    try std.testing.expectEqualStrings("hydronium", conflicts.items[0].alias);
 }
 
 test "package roots deduplicate and refuse ambiguous variable names" {

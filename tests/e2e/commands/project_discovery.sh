@@ -16,7 +16,7 @@ list_output=$(moon list)
 assert_contains "${list_output}" "Project: discovery-test" "list discovers parent project"
 
 run_output=$(moon run missing 2>&1 || true)
-assert_contains "${run_output}" "script 'missing' not found" "run discovers parent project"
+assert_contains "${run_output}" "script 'missing' is not declared in moonstone.toml" "run discovers parent project"
 
 
 moon add inspect@3.1.3 --no-sync
