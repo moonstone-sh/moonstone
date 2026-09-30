@@ -1180,7 +1180,7 @@ pub const RegistryProvider = struct {
                         defer spec.deinit(self.allocator);
                         try terms.append(self.allocator, .{
                             .name = try arena.dupe(u8, spec.name),
-                            .range = try semver.VersionRange.parse(arena, spec.constraint orelse "*"),
+                            .range = try semver.VersionRange.parse(arena, runtimeAbiConstraint(spec.constraint orelse "*")),
                             .registry = if (spec.registry) |registry_name| try arena.dupe(u8, registry_name) else null,
                             .resolver = spec.resolver,
                         });
@@ -1220,7 +1220,7 @@ pub const RegistryProvider = struct {
                             defer runtime_spec.deinit(self.allocator);
                             try terms.append(self.allocator, .{
                                 .name = try arena.dupe(u8, runtime_spec.name),
-                                .range = try semver.VersionRange.parse(arena, runtime_spec.constraint orelse "*"),
+                                .range = try semver.VersionRange.parse(arena, runtimeAbiConstraint(runtime_spec.constraint orelse "*")),
                                 .resolver = .moonstone,
                             });
                         }
@@ -1487,6 +1487,32 @@ fn storeCandidateCompatible(candidate: driver_mod.Candidate, options: root.Resol
     }
 
     return true;
+}
+
+/// An artifact's `runtime` names the interpreter it was built against
+/// (`lua@5.4.7`), but Lua's ABI is fixed per minor release: anything built for
+/// 5.4.7 loads under every 5.4.x. Requiring the exact patch made switching to
+/// another 5.4 interpreter unsatisfiable. An exact `X.Y.Z` therefore widens to
+/// `X.Y` (>=X.Y.0 <X.(Y+1).0); any other constraint is kept as written.
+fn runtimeAbiConstraint(constraint: []const u8) []const u8 {
+    var dots: usize = 0;
+    var second_dot: usize = 0;
+    for (constraint, 0..) |c, i| {
+        if (c == '.') {
+            dots += 1;
+            if (dots == 2) second_dot = i;
+        } else if (!std.ascii.isDigit(c)) return constraint;
+    }
+    if (dots != 2 or second_dot == 0 or second_dot + 1 == constraint.len) return constraint;
+    return constraint[0..second_dot];
+}
+
+test "runtimeAbiConstraint widens exact patch versions to the minor ABI band" {
+    try std.testing.expectEqualStrings("5.4", runtimeAbiConstraint("5.4.7"));
+    try std.testing.expectEqualStrings("5.4", runtimeAbiConstraint("5.4"));
+    try std.testing.expectEqualStrings("*", runtimeAbiConstraint("*"));
+    try std.testing.expectEqualStrings("^5.4.7", runtimeAbiConstraint("^5.4.7"));
+    try std.testing.expectEqualStrings("2.1.0-beta3", runtimeAbiConstraint("2.1.0-beta3"));
 }
 
 fn isResolvableRuntimeSpec(runtime_spec: []const u8) bool {

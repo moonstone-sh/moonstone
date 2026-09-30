@@ -206,7 +206,7 @@ exit_if_cancelled() {
 
 is_real_rocks_contract() {
     case "$(basename "$1")" in
-        cqueues_real_contract.sh|luafilesystem_real_contract.sh|luajit_real_luarocks_http_api.sh|luaposix_real_contract.sh|luasql_sqlite3_real_contract.sh|luv_real_contract.sh)
+        cqueues_real_contract.sh|luafilesystem_real_contract.sh|luajit_real_luarocks_http_api.sh|luaposix_real_contract.sh|luasql_sqlite3_real_contract.sh|luv_real_contract.sh|moonscript_coexistence.sh)
             return 0
             ;;
         *)

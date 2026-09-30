@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Network contract: resolves real LuaRocks rocks and the published
+# moonstone/ballad, neither of which the offline synthetic sandbox carries.
+# The runner gates it behind --include-real-rocks.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 MOON_BIN="${MOON_BIN:-$PROJECT_ROOT/zig-out/bin/moon}"

@@ -94,7 +94,9 @@ grep -q "${HOST_TARGET}" "${WORKDIR}/profiles.json"
 moon lock verify --target "${HOST_TARGET}" --json >"${WORKDIR}/verify.json"
 grep -q '"valid":true' "${WORKDIR}/verify.json"
 moon lock realization list --json >"${WORKDIR}/realizations.json"
-grep -q '"package":"moonstone/lua"' "${WORKDIR}/realizations.json"
+# The runtime is "lua" in the synthetic sandbox registry and "moonstone/lua"
+# in the official one; either proves the runtime realization was recorded.
+grep -Eq '"package":"(moonstone/)?lua"' "${WORKDIR}/realizations.json"
 
 case "${HOST_TARGET}" in
     *-macos) FOREIGN_TARGET="x86_64-linux-gnu" ;;
