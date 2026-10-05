@@ -310,6 +310,27 @@ pub const Solver = struct {
 
             if (exactVersion(as.term)) |version| {
                 if (!self.hasExpandedPackage(as.term.name, version, as.term.resolver)) {
+                    // Providers discover candidates during version lookup. Exact
+                    // requirements must populate that metadata before reading deps.
+                    const versions = try self.provider.getVersions(as.term.name);
+                    defer self.allocator.free(versions);
+                    self.emit(.resolving, .{ .package = as.term.name });
+                    var available = false;
+                    for (versions) |candidate| {
+                        if (as.term.range.contains(candidate)) {
+                            available = true;
+                            break;
+                        }
+                    }
+                    if (!available) {
+                        const inc = try arena.create(Incompatibility);
+                        const terms = try arena.alloc(Term, 1);
+                        terms[0] = try as.term.clone(arena);
+                        inc.* = .{ .terms = terms, .cause = .no_versions };
+                        try self.incompatibilities.append(arena, inc);
+                        self.last_conflict = inc;
+                        return error.NoSolution;
+                    }
                     try self.expandDependencies(as, version);
                     return as.term.name;
                 }
@@ -468,6 +489,7 @@ const MockProvider = struct {
     // element-by-element, which otherwise leaks every returned Term's
     // name/range on every call.
     content_arena: std.heap.ArenaAllocator,
+    discovered: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) MockProvider {
         return .{
@@ -498,6 +520,7 @@ const MockProvider = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.deps.deinit(self.allocator);
+        self.discovered.deinit(self.allocator);
         self.content_arena.deinit();
     }
 
@@ -515,6 +538,7 @@ const MockProvider = struct {
     fn getVersions(ctx: *anyopaque, name: []const u8) anyerror![]const semver.Version {
         const self: *MockProvider = @ptrCast(@alignCast(ctx));
         if (self.versions.get(name)) |v| {
+            try self.discovered.put(self.allocator, name, {});
             return try self.allocator.dupe(semver.Version, v);
         }
         return error.PackageNotFound;
@@ -522,6 +546,9 @@ const MockProvider = struct {
 
     fn getDependencies(ctx: *anyopaque, name: []const u8, version: semver.Version) anyerror![]const Term {
         const self: *MockProvider = @ptrCast(@alignCast(ctx));
+        // Match lazy registry providers: dependency metadata is unavailable
+        // until the package's candidates have been discovered.
+        if (!self.discovered.contains(name)) return error.CandidatesNotDiscovered;
         if (self.deps.get(name)) |vmap| {
             if (vmap.get(version)) |dt| {
                 var res = try self.allocator.alloc(Term, dt.len);
@@ -721,4 +748,18 @@ fn selfFreeResolveResult(allocator: std.mem.Allocator, key: []const u8, value: r
     allocator.free(key);
     var mutable_value = value;
     mutable_value.deinit(allocator);
+}
+
+test "unavailable exact root version is rejected" {
+    const allocator = std.testing.allocator;
+    var mp = MockProvider.init(allocator);
+    defer mp.deinit();
+    const versions = try allocator.alloc(semver.Version, 1);
+    versions[0] = try semver.Version.parse("1.0.0");
+    try mp.versions.put(allocator, "A", versions);
+    var solver = Solver.init(allocator, mp.get_provider(), .{});
+    defer solver.deinit();
+    const range = try semver.VersionRange.parse(allocator, "2.0.0");
+    defer range.deinit(allocator);
+    try std.testing.expectError(error.NoSolution, solver.solve(&.{.{ .name = "A", .range = range }}));
 }
