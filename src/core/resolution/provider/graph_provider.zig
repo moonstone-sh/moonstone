@@ -794,9 +794,15 @@ pub const RegistryProvider = struct {
 
                 var client = registry.RegistryClient.init(self.allocator, self.io, reg.url, reg.token, self.env);
                 defer client.deinit();
-                const idx = client.fetch_index() catch continue;
+                const idx = client.fetch_index() catch |err| {
+                    if (err == error.Canceled or err == error.Cancelled) return err;
+                    continue;
+                };
                 defer idx.deinit(self.allocator);
-                const private_idx = client.fetch_private_index() catch null;
+                const private_idx = client.fetch_private_index() catch |err| blk: {
+                    if (err == error.Canceled or err == error.Cancelled) return err;
+                    break :blk null;
+                };
                 defer if (private_idx) |private| private.deinit(self.allocator);
 
                 for (0..2) |index_number| {

@@ -87,6 +87,7 @@ pub fn resolve_remote(
 
     if (cache_dir) |cd| {
         const compact_versions = client.find_package_versions(cd, pkg_name) catch |err| blk: {
+            if (err == error.Canceled or err == error.Cancelled) return err;
             if (err == error.CompactStoreIndexHashMismatch or err == error.ZstdDecompressionFailed or err == error.CompactStoreIndexContentHashMismatch) return err;
             break :blk @as([]registry.RegistryClient.CompactPackageVersion, &.{});
         };

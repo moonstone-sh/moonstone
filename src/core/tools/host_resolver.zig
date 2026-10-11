@@ -1,3 +1,4 @@
+const owned_process = @import("../platform/process.zig");
 const std = @import("std");
 const replay_mod = @import("../domain/replay_contract.zig");
 const HostToolRequirement = replay_mod.HostToolRequirement;
@@ -69,7 +70,7 @@ pub fn resolveHostTool(
     const probe_flag = if (req.kind == .cmake) "--version" else "version";
     var argv = [_][]const u8{ exec_path, probe_flag };
 
-    const run_res = std.process.run(allocator, io, .{
+    const run_res = owned_process.run(allocator, io, .{
         .argv = &argv,
     }) catch {
         return error.HostToolProbeFailed;

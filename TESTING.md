@@ -98,3 +98,37 @@ paths, downloads, caches, or credentials.
 `tests/docker/run-linux-ci.sh all` is the closest Linux CI reproduction. The
 release workflow runs the broader certification matrix through
 `scripts/release/verify-release.sh --with-upstream --with-contracts`.
+
+## Sync cancellation
+
+After `zig build`, run the real-signal regression matrix against a stalled
+loopback registry:
+
+```sh
+python3 tests/scripts/test_sync_cancellation.py
+```
+
+It checks Ctrl-C during response headers and bodies in default, fancy, plain,
+quiet, JSON and CI modes. POSIX hosts also check SIGTERM; Windows checks both
+Ctrl-C and Ctrl-Break in an isolated console. Each abort must return within three
+seconds with status 130 and must not publish a partial lockfile. Native unit
+tests additionally cover blocked worker groups and build-process descendants.
+
+With the synthetic registry generated, add artifact-download and blocked-build
+checks (including child-process cleanup):
+
+```sh
+python3 tests/scripts/test_sync_cancellation.py --with-fixtures
+```
+
+The fixture download/build scenarios run on POSIX hosts. On Windows, run
+`zig build test-cancellation` to check that cancellation kills descendants
+holding capture pipes open. Build processes start suspended, join a private
+kill-on-close Job Object, then resume; ownership failures abort the spawn.
+The blocking `Windows Cancellation and Process Ownership` CI job runs this
+check and the real console-signal matrix. Tagged release publication also
+requires that Windows job to pass. Cross-compilation alone does not
+certify Windows runtime behavior.
+
+For compilation without execution, use
+`zig build check-cancellation -Dtarget=x86_64-windows-gnu`.

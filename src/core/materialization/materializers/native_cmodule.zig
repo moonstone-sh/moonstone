@@ -1,3 +1,4 @@
+const owned_process = @import("../../platform/process.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const manifest = @import("../../domain/manifest.zig");
@@ -58,7 +59,7 @@ const macos_signature = switch (builtin.os.tag) {
         fn sign(allocator: std.mem.Allocator, io: std.Io, output_path: []const u8, module_name: []const u8) !void {
             const identifier = try std.fmt.allocPrint(allocator, "sh.moonstone.native.{s}", .{module_name});
             defer allocator.free(identifier);
-            const result = try std.process.run(allocator, io, .{
+            const result = try owned_process.run(allocator, io, .{
                 .argv = &.{ "codesign", "--force", "--sign", "-", "--identifier", identifier, "--timestamp=none", output_path },
             });
             defer allocator.free(result.stdout);
@@ -74,7 +75,7 @@ const macos_signature = switch (builtin.os.tag) {
 const macos_sdk = switch (builtin.os.tag) {
     .macos => struct {
         fn path(allocator: std.mem.Allocator, io: std.Io) !?[]const u8 {
-            const result = try std.process.run(allocator, io, .{ .argv = &.{ "xcrun", "--show-sdk-path" } });
+            const result = try owned_process.run(allocator, io, .{ .argv = &.{ "xcrun", "--show-sdk-path" } });
             defer allocator.free(result.stdout);
             defer allocator.free(result.stderr);
             if (result.term != .exited or result.term.exited != 0) return error.MacOSSDKUnavailable;
@@ -359,7 +360,7 @@ pub fn build(
     }
 
     // 3. Spawn compilation
-    const res = std.process.run(allocator, io, .{
+    const res = owned_process.run(allocator, io, .{
         .argv = argv.items,
         .environ_map = env_map,
         .cwd = .{ .path = source_dir_path },

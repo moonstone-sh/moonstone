@@ -50,6 +50,7 @@ run "Build native target" zig build
 run "Compile Windows x86_64 GNU target" zig build -Dtarget=x86_64-windows-gnu
 run "Compile Windows ARM64 GNU target" zig build -Dtarget=aarch64-windows-gnu
 run "Run Zig tests" zig build test
+run "Check sync signal cancellation" python3 tests/scripts/test_sync_cancellation.py
 
 if [[ "${WITH_UPSTREAM}" == true ]]; then
     : "${LUAROCKS_UPSTREAM_DIR:?--with-upstream requires LUAROCKS_UPSTREAM_DIR}"

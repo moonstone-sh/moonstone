@@ -13,6 +13,10 @@ zig fmt --check --exclude src/core/assets/templates src/ build.zig
 echo "━━━ Run Zig unit tests ━━━"
 zig build test
 
+echo "━━━ Verify sync cancellation against stalled registry responses ━━━"
+zig build
+python3 tests/scripts/test_sync_cancellation.py
+
 echo "━━━ Verify public contracts ━━━"
 bash packages/contracts/tests/run.sh
 

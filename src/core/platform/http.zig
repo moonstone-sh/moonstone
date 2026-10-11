@@ -57,7 +57,8 @@ fn doFetch(
     on_progress: ?ProgressCallback,
     progress_ctx: ?*anyopaque,
     cancellation_flag: ?*const std.atomic.Value(bool),
-) !FetchResponse {
+) anyerror!FetchResponse {
+    try std.Io.checkCancel(client.io);
     if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
     const uri = try std.Uri.parse(url);
     const protocol = std.http.Client.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
@@ -83,19 +84,34 @@ fn doFetch(
             .clock = .real,
         } },
     });
-    if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
+    if (isCancellationRequested(cancellation_flag)) {
+        conn.closing = true;
+        client.connection_pool.release(conn, client.io);
+        return error.Cancelled;
+    }
 
     var req = try client.request(.GET, uri, .{
         .connection = conn,
         .extra_headers = extra_headers orelse &.{},
     });
     defer req.deinit();
+    // An aborted response must be closed, never drained for connection reuse.
+    errdefer if (req.connection) |connection| {
+        connection.closing = true;
+    };
 
     try req.sendBodiless();
     if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     var redirect_buf: [4096]u8 = undefined;
-    var resp = try req.receiveHead(&redirect_buf);
+    var resp = req.receiveHead(&redirect_buf) catch |err| {
+        if (err == error.ReadFailed) {
+            if (req.connection.?.getReadError()) |cause| {
+                if (cause == error.Canceled) return error.Canceled;
+            }
+        }
+        return err;
+    };
     if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
 
     const decompress_buffer: []u8 = switch (resp.head.content_encoding) {
@@ -117,7 +133,14 @@ fn doFetch(
     while (true) {
         if (isCancellationRequested(cancellation_flag)) return error.Cancelled;
         var chunk_buf: [8192]u8 = undefined;
-        const n = try reader.readSliceShort(&chunk_buf);
+        const n = reader.readSliceShort(&chunk_buf) catch |err| {
+            if (err == error.ReadFailed) {
+                if (req.connection.?.getReadError()) |cause| {
+                    if (cause == error.Canceled) return error.Canceled;
+                }
+            }
+            return err;
+        };
         if (n == 0) break;
         try out_list.appendSlice(allocator, chunk_buf[0..n]);
         downloaded += n;

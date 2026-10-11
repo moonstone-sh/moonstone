@@ -25,20 +25,16 @@ pub const Scheduler = struct {
         }
 
         const worker_count = @min(jobs, self.task_count);
-        const spawned_capacity = worker_count - 1;
-        const threads = try self.allocator.alloc(std.Thread, spawned_capacity);
-        defer self.allocator.free(threads);
-
-        var spawned: usize = 0;
-        for (threads, 0..) |*thread, index| {
-            _ = index;
-            thread.* = std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, workerMain, .{self}) catch break;
-            spawned += 1;
+        var workers: std.Io.Group = .init;
+        defer workers.cancel(self.io);
+        for (0..worker_count) |worker_index| {
+            workers.concurrent(self.io, workerMain, .{self}) catch {
+                // Keep the group joined even if resources limit concurrency.
+                if (worker_index == 0) self.worker();
+                break;
+            };
         }
-
-        // Resource limits should reduce concurrency, not prevent sync.
-        self.worker();
-        for (threads[0..spawned]) |thread| thread.join();
+        try workers.await(self.io);
 
         return self.first_error orelse {};
     }
@@ -49,6 +45,10 @@ pub const Scheduler = struct {
 
     fn worker(self: *Scheduler) void {
         while (!self.failed.load(.acquire)) {
+            std.Io.checkCancel(self.io) catch |err| {
+                self.recordError(err);
+                return;
+            };
             if (self.is_cancelled) |check| {
                 if (check(self.context)) {
                     self.recordError(error.Cancelled);
@@ -118,4 +118,27 @@ test "scheduler stops issuing work after a task failure" {
     };
     try std.testing.expectError(error.ExpectedFailure, scheduler.execute(1));
     try std.testing.expectEqual(@as(usize, 2), count.load(.monotonic));
+}
+
+test "cancellation propagates into blocked scheduler workers" {
+    const Context = struct {
+        io: std.Io,
+        started: std.atomic.Value(usize) = .init(0),
+        stopped: std.atomic.Value(usize) = .init(0),
+        fn run(raw: *anyopaque, _: usize) !void {
+            const ctx: *@This() = @ptrCast(@alignCast(raw));
+            _ = ctx.started.fetchAdd(1, .release);
+            defer _ = ctx.stopped.fetchAdd(1, .release);
+            try std.Io.sleep(ctx.io, std.Io.Duration.fromSeconds(60), .awake);
+        }
+        fn execute(scheduler: *Scheduler) !void {
+            try scheduler.execute(2);
+        }
+    };
+    var ctx = Context{ .io = std.testing.io };
+    var scheduler = Scheduler{ .allocator = std.testing.allocator, .io = std.testing.io, .task_count = 2, .context = &ctx, .run_task = Context.run };
+    var task = try std.Io.concurrent(std.testing.io, Context.execute, .{&scheduler});
+    while (ctx.started.load(.acquire) < 2) try std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(1), .awake);
+    try std.testing.expectError(error.Canceled, task.cancel(std.testing.io));
+    try std.testing.expectEqual(@as(usize, 2), ctx.stopped.load(.acquire));
 }

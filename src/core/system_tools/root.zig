@@ -1,3 +1,4 @@
+const owned_process = @import("../platform/process.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -108,7 +109,7 @@ pub fn checkTool(allocator: std.mem.Allocator, io: std.Io, name: []const u8, ver
         .version = null,
     };
 
-    const res = std.process.run(allocator, io, .{
+    const res = owned_process.run(allocator, io, .{
         .argv = &.{ exe_path.?, version_arg },
     }) catch {
         return status;
@@ -131,7 +132,7 @@ pub fn checkTool(allocator: std.mem.Allocator, io: std.Io, name: []const u8, ver
 }
 
 pub fn runTool(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !ToolRunResult {
-    const res = try std.process.run(allocator, io, .{
+    const res = try owned_process.run(allocator, io, .{
         .argv = argv,
     });
 

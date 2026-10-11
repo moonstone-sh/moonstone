@@ -1,3 +1,4 @@
+const owned_process = @import("../platform/process.zig");
 const std = @import("std");
 const plan_mod = @import("plan.zig");
 const MaterializationPlan = plan_mod.MaterializationPlan;
@@ -91,7 +92,7 @@ pub fn executePlan(
             try step_env.put(se.key, se.value);
         }
 
-        var child = std.process.spawn(io, .{
+        var child = owned_process.spawnOwned(io, .{
             .argv = argv_list.items,
             .cwd = .{ .path = step_cwd },
             .environ_map = &step_env,
@@ -101,6 +102,7 @@ pub fn executePlan(
             return error.ExecutionStepFailed;
         };
 
+        defer owned_process.killTree(&child, io);
         const term = child.wait(io) catch return error.ExecutionStepFailed;
         if (term != .exited or term.exited != 0) {
             return error.ExecutionStepFailed;
@@ -121,7 +123,7 @@ pub fn executePlan(
 
         switch (out_rule.kind) {
             .copy_file, .lua_module, .lua_cmodule, .executable => {
-                const cp_res = try std.process.run(allocator, io, .{
+                const cp_res = try owned_process.run(allocator, io, .{
                     .argv = &.{ "cp", src_abs, dest_abs },
                 });
                 defer allocator.free(cp_res.stdout);
@@ -131,7 +133,7 @@ pub fn executePlan(
                 }
             },
             .copy_tree => {
-                const cp_res = try std.process.run(allocator, io, .{
+                const cp_res = try owned_process.run(allocator, io, .{
                     .argv = &.{ "cp", "-r", src_abs, dest_abs },
                 });
                 defer allocator.free(cp_res.stdout);

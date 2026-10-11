@@ -11,6 +11,7 @@ pub const SolverEvent = enum {
 pub const SolverCallback = *const fn (context: ?*anyopaque, event: SolverEvent, data: std.json.Value) void;
 
 pub const SolverOptions = struct {
+    io: ?std.Io = null,
     on_event: ?SolverCallback = null,
     on_event_context: ?*anyopaque = null,
 };

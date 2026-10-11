@@ -65,6 +65,7 @@ pub const CommandNode = struct {
                 }
 
                 fn reportAndStop(args: []const []const u8, ctx: *Context, cmd: CmdType, err: anyerror) anyerror!void {
+                    if (err == error.Cancelled or err == error.Canceled) return err;
                     if (@hasField(CmdType, "quiet") and cmd.quiet) return error.AlreadyReported;
                     const is_json = if (@hasField(CmdType, "json")) cmd.json or argsWantJson(args) else argsWantJson(args);
                     const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;

@@ -70,6 +70,13 @@ pub fn build(b: *std.Build) void {
     // 3. Tests Step (`zig build test`)
     // -------------------------------------------------------------------------
     const test_step = b.step("test", "Run native tests");
+    const cancellation_step = b.step("test-cancellation", "Run process ownership and cancellation unit tests");
+    const process_tests = createMoonTest(b, "src/core/platform/process.zig", target, optimize, build_options_mod);
+    const run_process_tests = b.addRunArtifact(process_tests);
+    cancellation_step.dependOn(&run_process_tests.step);
+    const cancellation_compile = b.step("check-cancellation", "Compile cancellation tests without running them");
+    cancellation_compile.dependOn(&process_tests.step);
+
     const core_tests = createMoonTest(b, "src/core/root.zig", target, optimize, build_options_mod);
     const cli_tests = createMoonTest(b, "src/cli/main.zig", target, optimize, build_options_mod);
     const progress_ui_tests = createMoonTest(b, "src/cli/progress.zig", target, optimize, build_options_mod);

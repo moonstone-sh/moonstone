@@ -327,7 +327,39 @@ fn displayWidth(codepoint: u21) usize {
 /// Global pointer to the active cancellation flag.  Only one
 /// `runWithProgress` call is active at a time (it runs on the main
 /// thread), so a single global is safe.
-const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) struct {
+const CancelHandler = if (builtin.os.tag == .windows) struct {
+    const Previous = void;
+    var active = std.atomic.Value(?*std.atomic.Value(bool)).init(null);
+    var readers = std.atomic.Value(usize).init(0);
+    extern "kernel32" fn SetConsoleCtrlHandler(handler: ?*const fn (u32) callconv(.winapi) c_int, add: c_int) callconv(.winapi) c_int;
+
+    fn handle(event: u32) callconv(.winapi) c_int {
+        if (event != 0 and event != 1) return 0;
+        _ = readers.fetchAdd(1, .seq_cst);
+        defer _ = readers.fetchSub(1, .seq_cst);
+        const cancel = active.load(.seq_cst) orelse return 0;
+        cancel.store(true, .release);
+        return 1;
+    }
+
+    fn install(cancel: *std.atomic.Value(bool)) ?Previous {
+        active.store(cancel, .seq_cst);
+        if (SetConsoleCtrlHandler(handle, 1) == 0) {
+            active.store(null, .seq_cst);
+            return null;
+        }
+        return {};
+    }
+
+    fn uninstall(old: ?Previous) void {
+        if (old == null) return;
+        active.store(null, .seq_cst);
+        _ = SetConsoleCtrlHandler(handle, 0);
+        // An OS callback may already be running. Retire the borrowed flag only
+        // after every callback that could have observed it has finished.
+        while (readers.load(.seq_cst) != 0) std.atomic.spinLoopHint();
+    }
+} else if (builtin.os.tag == .wasi or builtin.os.tag == .freestanding) struct {
     const Previous = void;
 
     fn install(_: *std.atomic.Value(bool)) ?Previous {
@@ -344,7 +376,7 @@ const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi 
         if (global_cancel) |cancel| cancel.store(true, .release);
     }
 
-    const Previous = std.c.Sigaction;
+    const Previous = struct { interrupt: std.c.Sigaction, terminate: std.c.Sigaction };
 
     fn install(cancel: *std.atomic.Value(bool)) ?Previous {
         global_cancel = cancel;
@@ -367,13 +399,13 @@ const CancelHandler = if (builtin.os.tag == .windows or builtin.os.tag == .wasi 
             return null;
         }
 
-        return old_int;
+        return .{ .interrupt = old_int, .terminate = old_term };
     }
 
     fn uninstall(old: ?Previous) void {
         if (old) |*action| {
-            _ = std.c.sigaction(.INT, action, null);
-            _ = std.c.sigaction(.TERM, action, null);
+            _ = std.c.sigaction(.INT, &action.interrupt, null);
+            _ = std.c.sigaction(.TERM, &action.terminate, null);
         }
         global_cancel = null;
     }
@@ -1982,7 +2014,30 @@ pub fn runWithProgress(
     work_fn: *const fn (*WorkerContext) anyerror!void,
     cmd_data: ?*anyopaque,
 ) !void {
-    const is_tty = std.Io.File.stderr().isTty(io) catch false;
+    return runWorker(io, progress_writer, allocator, env, work_fn, cmd_data, true);
+}
+
+pub fn runWithoutProgress(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    work_fn: *const fn (*WorkerContext) anyerror!void,
+    cmd_data: ?*anyopaque,
+) !void {
+    return runWorker(io, writer, allocator, env, work_fn, cmd_data, false);
+}
+
+fn runWorker(
+    io: std.Io,
+    progress_writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    work_fn: *const fn (*WorkerContext) anyerror!void,
+    cmd_data: ?*anyopaque,
+    show_ui: bool,
+) !void {
+    const is_tty = show_ui and (std.Io.File.stderr().isTty(io) catch false);
 
     // Initialize the UI before any fallible setup so it owns cursor cleanup
     // even when queue or worker initialization fails.
@@ -2003,15 +2058,16 @@ pub fn runWithProgress(
         .cmd_data = cmd_data,
     };
 
-    // Install SIGINT/SIGTERM handlers for cooperative cancellation.
+    // Install platform console/signal handlers for cooperative cancellation.
     const old_sa = CancelHandler.install(&cancel);
     defer CancelHandler.uninstall(old_sa);
 
-    // Spawn worker thread with a larger stack size (8MB) to avoid stack overflows
-    // when parsing large structures (like MoonstoneToml) on platforms with small defaults.
-    const spawn_config = std.Thread.SpawnConfig{ .stack_size = 8 * 1024 * 1024 };
-    const thread = try std.Thread.spawn(spawn_config, workerMain, .{ work_fn, &wctx });
-    defer thread.join();
+    // Structured I/O tasks let cancellation interrupt blocked network reads,
+    // subprocess waits and nested scheduler groups, rather than only setting
+    // a flag which the worker cannot inspect while blocked.
+    var workers: std.Io.Group = .init;
+    try workers.concurrent(io, workerMain, .{ work_fn, &wctx });
+    defer workers.cancel(io);
 
     // Run UI loop on the main thread.
     const poll_sleep = std.Io.Duration.fromMilliseconds(16);
@@ -2030,6 +2086,7 @@ pub fn runWithProgress(
             }
             switch (event) {
                 .done => {
+                    if (cancel.load(.acquire)) return error.Cancelled;
                     if (is_tty) {
                         const counts = ui.packageCounts();
                         if (counts.total() > 0) {
@@ -2057,7 +2114,7 @@ pub fn runWithProgress(
                         ui.reconcileIncompletePackages();
                         ui.renderReconciledPackages();
                         ui.onWorkerStopped();
-                        ui.renderStopped();
+                        if (show_ui) ui.renderStopped();
                         return error.Cancelled;
                     }
                     ui.reconcileIncompletePackages();
@@ -2074,10 +2131,11 @@ pub fn runWithProgress(
         if (cancel.load(.acquire) and !cancellation_shown) {
             cancellation_shown = true;
             ui.beginStopping(0); // total will be updated by events
-            if (!is_tty) {
+            if (show_ui and !is_tty) {
                 progress_writer.print("Stopping…\n", .{}) catch {};
                 progress_writer.flush() catch {};
             }
+            workers.cancel(io);
         }
 
         ui.renderIfDue();
@@ -3308,4 +3366,20 @@ test "terminalRows queries LINES env and clamps max_visible_rows" {
     defer ui.deinit();
     try std.testing.expectEqual(@as(usize, 40), ui.rows);
     try std.testing.expectEqual(@as(usize, 25), ui.max_visible_rows);
+}
+
+test "cancellation interrupts a blocked worker without progress output" {
+    const Worker = struct {
+        fn run(ctx: *WorkerContext) !void {
+            ctx.cancel.store(true, .release);
+            try std.Io.sleep(ctx.io, std.Io.Duration.fromSeconds(60), .awake);
+            return error.TestUnexpectedResult;
+        }
+    };
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var bytes: [1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try std.testing.expectError(error.Cancelled, runWithoutProgress(std.testing.io, &writer, std.testing.allocator, &env, Worker.run, null));
+    try std.testing.expectEqualStrings("", writer.buffered());
 }

@@ -203,6 +203,11 @@ pub fn main(init: std.process.Init) !void {
     ctx.root = &App;
 
     router.dispatch(App, all_args[1..], &ctx) catch |err| {
+        if (err == error.Cancelled or err == error.Canceled) {
+            stdout.flush() catch {};
+            stderr.flush() catch {};
+            std.process.exit(130);
+        }
         if (err == error.AlreadyReported) {
             stdout.flush() catch {};
             profiler.finish("process.exit.error");

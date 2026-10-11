@@ -55,9 +55,28 @@ jobs:
           export LUAROCKS_UPSTREAM_DIR="$GITHUB_WORKSPACE/.ci/luarocks-upstream"
           LUA_BIN=lua5.4 scripts/release/verify-release.sh --with-upstream --with-contracts
 
+  windows-cancellation:
+    name: Windows Cancellation and Process Ownership
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build Moonstone
+        run: zig build
+      - name: Check descendant cleanup
+        run: zig build test-cancellation
+      - name: Check Ctrl-C and Ctrl-Break during stalled registry requests
+        run: python -u tests/scripts/test_sync_cancellation.py
+
   build-and-release:
     name: Build & Publish GitHub Release
-    needs: verify-release
+    needs: [verify-release, windows-cancellation]
     runs-on: ubuntu-latest
     outputs:
       mac_arm: ${{ steps.hashes.outputs.mac_arm }}

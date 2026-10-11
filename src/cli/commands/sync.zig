@@ -425,6 +425,7 @@ fn materializationJobs(arg: ?[]const u8) !usize {
 const SyncWorkData = struct {
     cmd: SyncCommand,
     ctx: *router.Context,
+    backend: ?progress_runtime.ProgressBackend = null,
     error_detail: ?@import("command.zig").CliErrorDetail = null,
 };
 
@@ -432,7 +433,7 @@ const SyncWorkData = struct {
 /// sending progress events through the queue.
 fn syncWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
     const data: *SyncWorkData = @ptrCast(@alignCast(wctx.cmd_data orelse return error.WorkerMissingData));
-    data.cmd.runImpl(data.ctx, .{ .queue = wctx }) catch |err| {
+    data.cmd.runImpl(data.ctx, data.backend orelse .{ .queue = wctx }) catch |err| {
         // Stash error_detail for the main thread to pick up.
         if (data.ctx.error_detail) |detail| {
             data.error_detail = detail;
@@ -1870,18 +1871,15 @@ const HashVerifyPool = struct {
         }
         const num = @min(n, self.jobs.len);
 
-        var threads: [8]std.Thread = undefined;
-        var spawned: usize = 0;
-        for (0..num) |i| {
-            threads[i] = std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, run, .{self}) catch |err| {
-                if (err == error.SystemResources or err == error.ResourceLimitReached or err == error.OutOfMemory) break;
-                return err;
+        var workers: std.Io.Group = .init;
+        defer workers.cancel(self.io);
+        for (0..num) |worker_index| {
+            workers.concurrent(self.io, run, .{self}) catch {
+                if (worker_index == 0) self.run();
+                break;
             };
-            spawned += 1;
         }
-        for (0..spawned) |i| {
-            threads[i].join();
-        }
+        try workers.await(self.io);
     }
 };
 
@@ -1941,19 +1939,19 @@ pub const SyncCommand = struct {
         // JSON mode: run synchronously with direct stdout (emitter handles output).
         // Non-JSON mode: run on a worker thread with the progress UI on the main thread.
         if (self.json) {
-            return self.runImpl(ctx, .{ .direct = ctx.stdout });
+            return self.runCancellable(ctx, .{ .direct = ctx.stdout });
         }
         if (self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "plain")) {
-            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+            return self.runCancellable(ctx, .{ .direct = ctx.stderr });
         }
 
         if (self.quiet) {
-            return self.runImpl(ctx, .silent);
+            return self.runCancellable(ctx, .silent);
         }
 
         const force_fancy = self.progress_arg != null and std.mem.eql(u8, self.progress_arg.?, "fancy");
         if (!force_fancy and (ctx.env.get("CI") != null or ctx.env.get("MOONSTONE_NO_PROGRESS") != null)) {
-            return self.runImpl(ctx, .{ .direct = ctx.stderr });
+            return self.runCancellable(ctx, .{ .direct = ctx.stderr });
         }
 
         var data = SyncWorkData{ .cmd = self, .ctx = ctx };
@@ -1961,6 +1959,14 @@ pub const SyncCommand = struct {
             if (data.error_detail) |detail| {
                 ctx.error_detail = detail;
             }
+            return err;
+        };
+    }
+
+    fn runCancellable(self: SyncCommand, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
+        var data = SyncWorkData{ .cmd = self, .ctx = ctx, .backend = backend };
+        progress_runtime.runWithoutProgress(ctx.io, ctx.stderr, ctx.allocator, ctx.env, syncWorker, &data) catch |err| {
+            if (data.error_detail) |detail| ctx.error_detail = detail;
             return err;
         };
     }
@@ -2873,6 +2879,7 @@ pub const SyncCommand = struct {
 
             profile_span = profiler.now();
             var solver = moonstone.resolution.solver.pubgrub.Solver.init(allocator, provider_impl.get_provider(), .{
+                .io = io,
                 .on_event = on_solver_cb,
                 .on_event_context = on_solver_ctx,
             });
@@ -3894,9 +3901,11 @@ pub const SyncCommand = struct {
             defer aw.deinit();
             try next_lock.serialize(allocator, &aw.writer);
 
-            const lock_file = try std.Io.Dir.cwd().createFile(io, "moonstone.lock", .{});
-            defer lock_file.close(io);
-            try lock_file.writeStreamingAll(io, aw.written());
+            // Publish a complete lockfile or keep the previous one intact.
+            var lock_file = try std.Io.Dir.cwd().createFileAtomic(io, "moonstone.lock", .{ .replace = true });
+            defer lock_file.deinit(io);
+            try lock_file.file.writeStreamingAll(io, aw.written());
+            try lock_file.replace(io);
         }
 
         if (!target_is_host) {

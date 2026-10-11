@@ -307,6 +307,7 @@ pub fn extractTarStream(
         error.UnexpectedEndOfStream, error.EndOfStream => return error.UnexpectedEndOfStream,
         else => return err,
     }) |file| {
+        try std.Io.checkCancel(io);
         // Strip components if requested
         var raw_name = file.name;
         if (options.strip_components > 0) {
@@ -644,6 +645,7 @@ pub fn extractZip(
         error.ZipMultiDiskUnsupported, error.ZipEncryptionUnsupported => return error.UnsupportedArchiveFormat,
         else => return error.ZipExtractionFailed,
     }) |entry| {
+        try std.Io.checkCancel(io);
         if (entry.filename_len > filename_buf.len) return error.ZipExtractionFailed;
 
         // Read Central Directory header to extract metadata & filename

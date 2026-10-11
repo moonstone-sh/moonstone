@@ -1,3 +1,4 @@
+const owned_process = @import("../platform/process.zig");
 const std = @import("std");
 const manifest = @import("../domain/manifest.zig");
 const registry = @import("../registry/registry.zig");
@@ -324,7 +325,7 @@ pub const Materializer = struct {
 
             if (std.mem.eql(u8, m.kind, "native_cmodule")) {
                 if (self.runtime_path) |rt_path| {
-                    const zig_version_res = try std.process.run(self.allocator, self.io, .{ .argv = &.{ "zig", "version" } });
+                    const zig_version_res = try owned_process.run(self.allocator, self.io, .{ .argv = &.{ "zig", "version" } });
                     defer self.allocator.free(zig_version_res.stdout);
                     defer self.allocator.free(zig_version_res.stderr);
                     const zig_version = std.mem.trim(u8, zig_version_res.stdout, " \n\r");
@@ -394,7 +395,7 @@ pub const Materializer = struct {
                 } else return error.MissingRuntimePath;
             } else if (std.mem.eql(u8, m.kind, "cmake")) {
                 if (self.runtime_path) |rt_path| {
-                    const cmake_version_res = try std.process.run(self.allocator, self.io, .{ .argv = &.{ "cmake", "--version" } });
+                    const cmake_version_res = try owned_process.run(self.allocator, self.io, .{ .argv = &.{ "cmake", "--version" } });
                     defer self.allocator.free(cmake_version_res.stdout);
                     defer self.allocator.free(cmake_version_res.stderr);
                     const cmake_version = std.mem.trim(u8, cmake_version_res.stdout, " \n\r");

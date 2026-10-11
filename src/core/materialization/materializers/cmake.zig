@@ -1,3 +1,4 @@
+const owned_process = @import("../../platform/process.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const manifest = @import("../../domain/manifest.zig");
@@ -32,7 +33,7 @@ pub fn build(
     {
         const cmake_executable = try command.resolve_command_from_path(allocator, io, env_map, "cmake");
         defer allocator.free(cmake_executable);
-        const res = std.process.run(allocator, io, .{
+        const res = owned_process.run(allocator, io, .{
             .argv = &.{ cmake_executable, "--version" },
             .environ_map = env_map,
         }) catch |err| {

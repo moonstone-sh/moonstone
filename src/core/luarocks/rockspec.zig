@@ -1,3 +1,4 @@
+const owned_process = @import("../platform/process.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -172,7 +173,7 @@ pub fn parse_rockspec_for_target(
     try rs_file.writeStreamingAll(io, content);
     rs_file.close(io);
 
-    const res = try std.process.run(allocator, io, .{
+    const res = try owned_process.run(allocator, io, .{
         .argv = &.{ lua_bin, bridge_path, rs_path, platform },
     });
     defer {

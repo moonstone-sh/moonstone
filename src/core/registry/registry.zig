@@ -221,6 +221,7 @@ pub const RegistryClient = struct {
     /// Caller must call deinit on each entry and allocator.free on the slice.
     pub fn find_package_versions(self: *RegistryClient, cache_dir: []const u8, pkg_name: []const u8) ![]CompactPackageVersion {
         const sqlite_path = self.fetch_compact_index(cache_dir) catch |err| {
+            if (err == error.Canceled or err == error.Cancelled) return err;
             if (err == error.CompactStoreIndexHashMismatch or err == error.ZstdDecompressionFailed or err == error.CompactStoreIndexContentHashMismatch) return err;
             return @as([]CompactPackageVersion, &.{});
         } orelse return @as([]CompactPackageVersion, &.{});
@@ -543,6 +544,7 @@ pub const RegistryClient = struct {
             if (self.get_url_single(url, http_cfg.timeout_ms)) |data| {
                 return data;
             } else |err| {
+                if (err == error.Canceled or err == error.Cancelled) return err;
                 attempt += 1;
                 if (attempt > max_retries) {
                     return err;
@@ -560,7 +562,7 @@ pub const RegistryClient = struct {
                     });
                 }
 
-                std.Io.sleep(self.io, std.Io.Duration.fromSeconds(delay_seconds), .awake) catch {};
+                try std.Io.sleep(self.io, std.Io.Duration.fromSeconds(delay_seconds), .awake);
             }
         }
     }

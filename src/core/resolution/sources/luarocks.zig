@@ -290,7 +290,7 @@ fn http_get(
         if (http_get_single(allocator, io, url, http_cfg.timeout_ms, on_event, on_event_context, progress_label, cancellation_flag)) |data| {
             return data;
         } else |err| {
-            if (err == error.Cancelled) return err;
+            if (err == error.Cancelled or err == error.Canceled) return err;
             if (err == error.FileNotFound) return err;
 
             attempt += 1;
@@ -310,7 +310,7 @@ fn http_get(
                 });
             }
 
-            std.Io.sleep(io, std.Io.Duration.fromSeconds(delay_seconds), .awake) catch {};
+            try std.Io.sleep(io, std.Io.Duration.fromSeconds(delay_seconds), .awake);
             if (if (cancellation_flag) |flag| flag.load(.acquire) else false) return error.Cancelled;
         }
     }
@@ -554,8 +554,8 @@ fn fetch_manifest(
                 const span = profiler.now();
                 if (on_event) |cb| cb(on_event_context, .{ .metadata_sync_started = "Syncing LuaRocks manifest" });
                 const fetched = http_get(allocator, io, url, env_map, on_event, on_event_context, "Syncing LuaRocks manifest", cancellation_flag) catch |err| {
-                    const result_err: anyerror = if (err == error.Cancelled) err else error.RocksVersionDiscoveryFailed;
-                    if (err != error.Cancelled) std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
+                    const result_err: anyerror = if (err == error.Cancelled or err == error.Canceled) err else error.RocksVersionDiscoveryFailed;
+                    if (err != error.Cancelled and err != error.Canceled) std.debug.print("luarocks source error: {s}\n", .{@errorName(err)});
                     failManifestFlight(io, flight, result_err) catch |flight_err| return flight_err;
                     unreachable;
                 };

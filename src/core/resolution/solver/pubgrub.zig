@@ -97,6 +97,7 @@ pub const Solver = struct {
         }
 
         while (true) {
+            if (self.options.io) |io| try std.Io.checkCancel(io);
             const conflict = try self.propagate();
             if (conflict) |c| {
                 self.emit(.conflict, .{});
@@ -167,6 +168,7 @@ pub const Solver = struct {
         const arena = self.arena.allocator();
         var changed = true;
         while (changed) {
+            if (self.options.io) |io| try std.Io.checkCancel(io);
             changed = false;
             var i: usize = 0;
             while (i < self.incompatibilities.items.len) : (i += 1) {
@@ -303,6 +305,7 @@ pub const Solver = struct {
 
         var i = self.solution.assignments.items.len;
         while (i > 0) {
+            if (self.options.io) |io| try std.Io.checkCancel(io);
             i -= 1;
             const as = self.solution.assignments.items[i];
             if (seen.contains(as.term.name)) continue;
@@ -396,6 +399,7 @@ pub const Solver = struct {
         var current = try conflict.clone(arena);
 
         while (true) {
+            if (self.options.io) |io| try std.Io.checkCancel(io);
             var highest_level: u32 = 0;
             var second_highest_level: u32 = 0;
             var term_at_highest_level: ?usize = null;

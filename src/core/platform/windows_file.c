@@ -58,3 +58,31 @@ int moonstone_read_file_w(const wchar_t *path, char **out_bytes, size_t *out_len
 void moonstone_free_file_w(char *bytes) {
     free(bytes);
 }
+
+/* A suspended spawn is assigned before its first instruction executes. */
+void *moonstone_job_create(void) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (!job) return NULL;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        CloseHandle(job);
+        return NULL;
+    }
+    return job;
+}
+int moonstone_job_assign(void *job, void *process) {
+    return AssignProcessToJobObject(job, process) != 0;
+}
+int moonstone_thread_resume(void *thread) {
+    return ResumeThread(thread) != (DWORD)-1;
+}
+void moonstone_job_close(void *job) { CloseHandle(job); }
+
+int moonstone_process_alive(uint32_t pid) {
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!process) return GetLastError() == ERROR_INVALID_PARAMETER ? 0 : -1;
+    DWORD result = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return result == WAIT_TIMEOUT ? 1 : (result == WAIT_OBJECT_0 ? 0 : -1);
+}

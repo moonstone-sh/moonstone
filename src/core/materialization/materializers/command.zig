@@ -1,3 +1,4 @@
+const owned_process = @import("../../platform/process.zig");
 const std = @import("std");
 const manifest = @import("../../domain/manifest.zig");
 const executable = @import("../../platform/executable.zig");
@@ -103,7 +104,7 @@ pub fn build_internal(
         try argv.append(allocator, resolved_command);
         try argv.appendSlice(allocator, step.args);
 
-        const res = try std.process.run(allocator, io, .{
+        const res = try owned_process.run(allocator, io, .{
             .argv = argv.items,
             .environ_map = &final_env,
             .cwd = .{ .path = src_abs },
@@ -311,7 +312,7 @@ fn collectOutputs(
                 try std.Io.Dir.cwd().createDirPath(io, parent);
             }
 
-            const cp_res = try std.process.run(allocator, io, .{
+            const cp_res = try owned_process.run(allocator, io, .{
                 .argv = &.{ "cp", src_abs, dest_abs },
             });
             defer allocator.free(cp_res.stdout);
