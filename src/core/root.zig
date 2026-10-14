@@ -40,6 +40,7 @@ pub const platform = struct {
     pub const fs = @import("platform/fs.zig");
     pub const env = @import("platform/env.zig");
     pub const target = @import("platform/target.zig");
+    pub const flavor = @import("platform/flavor.zig");
     pub const fetcher = @import("platform/fetcher.zig");
     pub const http = @import("platform/http.zig");
 };
@@ -109,6 +110,7 @@ pub const project = struct {
     pub const tool_resolve = @import("project/tool_resolve.zig");
     pub const discovery = @import("project/discovery.zig");
     pub const orbits = @import("project/orbits.zig");
+    pub const moonstone_modules = @import("project/moonstone_modules.zig");
 };
 
 pub const assets = struct {

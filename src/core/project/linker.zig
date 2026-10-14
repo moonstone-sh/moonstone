@@ -9,6 +9,8 @@ const executable = @import("../platform/executable.zig");
 const linked_native_library = @import("linked_native_library.zig");
 const package_root_mod = @import("package_root.zig");
 const error_context = @import("../diagnostics/error_context.zig");
+const flavor_mod = @import("../platform/flavor.zig");
+pub const moonstone_modules = @import("moonstone_modules.zig");
 
 pub const ProjectEnv = struct {
     bin_map: std.array_hash_map.String(struct { path: []const u8, artifact_hash: []const u8 }),
@@ -974,6 +976,103 @@ fn projectLiveSourceModules(
     }
 }
 
+fn appendUniqueDependency(
+    allocator: std.mem.Allocator,
+    dependencies: *std.ArrayList(moonstone_modules.Dependency),
+    dependency: moonstone_modules.Dependency,
+) !void {
+    for (dependencies.items) |existing| {
+        if (std.mem.eql(u8, existing.name, dependency.name) and std.mem.eql(u8, existing.version, dependency.version)) return;
+    }
+    try dependencies.append(allocator, dependency);
+}
+
+/// Replace each group of flavor-tagged module files (`lexer@lua54.lua`,
+/// `lexer@luajit.lua`, optionally `lexer.lua`) with the one file that applies
+/// to `flavor`, projected under the plain name. See `platform/flavor.zig`.
+///
+/// Only real directories are walked. Every Lua tree under `share/lua` is
+/// projected file by file, so a symlinked directory here would point into a
+/// package's own sources, which must never be renamed in place.
+fn resolveModuleVariants(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    relative: []const u8,
+    flavor: flavor_mod.Flavor,
+) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var names = std.ArrayList([]const u8).empty;
+    var subdirectories = std.ArrayList([]const u8).empty;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        const name = try arena.dupe(u8, entry.name);
+        if (entry.kind == .directory) {
+            try subdirectories.append(arena, name);
+        } else {
+            try names.append(arena, name);
+        }
+    }
+
+    for (subdirectories.items) |name| {
+        var child = try dir.openDir(io, name, .{ .iterate = true });
+        defer child.close(io);
+        const child_relative = if (relative.len == 0) name else try std.fs.path.join(arena, &.{ relative, name });
+        try resolveModuleVariants(allocator, io, child, child_relative, flavor);
+    }
+
+    // Group variants by the name they would be projected under.
+    const Group = struct { variants: std.ArrayList(flavor_mod.Variant) = .empty, files: std.ArrayList([]const u8) = .empty };
+    var groups = std.StringArrayHashMapUnmanaged(Group).empty;
+    for (names.items) |name| {
+        const variant = flavor_mod.parse(name) catch {
+            error_context.setFmt(
+                allocator,
+                "Module variant '{s}{s}{s}' has tags out of order or repeated. Write at most one tag per kind, in the order language, os, arch (for example 'lexer@lua54@linux.lua').",
+                .{ relative, if (relative.len == 0) "" else "/", name },
+            );
+            return error.InvalidModuleVariant;
+        } orelse continue;
+        const projected = try variant.projectedNameAlloc(arena);
+        const slot = try groups.getOrPut(arena, projected);
+        if (!slot.found_existing) slot.value_ptr.* = .{};
+        try slot.value_ptr.variants.append(arena, variant);
+        try slot.value_ptr.files.append(arena, name);
+    }
+
+    var group_iterator = groups.iterator();
+    while (group_iterator.next()) |group| {
+        const projected = group.key_ptr.*;
+        const files = group.value_ptr.files.items;
+        var has_base = false;
+        for (names.items) |name| {
+            if (std.mem.eql(u8, name, projected)) has_base = true;
+        }
+
+        switch (flavor_mod.select(group.value_ptr.variants.items, has_base, flavor)) {
+            .variant => |chosen| {
+                try dir.rename(files[chosen], dir, projected, io);
+                for (files, 0..) |file, position| {
+                    if (position != chosen) try dir.deleteFile(io, file);
+                }
+            },
+            .base, .none => for (files) |file| try dir.deleteFile(io, file),
+            .ambiguous => |pair| {
+                const flavor_id = try flavor.id(arena);
+                error_context.setFmt(
+                    allocator,
+                    "Module '{s}{s}{s}' has two variants equally specific for {s}: '{s}' and '{s}'. Add a variant tagged for both, or remove one.",
+                    .{ relative, if (relative.len == 0) "" else "/", projected, flavor_id, files[pair.first], if (pair.second) |second| files[second] else projected },
+                );
+                return error.AmbiguousModuleVariant;
+            },
+        }
+    }
+}
+
 fn writeTomlString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
     for (value) |ch| {
@@ -1014,8 +1113,9 @@ pub fn link_project_env(
     live_links: []const LiveLink,
     project_runtime_name: []const u8,
     env_map: *std.process.Environ.Map,
+    project: moonstone_modules.Project,
 ) !void {
-    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", env_map, project_runtime_name);
+    try link_project_env_at(allocator, io, project_root, index, projected_artifacts, live_links, ".moonstone/env", env_map, project_runtime_name, project);
 }
 
 pub fn link_project_env_at(
@@ -1028,6 +1128,7 @@ pub fn link_project_env_at(
     env_path: []const u8,
     env_map: *std.process.Environ.Map,
     project_runtime_name: []const u8,
+    project: moonstone_modules.Project,
 ) !void {
     _ = env_map;
     const MapType = struct { path: []const u8, artifact_hash: []const u8, role: @import("../domain/dependency_role.zig").DependencyRole };
@@ -2013,6 +2114,31 @@ pub fn link_project_env_at(
         }
     }
 
+    // 6a. Every module is projected: pick one file per flavor-variant group,
+    // then add the generated `moonstone` modules beside them.
+    const runtime_identity: moonstone_modules.Runtime = if (runtime_info) |ri|
+        .{ .name = ri.name, .version = ri.version, .abi = ri.abi }
+    else
+        .{ .name = project_runtime_name, .version = "unknown", .abi = abi };
+    const flavor = flavor_mod.fromRuntime(runtime_identity.name, runtime_identity.abi);
+    if (live_links.len > 0 or runtime_info != null) {
+        const share_lua_path = try std.fs.path.join(allocator, &.{ "share/lua", lua_ver_dot });
+        defer allocator.free(share_lua_path);
+        var share_dir = try env_dir.openDir(io, share_lua_path, .{ .iterate = true });
+        defer share_dir.close(io);
+        try resolveModuleVariants(allocator, io, share_dir, "", flavor);
+
+        var dependencies = std.ArrayList(moonstone_modules.Dependency).empty;
+        defer dependencies.deinit(allocator);
+        for (projected_artifacts) |pa| {
+            try appendUniqueDependency(allocator, &dependencies, .{ .name = pa.name, .version = pa.version, .role = pa.role.toString() });
+        }
+        for (live_links) |ll| {
+            try appendUniqueDependency(allocator, &dependencies, .{ .name = ll.pkg_name, .version = ll.pkg_version, .role = ll.role.toString() });
+        }
+        try moonstone_modules.write(allocator, io, share_dir, flavor, runtime_identity, project, dependencies.items);
+    }
+
     // 6b. Mount non-metadata store packages into libexec/ for stable references.
     for (projected_artifacts) |pa2| {
         const pa_policy = pa2.role.getProjectionPolicy();
@@ -2064,6 +2190,22 @@ pub fn link_project_env_at(
         try aw.writer.print("name = \"unknown\"\n", .{});
         try aw.writer.print("version = \"unknown\"\n", .{});
         try aw.writer.print("abi = \"unknown\"\n", .{});
+    }
+
+    // The flavor this environment was linked for; `run_env` exports `id` as
+    // MOONSTONE_TARGET and `moonstone.target` carries the same values.
+    {
+        const flavor_id = try flavor.id(allocator);
+        defer allocator.free(flavor_id);
+        try aw.writer.print("\n[target]\nid = ", .{});
+        try writeTomlString(&aw.writer, flavor_id);
+        try aw.writer.print("\nfamily = ", .{});
+        try writeTomlString(&aw.writer, flavor.family.asString());
+        try aw.writer.print("\nlevel = {d}\nos = ", .{flavor.level});
+        try writeTomlString(&aw.writer, flavor.os);
+        try aw.writer.print("\narch = ", .{});
+        try writeTomlString(&aw.writer, flavor.arch);
+        try aw.writer.print("\n", .{});
     }
 
     // Real package roots, exported by `run_env` so a projected package can

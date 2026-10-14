@@ -3930,7 +3930,12 @@ pub const SyncCommand = struct {
         } else {
             backend.phase("Linking project environment...", .{});
         }
-        try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env, rt_res.name);
+        try moonstone.project.linker.link_project_env_at(allocator, io, std.Io.Dir.cwd(), idx, projected_artifacts.items, live_links.items, ".moonstone/env", env, rt_res.name, .{
+            .name = mt.package.name,
+            .version = mt.package.version,
+            .kind = mt.package.kind.as_string(),
+            .description = mt.package.description,
+        });
         report.linked = projected_artifacts.items.len + live_links.items.len;
         report.env_refreshed = true;
         report.link_ms = elapsedMs(io, link_started_ns);

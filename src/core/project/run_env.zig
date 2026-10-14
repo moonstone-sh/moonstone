@@ -193,7 +193,17 @@ fn getRunEnv(
             const package_roots = try parsePackageRoots(allocator, res.value);
             defer deinitPackageRoots(allocator, package_roots);
 
-            return try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, native_lib_path, lua_ver_dot, package_roots);
+            var run_env = try build_run_env(allocator, io, base_env, env_bin_path, env_share_path, env_lib_path, native_lib_path, lua_ver_dot, package_roots);
+            errdefer run_env.deinit();
+            // The flavor the environment was linked for. A value the caller
+            // already set wins: that is how a build tool such as Quaver is
+            // asked to specialize for a flavor other than the host's.
+            if (res.value.get("target")) |target_value| if (target_value == .table) {
+                if (target_value.table.get("id")) |id| if (id == .string and run_env.env_map.get("MOONSTONE_TARGET") == null) {
+                    try run_env.env_map.put("MOONSTONE_TARGET", id.string);
+                };
+            };
+            return run_env;
         }
     }
 

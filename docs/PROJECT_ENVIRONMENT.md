@@ -14,12 +14,13 @@ store, and deleting it is always safe.
 
 ```text
 .moonstone/env/
-  env.toml                 runtime identity and projected package roots
+  env.toml                 runtime identity, target flavor, projected package roots
   dependencies.toml        the projected closure, for tooling
   bin/                     public binaries
   libexec/<namespace>/<name>/  whole-package mounts, for stable references
   libexec/<name>/          namespace-less packages, and compatibility aliases
   share/lua/<version>/     Lua modules            → LUA_PATH
+  share/lua/<version>/moonstone/  generated: target, project, variants
   lib/lua/<version>/       Lua C modules          → LUA_CPATH
   lib/native/              loadable native libraries → host loader path
 ```
@@ -27,7 +28,8 @@ store, and deleting it is always safe.
 `moon exec`, `moon run`, and `moon env` all project the same variables:
 `PATH`, `LUA_PATH`, `LUA_CPATH`, the host's native-library search variable
 (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`, or `PATH` on Windows), and one
-`MOONSTONE_PACKAGE_ROOT_*` variable per projected package.
+`MOONSTONE_PACKAGE_ROOT_*` variable per projected package, and
+`MOONSTONE_TARGET` (the environment's flavor id; see below).
 
 ## Projection is by symlink, one file at a time
 
@@ -205,3 +207,105 @@ Moonstone does not rewrite install names or rpaths and does not inspect a
 binary's dependency graph. See
 [`maintenance/native-library-projection-contract-2026-08-09.md`](maintenance/native-library-projection-contract-2026-08-09.md)
 for the full native-library boundary and its explicit non-goals.
+
+## Flavors: one package for several Luas
+
+A *flavor* is what Lua source can observe about where it runs: the language
+(`lua51`…`lua55`, `luajit`, `luau`) and the host os and arch. It is not the C
+ABI, which only native modules see and which the store already realizes per
+artifact. The flavor's id is `lua54-aarch64-macos`, `luajit-x86_64-linux`,
+and so on; `env.toml` records it under `[target]`.
+
+### Variant files
+
+A package can ship one file per flavor for the same module by tagging the
+file name with `@<tag>` before the extension:
+
+```text
+src/lexlib/lexer.lua             fallback (optional)
+src/lexlib/lexer@lua54.lua
+src/lexlib/lexer@luajit.lua
+src/lexlib/fs@lua51@windows.lua
+```
+
+`moon sync` projects exactly one of them as `lexlib/lexer.lua`, so consumers
+just `require("lexlib.lexer")`. The tags are:
+
+| dimension | tags | matches |
+|---|---|---|
+| language | `lua51` `lua52` `lua53` `lua54` `lua55` | that PUC level; `lua51` also matches LuaJIT, less specifically than `luajit` |
+| | `luajit` `luau` | that family only (Luau never inherits `lua51`) |
+| os | `linux` `macos` `windows` `freebsd` | the host os |
+| arch | `x86_64` `aarch64` `riscv64` | the host arch |
+
+Rules:
+
+- A file is a variant only if every tag after `@` is in the table, so an
+  unrelated `name@thing.lua` is an ordinary module. `_` is never a separator:
+  existing modules such as `parser_luajit.lua` keep their names.
+- Tags appear in dimension order (language, os, arch), at most one each.
+  `lexer@linux@lua54.lua` fails the sync.
+- The winner must be at least as specific as every other matching file on
+  each dimension. `fs@lua54.lua` and `fs@linux.lua` both matching is an
+  error, not a coin flip: add `fs@lua54@linux.lua` or remove one.
+- If nothing matches, the untagged file is used; if there is none, the module
+  is absent for that flavor.
+
+Selection happens at link time, so it costs nothing at runtime and needs no
+bundler. The package's own files are never renamed: the environment holds a
+`lexer.lua` link whose target is `lexer@lua54.lua`.
+
+### The generated `moonstone` modules
+
+Every environment contains a reserved `moonstone` module family. A
+dependency that projects its own `moonstone` module fails the sync.
+
+```lua
+local target = require("moonstone.target")
+-- { id = "lua54-aarch64-macos", family = "lua", level = 54,
+--   os = "macos", arch = "aarch64",
+--   runtime = { name = "lua", version = "5.4.7", abi = "lua54" } }
+
+local project = require("moonstone.project")
+-- { name, version, kind, description?, dependencies = { {name, version, role}, ... } }
+
+if target.level >= 53 then ... else ... end
+```
+
+`require("moonstone")` returns `{ target, project, variants }`. Both data
+modules are constant tables with LuaLS annotations, and nothing in them
+depends on the machine (no paths, no timestamps), so the same project and
+flavor always produce the same bytes.
+
+A project's **own** sources are not projected, so their variants need the
+runtime searcher, which probes the tagged names on `package.path`:
+
+```lua
+require("moonstone.variants").install()   -- once, in the entry point
+require("util.compat")                     -- loads util/compat@lua54.lua on 5.4
+```
+
+### Contract for build tools (Quaver)
+
+A bundler that specializes code for a flavor reads:
+
+1. `MOONSTONE_TARGET`: the flavor to build for. `moon exec`/`moon run`
+   set it from `env.toml` **unless the caller already set it**, so
+   `MOONSTONE_TARGET=lua51-x86_64-linux moon run build` asks for a flavor other
+   than the host's.
+2. `moonstone.variants`: the selection rule, in Lua (`parse`, `match`,
+   `select`, `suffixes`, `resolve`). It is the same rule as the linker's
+   `src/core/platform/flavor.zig`; `tests/lua/variants_spec.lua` and the Zig
+   tests share their cases. A tool picks files with it instead of
+   reimplementing it.
+3. `moonstone.target` and `moonstone.project` fields are compile-time
+   constants. For a non-host `MOONSTONE_TARGET`, the tool builds the target
+   table from the id (family, level, os, arch) and must not fold
+   `target.runtime`, which describes the host interpreter.
+
+A tool may fold a field access only when the module was bound by
+`local x = require("moonstone.target")` (or `.project`) and `x` is never
+reassigned. After folding, a branch whose condition is constant can be
+dropped. Code that is syntactically invalid for some flavor (`<const>`,
+`//`, Luau types) cannot live in a dropped branch, because the other flavors'
+parsers still have to read it. Put it in a variant file.
