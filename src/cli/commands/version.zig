@@ -25,7 +25,10 @@ pub const VersionCommand = struct {
         const label = build_options.distribution_label;
         if (self.json) {
             var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, name);
-            try emitter.terminate(ctx.io, name, "ok", .{ .version = build_options.version, .label = label });
+            try emitter.terminate(ctx.io, name, "ok", .{ .version = build_options.version, .revision = build_options.revision, .label = label });
+        } else if (build_options.revision.len > 0) {
+            // A development build: never mistakable for the release it precedes.
+            try ctx.stdout.print("Moonstone v{s}-{s} ({s})\n", .{ build_options.version, build_options.revision, label });
         } else {
             try ctx.stdout.print("Moonstone v{s} ({s})\n", .{ build_options.version, label });
         }

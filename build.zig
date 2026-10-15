@@ -42,9 +42,16 @@ pub fn build(b: *std.Build) void {
         "Archive and compression backend (native, system)",
     ) orelse .native;
 
+    // Empty for a build of the exact release tag; otherwise `dev+<sha>`, with
+    // `-dirty` for uncommitted changes, so a local build never passes for a
+    // release. `version` itself stays the manifest version: data paths and
+    // contracts read it.
+    const revision = b.option([]const u8, "revision", "Build revision shown by `moon version` (default: derived from git; empty for a release tag)") orelse gitRevision(b, zon.version);
+
     const options = b.addOptions();
     options.addOption([]const u8, "name", @tagName(zon.name));
     options.addOption([]const u8, "version", zon.version);
+    options.addOption([]const u8, "revision", revision);
     options.addOption([]const u8, "default_registry_url", default_registry_url);
     options.addOption([]const u8, "default_homepage_url", default_homepage_url);
     options.addOption([]const u8, "default_installer_url", default_installer_url);
@@ -290,3 +297,20 @@ const official_release_targets: []const ReleaseTarget = &.{
     .{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu },
     .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
 };
+
+/// `dev+<short sha>[-dirty]`, or "" when HEAD is exactly `v<version>` and
+/// clean. Also "" when git is unavailable (a source tarball build).
+fn gitRevision(b: *std.Build, version: []const u8) []const u8 {
+    const root = b.build_root.path orelse ".";
+    var code: u8 = 0;
+    const sha_out = b.runAllowFail(&.{ "git", "-C", root, "rev-parse", "--short", "HEAD" }, &code, .ignore) catch return "";
+    const sha = std.mem.trim(u8, sha_out, " \r\n\t");
+    if (sha.len == 0) return "";
+    const status = b.runAllowFail(&.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=no" }, &code, .ignore) catch "";
+    const dirty = std.mem.trim(u8, status, " \r\n\t").len > 0;
+    const exact = b.runAllowFail(&.{ "git", "-C", root, "describe", "--tags", "--exact-match", "HEAD" }, &code, .ignore) catch "";
+    const tag = std.mem.trim(u8, exact, " \r\n\t");
+    const release_tag = b.fmt("v{s}", .{version});
+    if (!dirty and std.mem.eql(u8, tag, release_tag)) return "";
+    return b.fmt("dev+{s}{s}", .{ sha, if (dirty) "-dirty" else "" });
+}
