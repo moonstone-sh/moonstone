@@ -221,8 +221,17 @@ fn validateVirtualPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return folded;
 }
 
+/// `@` is portable on every supported filesystem and archive format, and Lua
+/// flavor variants (`lexer@lua54.lua`, see `platform/flavor.zig`) need it.
 fn isPortableNameByte(byte: u8) bool {
-    return std.ascii.isAlphanumeric(byte) or byte == '.' or byte == '_' or byte == '-';
+    return std.ascii.isAlphanumeric(byte) or byte == '.' or byte == '_' or byte == '-' or byte == '@';
+}
+
+test "flavor variant file names are portable virtual paths" {
+    const folded = try validateVirtualPath(std.testing.allocator, "src/lexlib/Lexer@lua51@windows.lua");
+    defer std.testing.allocator.free(folded);
+    try std.testing.expectEqualStrings("src/lexlib/lexer@lua51@windows.lua", folded);
+    try std.testing.expectError(error.InvalidVirtualPath, validateVirtualPath(std.testing.allocator, "src/lexer#lua54.lua"));
 }
 
 fn validateComponent(component: []const u8) bool {
