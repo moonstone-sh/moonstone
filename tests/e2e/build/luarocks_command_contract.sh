@@ -96,7 +96,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize command rock ━━━"
 moon init . --name command-rock-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:command-rock
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

@@ -33,7 +33,7 @@ resolver = "moonstone"
 path = "${SANDBOX_DIR}/registry"
 EOF
 
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add synthetic:inspect
 moon sync
 

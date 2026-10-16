@@ -33,7 +33,7 @@ write_project "${WORKDIR}/path-lib" "path-lib"
 mkdir -p "${WORKDIR}/path-app"
 cd "${WORKDIR}/path-app"
 moon init . --name path-app --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add path:../path-lib --no-sync
 moon sync
 rm -rf "${WORKDIR}/path-lib"
@@ -50,7 +50,7 @@ write_project "${WORKDIR}/link-lib" "link-lib"
 mkdir -p "${WORKDIR}/link-app"
 cd "${WORKDIR}/link-app"
 moon init . --name link-app --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add link:link-lib --no-sync
 moon sync
 rm -rf "${WORKDIR}/link-lib"

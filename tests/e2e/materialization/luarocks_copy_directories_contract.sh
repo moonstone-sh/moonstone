@@ -105,7 +105,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize copy_directories rock ━━━"
 moon init . --name copy-directories-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:copy-directories
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

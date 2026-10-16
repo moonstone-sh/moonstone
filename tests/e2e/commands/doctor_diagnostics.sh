@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/project/subdir"
 cd "${WORKDIR}/project"
 
 moon init . --name doctor-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add inspect@3.1.3
 
 cd subdir

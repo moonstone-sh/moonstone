@@ -29,7 +29,7 @@ resolver = "moonstone"
 path = "${SANDBOX_DIR}/registry"
 priority = 10
 EOF
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add synthetic:synthetic-cmake-module
 moon sync
 

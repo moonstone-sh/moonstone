@@ -2006,9 +2006,10 @@ pub const SyncCommand = struct {
 
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, mt_content);
         defer mt.deinit(allocator);
+        if (!self.check) try @import("project_registry.zig").register(ctx, project_root.path);
 
         if (mt.runtimeName().len == 0) {
-            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [interpreter]. Run `moon interpreter set lua@5.4` or `moon interpreter set luajit@2.1` to select one." } };
+            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [interpreter]. Run `moon set lua@5.4` or `moon set luajit@2.1` to select one." } };
             return error.MissingRuntime;
         }
 

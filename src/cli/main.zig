@@ -177,14 +177,7 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.config.reset),
         }),
 
-        router.CommandNode.group("interpreter", "Manage Lua interpreters", &.{
-            router.CommandNode.from(command_mod.interpreter.set),
-            router.CommandNode.from(@import("commands/interpreter_install.zig").InterpreterInstallCommand),
-            router.CommandNode.from(@import("commands/interpreter_remove.zig").InterpreterRemoveCommand),
-            router.CommandNode.from(@import("commands/interpreter_list.zig").InterpreterListCommand),
-            router.CommandNode.from(@import("commands/interpreter_current.zig").InterpreterCurrentCommand),
-            router.CommandNode.from(@import("commands/interpreter_path.zig").InterpreterPathCommand),
-        }),
+        router.CommandNode.from(command_mod.runtime.set),
 
         router.CommandNode.group("orbit", "Manage nested orbit projects", &.{
             router.CommandNode.from(@import("commands/orbit_add.zig").OrbitAddCommand),

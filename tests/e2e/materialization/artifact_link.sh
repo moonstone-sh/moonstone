@@ -34,7 +34,7 @@ resolver = "moonstone"
 path = "${SANDBOX_DIR}/registry"
 EOF_TOML
 
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add link:my-lib --no-sync
 moon sync
 

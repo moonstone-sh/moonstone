@@ -6,7 +6,7 @@ const command_mod = @import("command.zig");
 
 pub const InterpreterSetCommand = struct {
     pub const name = "set";
-    pub const description = "Select project or global Lua interpreter";
+    pub const description = "Select project or global Lua runtime";
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
@@ -19,7 +19,7 @@ pub const InterpreterSetCommand = struct {
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon interpreter set <spec> [flags]
+            \\Usage: moon set <spec> [flags]
             \\
             \\Select the project or global Lua interpreter.
             \\
@@ -29,8 +29,8 @@ pub const InterpreterSetCommand = struct {
             \\Flags:
             \\  --global         Set as the global default interpreter
             \\  --target <t>     Target triple
-            \\  --no-sync     Do not run moon sync
-            \\  --no-save        Do not update moonstone.toml
+            \\  --no-sync     Save project selection without running sync
+            \\  --no-save        Do not update moonstone.toml (project only)
             \\  --json           Emit newline-delimited JSON events
             \\
         , .{});
@@ -97,7 +97,7 @@ pub const InterpreterSetCommand = struct {
         var emitter_obj = if (self.json) ndjson.Emitter.init(allocator, stdout, name) else null;
         const emitter = if (emitter_obj) |*e| e else null;
 
-        if (self.positionals.len == 0) {
+        if (self.positionals.len != 1) {
             ctx.error_detail = .{ .message = .{ .msg = "interpreter spec required (e.g. lua@5.4)" } };
             return error.MissingArgument;
         }
@@ -114,8 +114,14 @@ pub const InterpreterSetCommand = struct {
             version = spec[pos + 1 ..];
         }
 
+        if (interpreter_name.len == 0 or version.len == 0) return error.InvalidInterpreterSpec;
+        var requested_range = try moonstone.domain.semver.VersionRange.parse(allocator, version);
+        defer requested_range.deinit(allocator);
+
+        if (@import("runtime_spec.zig").isOfficial(interpreter_name)) interpreter_name = std.fs.path.basename(interpreter_name);
+
         if (self.global) {
-            try self.runGlobal(ctx, version, emitter);
+            try self.runGlobal(ctx, interpreter_name, version, emitter);
             return;
         }
 
@@ -126,7 +132,7 @@ pub const InterpreterSetCommand = struct {
         const content = std.Io.Dir.cwd().readFileAlloc(io, toml_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 if (emitter == null) {
-                    try stdout.print("Error: moonstone.toml not found. Did you mean `moon interpreter set --global`?\n", .{});
+                    try stdout.print("Error: moonstone.toml not found. Did you mean `moon set --global`?\n", .{});
                 }
                 return error.FileNotFound;
             }
@@ -168,21 +174,20 @@ pub const InterpreterSetCommand = struct {
         }
 
         const effective_sync = self.sync and !self.no_sync;
-        if (emitter) |e| {
-            try e.terminate(io, name, "ok", .{ .version = version, .env_regenerated = effective_sync });
-        }
-
         if (effective_sync) {
             if (emitter == null) {
                 try @import("command.zig").progress(stdout, "Running sync...\n", .{});
             }
-            const sync_command = @import("sync.zig").sync_command{ .json = self.json };
+            const sync_command = @import("sync.zig").sync_command{ .json = self.json, .target_arg = self.target };
             try sync_command.run(ctx);
+        }
+        if (emitter) |e| {
+            try e.terminate(io, name, "ok", .{ .version = version, .env_regenerated = effective_sync });
         }
     }
 
-    fn runGlobal(self: InterpreterSetCommand, ctx: *router.Context, version: []const u8, emitter: ?*ndjson.Emitter) !void {
-        _ = self;
+    fn runGlobal(self: InterpreterSetCommand, ctx: *router.Context, interpreter_name: []const u8, version: []const u8, emitter: ?*ndjson.Emitter) !void {
+        if (self.no_save or self.no_sync or !self.save or !self.sync) return error.UnsupportedRuntimeOption;
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -216,7 +221,8 @@ pub const InterpreterSetCommand = struct {
             .use_stderr = false,
         };
 
-        const rt_res = try resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime("lua"), version, idx, registries, .{
+        const rt_res = try resolver.resolve(moonstone.domain.package_spec.canonicalOfficialRuntime(interpreter_name), version, idx, registries, .{
+            .target = self.target,
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
         }, env);
@@ -225,8 +231,8 @@ pub const InterpreterSetCommand = struct {
             r.deinit(allocator);
         }
 
-        // Materialize if remote
-        if (rt_res.local_path == null) {
+        if (rt_res.kind != .runtime) return error.ExpectedRuntimePackage;
+        if (rt_res.location == .remote) {
             var mat = moonstone.materialization.materializer.Materializer{
                 .allocator = allocator,
                 .io = io,
@@ -234,53 +240,20 @@ pub const InterpreterSetCommand = struct {
                 .on_event = @import("command.zig").onResolveEvent,
                 .on_event_context = &resolve_cb_ctx,
             };
-            const m = try mat.materialize_remote(
-                rt_res.registry_url.?,
-                rt_res.registry_token,
-                rt_res.descriptor_path.?,
-                rt_res.remote_desc.?,
-                rt_res.artifact_idx.?,
-            );
+            const m = switch (rt_res.origin) {
+                .moonstone_registry => |origin| try mat.materialize_remote(origin.url, origin.token, origin.descriptor_path, rt_res.remote_desc.?, origin.artifact_idx),
+                else => return error.UnsupportedOriginForInterpreter,
+            };
             m.deinit(allocator);
         }
-
-        // Update config.toml
-        const config_toml_path = try std.fs.path.join(allocator, &.{ paths.config, "config.toml" });
-        defer allocator.free(config_toml_path);
-
-        const config_content = try std.Io.Dir.cwd().readFileAlloc(io, config_toml_path, allocator, std.Io.Limit.limited(1024 * 1024));
-        defer allocator.free(config_content);
-
-        // Simple string replacement for now to avoid parsing/serializing the whole thing and losing comments
-        // Real implementation should use a proper TOML editor if we want to preserve structure.
-        // For now, let's just use the parser to verify and then do a surgical edit.
-
-        var parser = moonstone.domain.manifest.toml.Parser(moonstone.domain.manifest.toml.Table).init(allocator);
-        defer parser.deinit();
-        var res = try parser.parseString(config_content);
-        defer res.deinit();
-
-        const full_spec = try std.fmt.allocPrint(allocator, "lua-{s}", .{rt_res.version});
+        const full_spec = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ interpreter_name, rt_res.version });
         defer allocator.free(full_spec);
-
-        // This is a bit hacky but efficient for preservation
-        const key = "default_runtime = \"";
-        if (std.mem.indexOf(u8, config_content, key)) |pos| {
-            const end_pos = std.mem.indexOfScalarPos(u8, config_content, pos + key.len, '"') orelse return error.InvalidConfig;
-            const new_config = try std.mem.concat(allocator, u8, &.{ config_content[0 .. pos + key.len], full_spec, config_content[end_pos..] });
-            defer allocator.free(new_config);
-
-            const file = try std.Io.Dir.cwd().createFile(io, config_toml_path, .{});
-            defer file.close(io);
-            try file.writeStreamingAll(io, new_config);
-        } else {
-            return error.ConfigKeyNotFound;
-        }
+        try @import("config_settings.zig").setDefaultRuntime(ctx, full_spec);
 
         if (emitter) |e| {
             try e.terminate(io, name, "ok", .{ .version = rt_res.version, .global = true });
         } else {
-            try stdout.print("Global default interpreter updated to Lua {s}.\n", .{rt_res.version});
+            try stdout.print("Global default interpreter updated to {s}.\n", .{rt_res.version});
         }
     }
 };

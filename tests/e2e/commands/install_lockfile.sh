@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/project/subdir"
 cd "${WORKDIR}/project"
 
 moon init . --name install-contract --no-git
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add inspect@3.1.3 --no-sync
 
 cd subdir

@@ -15,7 +15,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init --name collision-test --kind script
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 mkdir -p .moonstone/env/bin
 rm -f .moonstone/env/bin/lua

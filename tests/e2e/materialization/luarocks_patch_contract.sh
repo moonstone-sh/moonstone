@@ -78,7 +78,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize patched rock ━━━"
 moon init . --name patch-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:patch-contract
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

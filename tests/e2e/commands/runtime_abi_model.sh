@@ -14,7 +14,7 @@ assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'version = "2.1.1783
 assert_file_contains "${WORKDIR}/luajit-app/moonstone.toml" 'abi = "5.1"'
 
 cd "${WORKDIR}/luajit-app"
-moon interpreter set love@11.5 --no-sync
+moon set love@11.5 --no-sync
 assert_file_contains "moonstone.toml" 'name = "love"'
 assert_file_contains "moonstone.toml" 'version = "11.5"'
 assert_file_contains "moonstone.toml" 'abi = "5.1"'
@@ -32,7 +32,7 @@ abi = "5.4"
 
 [dependencies.runtime]
 TOML
-moon interpreter set lua@5.3 --no-sync
+moon set lua@5.3 --no-sync
 assert_file_contains "moonstone.toml" 'name = "lua"'
 assert_file_contains "moonstone.toml" 'version = "5.3"'
 assert_file_contains "moonstone.toml" 'abi = "5.3"'

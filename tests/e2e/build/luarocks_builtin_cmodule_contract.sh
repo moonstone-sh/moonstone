@@ -64,7 +64,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize builtin C module ━━━"
 moon init . --name rockspec-builtin-cmodule-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:builtin-cmodule
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

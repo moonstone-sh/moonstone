@@ -50,6 +50,22 @@ pub const StorePruneCommand = struct {
         var idx = try moonstone.store.driver.StoreDriver.init(allocator, index_db_path_z);
         defer idx.deinit();
 
+        // The global selection is a live reference even without a project.
+        const sql = moonstone.store.driver.c;
+        var selected_stmt: ?*sql.sqlite3_stmt = null;
+        if (sql.sqlite3_prepare_v2(idx.db, "SELECT artifact_hash, name, version FROM artifacts WHERE kind = 'runtime';", -1, &selected_stmt, null) != sql.SQLITE_OK) return error.SQLitePrepareError;
+        {
+            defer _ = sql.sqlite3_finalize(selected_stmt);
+            while (sql.sqlite3_step(selected_stmt) == sql.SQLITE_ROW) {
+                const hash = std.mem.span(sql.sqlite3_column_text(selected_stmt, 0));
+                const runtime_name = std.mem.span(sql.sqlite3_column_text(selected_stmt, 1));
+                const version = std.mem.span(sql.sqlite3_column_text(selected_stmt, 2));
+                if (try @import("interpreter_remove.zig").isGlobalDefault(ctx, runtime_name, version)) {
+                    if (!reachable.contains(hash)) try reachable.put(try allocator.dupe(u8, hash), {});
+                }
+            }
+        }
+
         {
             var lr = moonstone.store.links.LinkStore.init(&idx);
             const links = try lr.list();
@@ -105,12 +121,12 @@ pub const StorePruneCommand = struct {
             defer pdir.close(io);
             var it = pdir.iterate();
             while (try it.next(io)) |entry| {
-                if (entry.kind != .sym_link and entry.kind != .directory) continue;
+                if (entry.kind != .sym_link and entry.kind != .directory and !(entry.kind == .file and std.mem.endsWith(u8, entry.name, ".path"))) continue;
 
                 const proj_reg_path = try std.fs.path.join(allocator, &.{ paths.projects, entry.name });
                 defer allocator.free(proj_reg_path);
 
-                const proj_root = if (entry.kind == .sym_link) blk: {
+                const proj_root = if (entry.kind == .file) try @import("project_registry.zig").readRoot(allocator, io, proj_reg_path) else if (entry.kind == .sym_link) blk: {
                     var buf: [std.fs.max_path_bytes]u8 = undefined;
                     const len = pdir.readLink(io, entry.name, &buf) catch continue;
                     break :blk try allocator.dupe(u8, buf[0..len]);

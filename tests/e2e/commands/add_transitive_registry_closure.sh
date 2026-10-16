@@ -71,7 +71,7 @@ publish "example/root" "example/middle"
 mkdir -p "${PROJECT}"
 cd "${PROJECT}"
 moon init . --name transitive-registry-closure --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon registry add local "file://${REGISTRY}"
 moon add "local:example/root@1.0.0" --jobs 1
 
@@ -96,7 +96,7 @@ CACHED_PROJECT="${WORKDIR}/cached-project"
 mkdir -p "${CACHED_PROJECT}"
 cd "${CACHED_PROJECT}"
 moon init . --name cached-transitive-registry-closure --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon registry add local "file://${REGISTRY}"
 moon add "local:example/root@1.0.0" --jobs 1
 grep -q 'name = "example/middle"' moonstone.lock

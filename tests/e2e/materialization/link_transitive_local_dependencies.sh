@@ -64,7 +64,7 @@ LUA
 
 (cd "$WORKDIR/child-link" && "$MOON_BIN" link)
 (cd "$WORKDIR/parent" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-parent)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-app --no-git --no-sync && "$MOON_BIN" set lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-parent)
 
 test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/hyg_parent.lua"
 test -L "$WORKDIR/app/.moonstone/env/share/lua/5.4/hyg_child_link.lua"

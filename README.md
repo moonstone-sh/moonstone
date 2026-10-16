@@ -29,6 +29,18 @@ moon -C ./my-app sync
 moon --directory ./my-app run dev
 ```
 
+Install runtimes separately from choosing the active one:
+
+```bash
+moon add --global luajit@2.1
+moon set luajit@2.1
+moon store list --interpreters
+moon env
+```
+
+`moon remove --global RUNTIME@VERSION` removes an unused installed runtime.
+It refuses removal while a known project or the global selection references it.
+
 ## Operational model
 
 - `moonstone.toml` is the project manifest. It declares metadata, the selected

@@ -16,7 +16,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init --name interrupted-test --kind script
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add inspect --no-sync
 
 echo "Initial install..."

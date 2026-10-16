@@ -103,7 +103,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize install.conf rock ━━━"
 moon init . --name install-conf-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:install-conf
 moon add rocks:install-conf-array
 

@@ -103,7 +103,7 @@ abi = "5.4"
 EOF
 
 run_cmd "use lua 5.4" \
-    bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon interpreter set lua@5.4 --no-sync'
+    bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon set lua@5.4 --no-sync'
 
 run_cmd "add inspect" \
     bash -c 'cd "'"${SCRIPT_DIR}"'/my-app" && moon add inspect --no-sync'

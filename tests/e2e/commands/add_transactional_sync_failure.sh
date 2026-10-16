@@ -21,7 +21,7 @@ trap cleanup EXIT
 
 cd "${WORKDIR}"
 moon init . --name add-transaction --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 cp moonstone.toml before.toml
 test ! -e moonstone.lock
 

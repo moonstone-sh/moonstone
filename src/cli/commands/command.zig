@@ -96,14 +96,11 @@ pub const config = struct {
     pub const unset = @import("config_settings.zig").ConfigUnsetCommand;
 };
 
-// Interpreter group
-pub const interpreter = struct {
+// Runtime implementation helpers (no public interpreter command group)
+pub const runtime = struct {
     pub const set = @import("interpreter_set.zig").InterpreterSetCommand;
     pub const install = @import("interpreter_install.zig").InterpreterInstallCommand;
     pub const remove = @import("interpreter_remove.zig").InterpreterRemoveCommand;
-    pub const list = @import("interpreter_list.zig").InterpreterListCommand;
-    pub const current = @import("interpreter_current.zig").InterpreterCurrentCommand;
-    pub const path = @import("interpreter_path.zig").InterpreterPathCommand;
 };
 
 pub const CliErrorSet = error{

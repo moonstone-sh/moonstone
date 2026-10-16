@@ -53,7 +53,7 @@ echo "=== 5. Testing client resolution ==="
 cd "${WORKDIR}/project"
 
 moon init . --name test-registry-authoring --no-git
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 
 moon registry add myreg "file://${REG_DIR}"
 assert_file_contains "${WORKDIR}/project/moonstone.toml" '[[registries]]'

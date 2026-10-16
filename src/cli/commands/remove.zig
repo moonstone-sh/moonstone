@@ -5,12 +5,13 @@ const router = @import("../router.zig");
 
 pub const remove_command = struct {
     pub const name = "remove";
-    pub const description = "Remove dependencies or unregister links";
+    pub const description = "Remove dependencies, unused runtimes, or registered links";
 
     positionals: []const []const u8 = &.{},
     lib: bool = false,
     bin: bool = false,
-    interpreter: bool = false,
+    runtime: bool = false,
+    target: ?[]const u8 = null,
     dev: bool = false,
     tool: bool = false,
     link: bool = false,
@@ -34,7 +35,8 @@ pub const remove_command = struct {
             \\  --link       Unregister from the global link registry
             \\  --lib        Remove runtime library dependency
             \\  --bin        Deprecated alias for --tool
-            \\  --interpreter Remove project interpreter (sets to default)
+            \\  --runtime    Remove a custom installed runtime (requires --global)
+            \\  --target <t> Select a runtime target to remove (requires --global)
             \\  --dev        Remove from dev-dependencies
             \\  --no-sync Do not run moon sync
             \\  --json       Emit newline-delimited JSON events
@@ -95,6 +97,13 @@ pub const remove_command = struct {
     }
 
     pub fn run(self: remove_command, ctx: *router.Context) !void {
+        var has_runtime = self.runtime;
+        for (self.positionals) |spec| has_runtime = has_runtime or @import("runtime_spec.zig").isOfficial(spec);
+        if (self.global and has_runtime) {
+            if (self.positionals.len != 1 or self.tool or self.bin or self.lib or self.dev or self.link or self.no_sync or self.file != null) return error.UnsupportedRuntimeOption;
+            return (@import("interpreter_remove.zig").InterpreterRemoveCommand{ .positionals = self.positionals, .target = self.target, .json = self.json }).run(ctx);
+        }
+        if (self.runtime or self.target != null) return error.UnsupportedRuntimeOption;
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -128,13 +137,13 @@ pub const remove_command = struct {
             return error.MissingArgument;
         }
 
-        if (self.positionals.len == 0 and !self.interpreter) {
-            ctx.error_detail = .{ .message = .{ .msg = "package names or --interpreter required." } };
+        if (self.positionals.len == 0) {
+            ctx.error_detail = .{ .message = .{ .msg = "package names required." } };
             return error.MissingArgument;
         }
 
         if (emitter) |e| {
-            try e.emit(io, .START, name, "begin", .{ .packages = self.positionals, .interpreter = self.interpreter });
+            try e.emit(io, .START, name, "begin", .{ .packages = self.positionals, .runtime = false });
         }
 
         const toml_path = self.file orelse "moonstone.toml";
@@ -143,6 +152,15 @@ pub const remove_command = struct {
 
         var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, content);
         defer mt.deinit(allocator);
+
+        if (!self.tool and !self.bin) for (self.positionals) |spec| {
+            const parsed = try moonstone.domain.package_spec.parsePackageSpec(allocator, spec);
+            defer parsed.deinit(allocator);
+            if (std.mem.eql(u8, moonstone.domain.package_spec.canonicalOfficialRuntime(parsed.name), moonstone.domain.package_spec.canonicalOfficialRuntime(mt.runtimeName()))) {
+                ctx.error_detail = .{ .message = .{ .msg = "This is the selected project runtime. Use `moon set RUNTIME@VERSION` to select its replacement; removal never chooses a fallback." } };
+                return error.RuntimeStillSelected;
+            }
+        };
 
         var removed_count: usize = 0;
         var removed_list = std.ArrayList([]const u8).empty;
@@ -181,17 +199,6 @@ pub const remove_command = struct {
                 }
                 i += 1;
             }
-        }
-
-        if (self.interpreter) {
-            allocator.free(mt.runtime.name);
-            allocator.free(mt.runtime.version);
-            allocator.free(mt.runtime.abi);
-            mt.runtime.name = try allocator.dupe(u8, "lua");
-            mt.runtime.version = try allocator.dupe(u8, "5.4");
-            mt.runtime.abi = try allocator.dupe(u8, "5.4");
-            try removed_list.append(allocator, try allocator.dupe(u8, "runtime:lua"));
-            removed_count += 1;
         }
 
         if (removed_count > 0) {

@@ -514,24 +514,22 @@ registered dependency with `moon add link:my-lib`.
 | `STATUS` | `scaffold` | `written` | `{ "scaffold": { "files_created": ["moonstone.toml", "build.zig.zon", ".gitignore"] } }` |
 | `RESULT` | `init` | `ok` | `{ "directory": "my-project", "installed": true }` |
 
-### 7.9 `moon interpreter set`
+### 7.9 `moon set`
 
-| Kind | About | Value | Data Shape |
-|------|-------|-------|------------|
-| `START` | `use` | `begin` | `{ "spec": "lua@5.4" }` |
-| `STATUS` | `lua5.4` | `resolved` | `{ "lua5.4": { "version": "5.4.6", "artifact_hash": "b3:..." } }` |
-| `STATUS` | `manifest` | `written` | `{ "manifest": { "runtime_updated": true } }` |
-| `RESULT` | `use` | `ok` | `{ "installed": true }` |
+The `set` stream starts with the requested spec and scope. Project selection
+writes runtime metadata, then emits any nested `sync` stream. Its successful
+terminal `RESULT` is emitted after synchronization succeeds, with `version` and
+`env_regenerated`. Global selection reports the resolved `version` and `global`.
 
-### 7.10 `moon interpreter install`
+### 7.10 Global runtime installation and removal
 
-| Kind | About | Value | Data Shape |
-|------|-------|-------|------------|
-| `START` | `runtime-install` | `begin` | `{ "spec": "lua@5.4" }` |
-| `STATUS` | `lua5.4` | `resolved` | `{ "lua5.4": { "version": "5.4.6", "target": "x86_64-linux-gnu" } }` |
-| `PROGRESS` | `lua5.4` | `34%` | `{ "lua5.4": { "bytes_downloaded": 356515, "bytes_total": 1048576 } }` |
-| `STATUS` | `lua5.4` | `done` | `{ "lua5.4": { "path": "~/.moonstone/store/b3/..." } }` |
-| `RESULT` | `runtime-install` | `ok` | `{ "path": "~/.moonstone/store/b3/..." }` |
+`moon add --global RUNTIME@VERSION --json` emits `add` events. Its terminal
+result includes `version`, `path`, `runtime: true`, and `global: true`. Dry runs
+emit a terminal `planned` result without downloading or changing selection.
+
+`moon remove --global RUNTIME@VERSION --json` emits a terminal `remove` result
+with `target`, `runtime: true`, and `global: true`. Reference failures emit an
+`ERROR` with `InterpreterStillReferenced`; they do not delete the artifact.
 
 ### 7.11 `moon store gc`
 
@@ -622,7 +620,7 @@ A compliant wrapper should accept **any** of the above. `terminator: true` is th
 | `moon add` | ✅ Full | Uses standard envelopes for resolution and materialization. |
 | `moon sync` | ✅ Full | Supports concurrent materialization progress events. |
 | `moon doctor` | ✅ Full | Uses standard envelopes for each health check result. |
-| `moon interpreter set` | ✅ Full | Emits START and RESULT envelopes. |
+| `moon set` | ✅ Full | Emits START and RESULT envelopes. |
 | `moon list` | ✅ Full | Emits START, STATUS (entries), and RESULT summary. |
 | `moon init` | ✅ Full | Emits START and RESULT envelopes. |
 | `moon run` | ✅ Full | Emits START and STATUS before handing off to sub-process. |

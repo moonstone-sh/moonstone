@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}/parent/child/grandchild"
 cd "${WORKDIR}/parent"
 
 moon init . --name discovery-test --no-git
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 
 cd child/grandchild
 list_output=$(moon list)

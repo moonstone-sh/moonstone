@@ -258,3 +258,12 @@ Connection management remains `registry add/list/remove`. The inventory above
 records the original surface before consolidation. `settings show` is removed;
 health checks belong to `doctor`. Target authoring currently supports file
 registries, not authenticated remote publishing.
+
+## Runtime consolidation implemented
+
+The public interpreter group is removed. Runtime installation/removal now uses
+`add --global` and `remove --global`, selection uses `set`, and inspection uses
+`env`, `store list --interpreters`, and `store path`. The original inventory is
+historical. This implementation also registers synced projects so reference
+checks can protect their artifacts. It does not implement the remaining store,
+link, orbit, or lifecycle redesign.

@@ -40,7 +40,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize pure Lua rock ━━━"
 moon init . --name rockspec-pure-lua-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:fakebin
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

@@ -31,7 +31,7 @@ changes to the environment directory or content store are needed.
 
 - `moon list`: dependencies of the current project.
 - `moon lock package list --json`: package records in the lockfile.
-- `moon interpreter current`: the selected project interpreter.
+- `moon env`: the selected runtime and project environment.
 - `moon store list`: locally stored or registered content.
 - `moon registry list`: registries declared by the current project.
 
@@ -63,3 +63,37 @@ Create a file registry with `moon registry init --file PATH`. Remove a published
 version with `moon registry NAME: remove OWNER/PACKAGE@VERSION`. Registry
 connections still use `registry add/list/remove`; target operations require the
 trailing colon. Use `registry NAME: doctor` for health information.
+
+## Runtime installation and selection
+
+```sh
+moon add --global lua@5.4
+moon add --global luajit@2.1
+moon set lua@5.4
+moon set --global luajit@2.1
+moon store list --interpreters
+moon env
+moon store path moonstone/lua@5.4.9
+moon remove --global lua@5.4.9
+```
+
+`add --global` makes an official runtime available without selecting it. Use
+`--runtime` for custom runtime packages. Ordinary global tools still enter the
+global tools project. Install one runtime at a time; runtime installation rejects
+project dependency-role options. `--target`, `--registry`, `--offline`,
+`--prefer-local`, `--dry-run`, and `--json` apply to runtime installation.
+
+`set` selects the project runtime and syncs; `--no-sync` only saves the choice.
+`set --global` selects the fallback runtime and creates its configuration when
+needed. It does not override project manifests. Runtime inspection uses `env`,
+`store list --interpreters`, and `store path`; there is no `interpreter` group.
+
+`remove --global` requires an exact installed runtime version. It refuses to
+remove the global selection or an artifact referenced by a known project's
+lockfile, environment, or runtime constraint. Sync registers project paths in
+portable receipts under the shared projects directory. Retained lock profiles
+continue to protect their runtimes. Projects created before this change need a
+sync to register them; moved projects need a sync at their new path.
+
+Project dependency removal never chooses a replacement runtime. Use `set`
+explicitly. Global runtime removal has no force option that bypasses references.

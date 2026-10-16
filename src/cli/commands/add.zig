@@ -167,7 +167,7 @@ fn addWorker(wctx: *progress_runtime.WorkerContext) anyerror!void {
 
 pub const add_command = struct {
     pub const name = "add";
-    pub const description = "Add a dependency to the project";
+    pub const description = "Add dependencies or install global runtimes";
 
     save_exact: bool = false,
     save_caret: bool = false,
@@ -189,6 +189,9 @@ pub const add_command = struct {
     jobs_arg: ?[]const u8 = null,
     progress_arg: ?[]const u8 = null,
     global: bool = false,
+    runtime: bool = false,
+    target: ?[]const u8 = null,
+    registry: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -216,7 +219,10 @@ pub const add_command = struct {
             \\  --update         Re-resolve during the follow-up sync
             \\  --jobs <N>       Limit workers used by the follow-up sync
             \\  --progress <mode>  Follow-up sync output: auto, fancy, or plain
-            \\  --global         Add tool dependency to the global tools environment
+            \\  --runtime        Install a custom runtime package (requires --global)
+            \\  --target <t>     Runtime installation target (requires --global)
+            \\  --registry <url> Runtime installation registry (requires --global)
+            \\  --global         Install a runtime or add a tool to the global environment
             \\  --json           Output results as JSON
             \\
         , .{});
@@ -291,6 +297,28 @@ pub const add_command = struct {
     }
 
     pub fn run(self: add_command, ctx: *router.Context) !void {
+        var has_runtime = self.runtime;
+        for (self.positionals) |spec| has_runtime = has_runtime or @import("runtime_spec.zig").isOfficial(spec);
+        if (self.global and has_runtime) {
+            if (self.positionals.len != 1) {
+                ctx.error_detail = .{ .message = .{ .msg = "Install one global runtime at a time; do not mix runtimes and tools in one add command." } };
+                return error.InvalidArgument;
+            }
+            if (self.role != null or self.dev or self.tool or self.helper or self.external or self.optional or self.bin or self.lib or self.no_sync or self.update or self.save_exact or self.save_caret or self.save_tilde or self.jobs_arg != null or self.progress_arg != null) return error.UnsupportedRuntimeOption;
+            return (@import("interpreter_install.zig").InterpreterInstallCommand{
+                .positionals = self.positionals,
+                .target = self.target,
+                .registry = self.registry,
+                .json = self.json,
+                .offline = self.offline,
+                .dry_run = self.dry_run,
+                .prefer_local = self.prefer_local,
+            }).run(ctx);
+        }
+        if (self.runtime or self.target != null or self.registry != null) {
+            ctx.error_detail = .{ .message = .{ .msg = "Runtime installation options require `moon add --global [--runtime] PACKAGE@VERSION`. Use `moon set` to select the project runtime." } };
+            return error.InvalidArgument;
+        }
         if (self.json and self.progress_arg != null) return error.InvalidOutputMode;
         if (self.jobs_arg) |jobs_arg| {
             const jobs = std.fmt.parseUnsigned(usize, jobs_arg, 10) catch return error.InvalidJobs;
@@ -376,7 +404,7 @@ pub const add_command = struct {
         defer mt.deinit(allocator);
 
         if (mt.runtimeName().len == 0) {
-            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [interpreter]. Run `moon interpreter set lua@5.4` or `moon interpreter set luajit@2.1` to select one." } };
+            ctx.error_detail = .{ .message = .{ .msg = "moonstone.toml is missing [interpreter]. Run `moon set lua@5.4` or `moon set luajit@2.1` to select one." } };
             return error.MissingRuntime;
         }
 
@@ -481,7 +509,7 @@ pub const add_command = struct {
             .build_env = build_env,
         }, env) catch |err| {
             if (err == error.NoCompatibleCandidateFound or err == error.PackageNotFound or err == error.FileNotFound) {
-                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon interpreter set lua@5.4` or `moon interpreter set luajit@2.1` to select one." } };
+                ctx.error_detail = .{ .message = .{ .msg = "Moonstone requires an active Lua runtime for this command.\nPlease run `moon set lua@5.4` or `moon set luajit@2.1` to select one." } };
                 return error.MissingRuntime;
             }
             return err;

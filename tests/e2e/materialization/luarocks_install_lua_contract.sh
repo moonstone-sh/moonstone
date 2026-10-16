@@ -76,7 +76,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize mapped install.lua rock ━━━"
 moon init . --name install-lua-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:install-lua
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

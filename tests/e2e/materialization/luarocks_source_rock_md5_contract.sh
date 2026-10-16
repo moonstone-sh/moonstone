@@ -73,7 +73,7 @@ cd "${TEST_APP}"
 
 echo "━━━ prefer source rock without misapplying archive MD5 ━━━"
 moon init . --name rockspec-source-rock-md5-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:source-md5
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

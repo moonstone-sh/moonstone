@@ -25,7 +25,7 @@ mkdir -p "$WORKDIR/app"
 # resolves the synthetic-only fixture package instead of silently finding
 # nothing on the real registry.
 (cd "$WORKDIR/app" && moon registry add moonstone "${MOONSTONE_REGISTRY_PATH}")
-(cd "$WORKDIR/app" && moon interpreter set lua@5.4.7 --no-sync)
+(cd "$WORKDIR/app" && moon set lua@5.4.7 --no-sync)
 (cd "$WORKDIR/app" && moon add synthetic-isolated-bin)
 
 # Verify the public bin scope env.toml exists and prepends the isolated luajit bin directory.

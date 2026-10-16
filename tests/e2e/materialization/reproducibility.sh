@@ -32,7 +32,7 @@ resolver = "moonstone"
 path = "${SANDBOX_DIR}/registry"
 EOF
 
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 
 echo "━━━ add dependency ━━━"
 moon add synthetic:inspect@3.1.3 --no-sync

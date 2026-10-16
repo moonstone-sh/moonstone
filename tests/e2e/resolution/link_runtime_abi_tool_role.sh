@@ -29,7 +29,7 @@ return true
 LUA
 
 (cd "$WORKDIR/linked" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-tool-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-tool-app --no-git --no-sync && "$MOON_BIN" set lua@5.4 --no-sync)
 
 # 1. --tool should succeed despite ABI mismatch
 if ! (cd "$WORKDIR/app" && "$MOON_BIN" add --tool link:hyg-tool-mismatch >"$WORKDIR/tool-output" 2>&1); then

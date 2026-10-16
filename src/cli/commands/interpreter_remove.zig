@@ -21,19 +21,17 @@ pub const InterpreterRemoveCommand = struct {
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
-    force: bool = false,
-    quiet: bool = false,
+    json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon interpreter remove [flags] <name@version>
+            \\Usage: moon remove --global [flags] <name@version>
             \\
             \\Remove one concrete installed interpreter artifact from the shared store.
             \\
             \\Flags:
             \\  --target <triple>  Select a target when multiple builds are installed
-            \\  --force            Remove a referenced interpreter anyway
-            \\  --quiet            Suppress non-error output
+            \\  --json             Emit newline-delimited JSON events
             \\
         , .{});
     }
@@ -42,7 +40,7 @@ pub const InterpreterRemoveCommand = struct {
         if (self.positionals.len != 1) return error.MissingArgument;
         const spec = self.positionals[0];
         const at = std.mem.indexOfScalar(u8, spec, '@') orelse return error.ConcreteInterpreterVersionRequired;
-        const interpreter_name = spec[0..at];
+        const interpreter_name = moonstone.domain.package_spec.canonicalOfficialRuntime(spec[0..at]);
         const version = spec[at + 1 ..];
         if (interpreter_name.len == 0 or !isConcreteVersion(version)) return error.ConcreteInterpreterVersionRequired;
 
@@ -65,52 +63,68 @@ pub const InterpreterRemoveCommand = struct {
         }
         if (matches.items.len == 0) return error.InterpreterNotInstalled;
         if (matches.items.len > 1) {
+            if (self.json) return error.InterpreterTargetRequired;
             try ctx.stdout.print("Multiple interpreter builds match {s}. Re-run with `--target <triple>` using one of:\n", .{spec});
             for (matches.items) |item| try ctx.stdout.print("  {s}\n", .{item.target});
             return error.InterpreterTargetRequired;
         }
 
-        const global_reference = try isGlobalDefault(allocator, io, paths.config, interpreter_name, version);
-        const project_references = try countProjectReferences(allocator, io, paths.projects, interpreter_name, version);
-        if ((global_reference or project_references > 0) and !self.force) {
+        const global_reference = try isGlobalDefault(ctx, interpreter_name, version);
+        const project_references = try countProjectReferences(allocator, io, paths.projects, interpreter_name, version, matches.items[0].hash);
+        if (global_reference or project_references > 0) {
+            ctx.error_detail = .{ .message = .{ .msg = "Runtime is still referenced by a project or the global selection. Select a replacement with `moon set` and sync dependent projects before removing it." } };
+            if (self.json) return error.InterpreterStillReferenced;
             if (global_reference) try ctx.stdout.print("Cannot remove {s}: unset the current global interpreter first.\n", .{spec});
             if (project_references > 0) try ctx.stdout.print("Cannot remove {s}: {d} registered project(s) rely on it.\n", .{ spec, project_references });
-            try ctx.stdout.print("Re-run with `--force` to remove it anyway.\n", .{});
+
             return error.InterpreterStillReferenced;
         }
-        if (!self.quiet and self.force and (global_reference or project_references > 0)) {
-            try ctx.stdout.print("Warning: removing {s} may break the global interpreter and {d} registered project(s).\n", .{ spec, project_references });
-        }
-
         const selected = matches.items[0];
-        std.Io.Dir.cwd().deleteTree(io, selected.path) catch |err| if (err != error.FileNotFound) return err;
+        const store_root = try std.Io.Dir.cwd().realPathFileAlloc(io, paths.store, allocator);
+        defer allocator.free(store_root);
+        const owned_prefix = try std.fmt.allocPrint(allocator, "{s}{c}", .{ store_root, std.fs.path.sep });
+        defer allocator.free(owned_prefix);
+        const artifact_root = std.Io.Dir.cwd().realPathFileAlloc(io, selected.path, allocator) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        defer if (artifact_root) |path| allocator.free(path);
+        if (artifact_root) |path| {
+            if (!std.mem.startsWith(u8, path, owned_prefix)) return error.RuntimeOutsideOwnedStore;
+            try std.Io.Dir.cwd().deleteTree(io, path);
+        }
         try idx.delete_artifact(selected.hash);
-        if (!self.quiet) try ctx.stdout.print("Removed interpreter {s} ({s}).\n", .{ spec, selected.target });
+        if (self.json) {
+            var emitter = @import("ndjson.zig").Emitter.init(allocator, ctx.stdout, "remove");
+            try emitter.terminate(io, spec, "ok", .{ .target = selected.target, .runtime = true, .global = true });
+        }
+        if (!self.json) try ctx.stdout.print("Removed interpreter {s} ({s}).\n", .{ spec, selected.target });
     }
 };
 
 fn isConcreteVersion(version: []const u8) bool {
-    if (version.len == 0) return false;
-    for (version) |char| if (!(std.ascii.isDigit(char) or char == '.')) return false;
+    _ = moonstone.domain.semver.Version.parse(version) catch return false;
     return true;
 }
 
 fn findMatches(allocator: std.mem.Allocator, idx: moonstone.store.driver.StoreDriver, name: []const u8, version: []const u8, target: ?[]const u8) !std.ArrayList(Match) {
     var result = std.ArrayList(Match).empty;
     errdefer result.deinit(allocator);
-    const sql = "SELECT artifact_hash, target, path FROM artifacts WHERE kind = 'runtime' AND name = ? AND version = ? AND (? IS NULL OR target = ?) ORDER BY target;";
+    const sql = "SELECT artifact_hash, target, path FROM artifacts WHERE kind = 'runtime' AND (name = ? OR name = ?) AND version = ? AND (? IS NULL OR target = ?) ORDER BY target;";
     var stmt: ?*c.sqlite3_stmt = null;
     if (c.sqlite3_prepare_v2(idx.db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.SQLitePrepareError;
     defer _ = c.sqlite3_finalize(stmt);
     const transient = moonstone.store.driver.moonstone_sqlite_transient_ptr;
     _ = c.sqlite3_bind_text(stmt, 1, name.ptr, @intCast(name.len), transient);
-    _ = c.sqlite3_bind_text(stmt, 2, version.ptr, @intCast(version.len), transient);
+    const alias = if (@import("runtime_spec.zig").isOfficial(name)) std.fs.path.basename(name) else name;
+    _ = c.sqlite3_bind_text(stmt, 2, alias.ptr, @intCast(alias.len), transient);
+    _ = c.sqlite3_bind_text(stmt, 3, version.ptr, @intCast(version.len), transient);
     if (target) |value| {
-        _ = c.sqlite3_bind_text(stmt, 3, value.ptr, @intCast(value.len), transient);
         _ = c.sqlite3_bind_text(stmt, 4, value.ptr, @intCast(value.len), transient);
+        _ = c.sqlite3_bind_text(stmt, 5, value.ptr, @intCast(value.len), transient);
     } else {
-        _ = c.sqlite3_bind_null(stmt, 3);
         _ = c.sqlite3_bind_null(stmt, 4);
+        _ = c.sqlite3_bind_null(stmt, 5);
     }
     while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
         try result.append(allocator, .{
@@ -122,44 +136,90 @@ fn findMatches(allocator: std.mem.Allocator, idx: moonstone.store.driver.StoreDr
     return result;
 }
 
-fn isGlobalDefault(allocator: std.mem.Allocator, io: std.Io, config_dir: []const u8, name: []const u8, version: []const u8) !bool {
-    const config_path = try std.fs.path.join(allocator, &.{ config_dir, "config.toml" });
-    defer allocator.free(config_path);
-    const content = std.Io.Dir.cwd().readFileAlloc(io, config_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
-        if (err == error.FileNotFound) return false;
-        return err;
+pub fn isGlobalDefault(ctx: *router.Context, name: []const u8, version: []const u8) !bool {
+    const allocator = ctx.allocator;
+    const path = try moonstone.platform.fs.resolve_config_file(allocator, ctx.env);
+    defer allocator.free(path);
+    const content = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
     };
     defer allocator.free(content);
-    const needle = try std.fmt.allocPrint(allocator, "default_runtime = \"{s}-{s}\"", .{ name, version });
-    defer allocator.free(needle);
-    return std.mem.indexOf(u8, content, needle) != null;
+    var parser = moonstone.domain.manifest.toml.Parser(moonstone.domain.manifest.toml.Table).init(allocator);
+    defer parser.deinit();
+    var parsed = try parser.parseString(content);
+    defer parsed.deinit();
+    const section = parsed.value.get("moonstone") orelse return false;
+    if (section != .table) return error.InvalidConfig;
+    const value = section.table.get("default_runtime") orelse return false;
+    if (value != .string) return error.InvalidConfig;
+    const alias = if (@import("runtime_spec.zig").isOfficial(name)) std.fs.path.basename(name) else name;
+    const spec = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ alias, version });
+    defer allocator.free(spec);
+    const canonical = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ name, version });
+    defer allocator.free(canonical);
+    return std.mem.eql(u8, value.string, spec) or std.mem.eql(u8, value.string, canonical);
 }
 
-fn countProjectReferences(allocator: std.mem.Allocator, io: std.Io, projects_path: []const u8, name: []const u8, version: []const u8) !usize {
+fn countProjectReferences(allocator: std.mem.Allocator, io: std.Io, projects_path: []const u8, name: []const u8, version: []const u8, artifact_hash: []const u8) !usize {
     var projects = std.Io.Dir.cwd().openDir(io, projects_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) return 0;
         return err;
     };
     defer projects.close(io);
     var count: usize = 0;
+    var seen = std.StringHashMap(void).init(allocator);
+    defer {
+        var keys = seen.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
     var iterator = projects.iterate();
     while (try iterator.next(io)) |entry| {
-        if (entry.kind != .sym_link and entry.kind != .directory) continue;
+        if (entry.kind != .sym_link and entry.kind != .directory and !(entry.kind == .file and std.mem.endsWith(u8, entry.name, ".path"))) continue;
         const registered = try std.fs.path.join(allocator, &.{ projects_path, entry.name });
         defer allocator.free(registered);
-        const project_root = if (entry.kind == .sym_link) blk: {
+        const project_root = if (entry.kind == .file) try @import("project_registry.zig").readRoot(allocator, io, registered) else if (entry.kind == .sym_link) blk: {
             var buffer: [std.fs.max_path_bytes]u8 = undefined;
             const length = projects.readLink(io, entry.name, &buffer) catch continue;
             break :blk try allocator.dupe(u8, buffer[0..length]);
         } else try allocator.dupe(u8, registered);
         defer allocator.free(project_root);
+        if (seen.contains(project_root)) continue;
+        try seen.put(try allocator.dupe(u8, project_root), {});
+        var locked_reference = false;
+        for ([_][]const u8{ "moonstone.lock", ".moonstone/env/env.toml" }) |relative| {
+            const path = try std.fs.path.join(allocator, &.{ project_root, relative });
+            defer allocator.free(path);
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(32 * 1024 * 1024)) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            defer allocator.free(bytes);
+            if (std.mem.indexOf(u8, bytes, artifact_hash) != null) locked_reference = true;
+        }
+        if (locked_reference) {
+            count += 1;
+            continue;
+        }
         const manifest_path = try std.fs.path.join(allocator, &.{ project_root, "moonstone.toml" });
         defer allocator.free(manifest_path);
         const content = std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch continue;
         defer allocator.free(content);
         var manifest = moonstone.domain.manifest.MoonstoneToml.parse(allocator, content) catch continue;
         defer manifest.deinit(allocator);
-        if (std.mem.eql(u8, manifest.runtimeName(), name) and std.mem.startsWith(u8, version, manifest.runtimeVersion())) count += 1;
+        if (std.mem.eql(u8, moonstone.domain.package_spec.canonicalOfficialRuntime(manifest.runtimeName()), name)) {
+            var range = try moonstone.domain.semver.VersionRange.parse(allocator, manifest.runtimeVersion());
+            defer range.deinit(allocator);
+            const installed = try moonstone.domain.semver.Version.parse(version);
+            if (range.contains(installed)) count += 1;
+        }
     }
     return count;
+}
+
+test "runtime removal accepts prereleases but rejects version ranges" {
+    try std.testing.expect(isConcreteVersion("2.1.0-beta3"));
+    try std.testing.expect(isConcreteVersion("5.4.123"));
+    for ([_][]const u8{ "", "^5.4", "~5.4", "*", "../../5.4" }) |version| try std.testing.expect(!isConcreteVersion(version));
 }

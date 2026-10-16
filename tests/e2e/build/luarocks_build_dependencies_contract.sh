@@ -113,7 +113,7 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 
 cd "${TEST_APP}"
 moon init . --name build-dependencies-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 
 echo "━━━ materialize the build-only closure ━━━"
 if moon add rocks:build-dependent-rock --no-sync >"${WORKDIR}/no-sync.log" 2>&1; then

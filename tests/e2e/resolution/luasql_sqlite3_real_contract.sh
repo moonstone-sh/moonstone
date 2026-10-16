@@ -113,7 +113,7 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 cd "${TEST_APP}"
 printf '━━━ report missing external SQLite paths before materialization ━━━\n'
 moon init . --name real-luasql-sqlite3-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 MISSING_PATHS_LOG="${WORKDIR}/missing-external-paths.log"
 if env -u SQLITE_INCDIR -u SQLITE_LIBDIR moon add "rocks:${PACKAGE}@${VERSION}" >"${MISSING_PATHS_LOG}" 2>&1; then
     echo "ERROR: LuaSQL SQLite3 unexpectedly materialized without its declared external paths"

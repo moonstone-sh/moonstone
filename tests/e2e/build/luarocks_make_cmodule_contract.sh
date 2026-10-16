@@ -147,7 +147,7 @@ cd "${TEST_APP}"
 
 echo "━━━ resolve and materialize Make C module ━━━"
 moon init . --name make-cmodule-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:make-cmodule
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"
