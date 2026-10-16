@@ -97,7 +97,7 @@ host_artifact = host[host.index("[[artifacts]]"):]
     + host_artifact
 )
 PY
-"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/combined-runtime.toml" --blob "${WORKDIR}/foreign-runtime.tar.gz" --replace --yes
+"${MOON_BIN}" registry --file "${REGISTRY}" publish --descriptor "${WORKDIR}/combined-runtime.toml" --blob "${WORKDIR}/foreign-runtime.tar.gz" --replace --yes
 grep -q '^name = "lua"$' "${REGISTRY}/index.toml"
 
 make_rock() {
@@ -194,7 +194,7 @@ bytes = 1
 type = "archive"
 strip_components = 0
 EOF
-"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/foreign-parent.toml" --blob "${WORKDIR}/foreign-parent.tar.gz" --replace --yes
+"${MOON_BIN}" registry --file "${REGISTRY}" publish --descriptor "${WORKDIR}/foreign-parent.toml" --blob "${WORKDIR}/foreign-parent.tar.gz" --replace --yes
 
 cd "${APP}"
 "${MOON_BIN}" init . --name foreign-pure-lua --no-git --no-sync

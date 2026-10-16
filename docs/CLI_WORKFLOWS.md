@@ -42,11 +42,11 @@ arguments. They do not materialize an environment.
 ## Project sync versus registry maintenance
 
 `moon sync` reconciles a project manifest, lockfile, and environment.
-`moon registry sync PATH` rebuilds a local registry's metadata from its package
+`moon registry NAME: sync` rebuilds a local registry's metadata from its package
 descriptors. `moon index rebuild` rebuilds the local store's SQLite metadata
 index. These operate on different data.
 
-`moon registry push` and targeted `moon registry NAME: publish` currently serve
+`moon registry NAME: publish` currently serves
 local file-registry authoring. They do not establish support for authenticated
 publication to a remote registry. Targeted operations resolve named file://
 registries; `--file PATH` addresses a local registry directly.
@@ -58,3 +58,8 @@ shared artifacts referenced by project environments. Prefer inspecting and
 pruning unreferenced content over purging the entire store. Read the command's
 scope before deletion; removing user configuration, cached metadata, and shared
 artifacts are different operations.
+
+Create a file registry with `moon registry init --file PATH`. Remove a published
+version with `moon registry NAME: remove OWNER/PACKAGE@VERSION`. Registry
+connections still use `registry add/list/remove`; target operations require the
+trailing colon. Use `registry NAME: doctor` for health information.

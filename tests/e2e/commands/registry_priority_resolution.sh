@@ -78,7 +78,7 @@ resolver = "moonstone"
 EOF
     fi
 
-    moon registry push "${reg}" --descriptor "${descriptor}" --blob "${blob}" >/dev/null
+    moon registry --file "${reg}" publish --descriptor "${descriptor}" --blob "${blob}" >/dev/null
 }
 
 # Reads one `key = "value"` field out of the moonstone.lock `[[package]]`
@@ -103,8 +103,8 @@ lock_field() {
 
 REG_LOW="${WORKDIR}/registry-low"
 REG_HIGH="${WORKDIR}/registry-high"
-moon registry create "${REG_LOW}" local >/dev/null
-moon registry create "${REG_HIGH}" local >/dev/null
+moon registry init --file "${REG_LOW}" >/dev/null
+moon registry init --file "${REG_HIGH}" >/dev/null
 
 # Same package name published at different versions to each registry, so a
 # resolved version unambiguously identifies which registry actually served
@@ -155,8 +155,8 @@ echo "✓ unprefixed transitive dependency resolved from the higher-priority reg
 
 REG_FIRST="${WORKDIR}/registry-first"
 REG_SECOND="${WORKDIR}/registry-second"
-moon registry create "${REG_FIRST}" local >/dev/null
-moon registry create "${REG_SECOND}" local >/dev/null
+moon registry init --file "${REG_FIRST}" >/dev/null
+moon registry init --file "${REG_SECOND}" >/dev/null
 # Both registries publish the SAME version number. PubGrub's version
 # selection is by semver, independent of registry priority -- if the two
 # registries offered different version numbers, the solver would pick
@@ -230,7 +230,7 @@ if grep -A4 'name = "example/stable"' moonstone.toml | grep -q 'registry ='; the
 fi
 
 REG_NEWER="${WORKDIR}/registry-newer"
-moon registry create "${REG_NEWER}" local >/dev/null
+moon registry init --file "${REG_NEWER}" >/dev/null
 publish "${REG_NEWER}" "example/stable" "9.9.9"
 moon registry add newer "file://${REG_NEWER}" --default >/dev/null
 grep -A3 'name = "newer"' moonstone.toml | grep -Fq 'priority = 2'

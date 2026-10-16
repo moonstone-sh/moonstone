@@ -577,7 +577,7 @@ use a trailing colon to make its target explicit:
 ```bash
 moon registry init --file ./registry --name acme
 moon registry acme: publish --descriptor package.toml --artifact app.tar.gz
-moon registry acme: index rebuild
+moon registry acme: sync
 moon registry acme: fetch --descriptor acme/app@1.2.0
 moon registry acme: doctor
 ```

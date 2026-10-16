@@ -44,15 +44,15 @@ type = "command"
 command = "true"
 EOF
 
-echo "━━━ moon registry create ━━━"
-moon registry create "${REGISTRY}" local
+echo "━━━ moon registry init --file ━━━"
+moon registry init --file "${REGISTRY}"
 test -f "${REGISTRY}/registry.toml"
 test -f "${REGISTRY}/index.toml"
 test -d "${REGISTRY}/packages"
 test -d "${REGISTRY}/blobs/b3"
 
-echo "━━━ moon registry push ━━━"
-moon registry push "${REGISTRY}" --descriptor "${DESCRIPTOR}" --blob "${BLOB}"
+echo "━━━ moon registry --file ━━━" publish
+moon registry --file "${REGISTRY}" publish --descriptor "${DESCRIPTOR}" --blob "${BLOB}"
 PACKAGE_DESCRIPTOR="${REGISTRY}/packages/moonstone/test-local/0.1.0/package.toml"
 test -f "${PACKAGE_DESCRIPTOR}"
 grep 'name = "moonstone/test-local"' "${PACKAGE_DESCRIPTOR}"
@@ -89,7 +89,7 @@ grep 'name = "moonstone/test-local"' moonstone.toml
 cd "${WORKDIR}"
 
 echo "━━━ moon registry purge ━━━"
-moon registry purge "${REGISTRY}" --descriptor "${PACKAGE_DESCRIPTOR}" --blob "${BLOB}"
+moon registry --file "${REGISTRY}" remove moonstone/test-local@0.1.0
 test ! -e "${PACKAGE_DESCRIPTOR}"
 if grep -q 'moonstone/test-local' "${REGISTRY}/index.toml"; then
     echo "purged package still appears in index.toml" >&2

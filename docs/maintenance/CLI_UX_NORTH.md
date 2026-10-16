@@ -249,3 +249,12 @@ branch is omitted. Line counts flag reference gaps, not usability scores.
 | `moon cache manifest refresh` | command | 1 |
 | `moon cache manifest path` | command | 1 |
 | `moon cache manifest clear` | command | 1 |
+
+## Registry consolidation implemented
+
+The static registry authoring commands have been removed. Use `registry init
+--file PATH`, then targeted `publish`, `sync`, `fetch`, `remove`, or `doctor`.
+Connection management remains `registry add/list/remove`. The inventory above
+records the original surface before consolidation. `settings show` is removed;
+health checks belong to `doctor`. Target authoring currently supports file
+registries, not authenticated remote publishing.

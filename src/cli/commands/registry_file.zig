@@ -123,6 +123,19 @@ fn rewriteBlobUrlIfNeeded(allocator: std.mem.Allocator, descriptor: []const u8, 
 }
 
 fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, emitter: ?*ndjson.Emitter, registry: []const u8, name_for_root: []const u8) !void {
+    // Publishing, removing, and syncing preserve the registry identity.
+    const metadata_path = try std.fs.path.join(allocator, &.{ registry, "registry.toml" });
+    defer allocator.free(metadata_path);
+    const previous_bytes = readFile(allocator, io, metadata_path) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (previous_bytes) |bytes| allocator.free(bytes);
+    var previous = if (previous_bytes) |bytes| try moonstone.domain.manifest.RegistryRoot.parse(allocator, bytes) else null;
+    defer if (previous) |*metadata| metadata.deinit(allocator);
+    const registry_name = if (previous) |metadata| metadata.registry.name else name_for_root;
+    const registry_id = if (previous) |metadata| metadata.registry.id else name_for_root;
+
     const packages_root = try std.fs.path.join(allocator, &.{ registry, "packages" });
     defer allocator.free(packages_root);
     try mkdirp(io, packages_root);
@@ -377,7 +390,7 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
 
     try maybeDeleteFile(io, sqlite_path);
 
-    const registry_toml = try std.fmt.allocPrint(allocator, "[registry]\nid = \"{s}\"\nname = \"{s}\"\nprotocol = \"moonstone.registry.v0\"\nrevision = 1\ngenerated_at = \"local\"\nmin_client = \"0.1.0\"\n\n[index]\nformat = \"moonstone.index.v0\"\nurl = \"index.toml\"\nhash = \"{s}\"\nbytes = {d}\nrevision = 1\n\n[index.compact]\nformat = \"moonstone.index.sqlite.v0\"\nurl = \"index.sqlite.zst\"\ncompressed_hash = \"{s}\"\ncontent_hash = \"{s}\"\nbytes = {d}\n\n[blobs]\nalgorithm = \"b3\"\nlayout = \"blobs/b3/{{h0h1}}/{{h2h3}}/{{hash}}\"\n\n[capabilities]\nruntimes = true\nartifacts = true\nsource_packages = true\nrocks_bridge = false\nprivate = false\n", .{ name_for_root, name_for_root, index_hash, index_bytes.len, compressed_hash, content_hash, zst_bytes.len });
+    const registry_toml = try std.fmt.allocPrint(allocator, "[registry]\nid = \"{s}\"\nname = \"{s}\"\nprotocol = \"moonstone.registry.v0\"\nrevision = 1\ngenerated_at = \"local\"\nmin_client = \"0.1.0\"\n\n[index]\nformat = \"moonstone.index.v0\"\nurl = \"index.toml\"\nhash = \"{s}\"\nbytes = {d}\nrevision = 1\n\n[index.compact]\nformat = \"moonstone.index.sqlite.v0\"\nurl = \"index.sqlite.zst\"\ncompressed_hash = \"{s}\"\ncontent_hash = \"{s}\"\nbytes = {d}\n\n[blobs]\nalgorithm = \"b3\"\nlayout = \"blobs/b3/{{h0h1}}/{{h2h3}}/{{hash}}\"\n\n[capabilities]\nruntimes = true\nartifacts = true\nsource_packages = true\nrocks_bridge = false\nprivate = false\n", .{ registry_id, registry_name, index_hash, index_bytes.len, compressed_hash, content_hash, zst_bytes.len });
     defer allocator.free(registry_toml);
     const root_path = try std.fs.path.join(allocator, &.{ registry, "registry.toml" });
     defer allocator.free(root_path);
