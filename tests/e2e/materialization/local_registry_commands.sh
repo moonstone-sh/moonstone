@@ -62,7 +62,7 @@ grep 'descriptor = "packages/moonstone/test-local/0.1.0/package.toml"' "${REGIST
 
 echo "━━━ moon registry sync ━━━"
 rm -f "${REGISTRY}/index.toml"
-moon registry sync "${REGISTRY}" local
+moon registry --file "${REGISTRY}" sync
 grep 'name = "moonstone/test-local"' "${REGISTRY}/index.toml"
 
 echo "━━━ project registry add + resolve ━━━"
@@ -88,7 +88,7 @@ moon add --no-sync 'local:moonstone/test-local@0.1.0'
 grep 'name = "moonstone/test-local"' moonstone.toml
 cd "${WORKDIR}"
 
-echo "━━━ moon registry purge ━━━"
+echo "━━━ moon registry remove ━━━"
 moon registry --file "${REGISTRY}" remove moonstone/test-local@0.1.0
 test ! -e "${PACKAGE_DESCRIPTOR}"
 if grep -q 'moonstone/test-local' "${REGISTRY}/index.toml"; then

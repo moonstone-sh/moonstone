@@ -43,7 +43,9 @@ jobs:
 
       - name: Run Native Tests
         # We run the internal test suite
-        run: zig build test
+        run: |
+          zig build test
+          zig build test-cli
 
       - name: Checkout pinned LuaRocks reference
         uses: actions/checkout@v4

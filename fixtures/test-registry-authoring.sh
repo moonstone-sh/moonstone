@@ -21,7 +21,7 @@ echo "  test root: $TEST_ROOT"
 REG_DIR="$TEST_ROOT/test_registry"
 
 echo "1. Creating registry at $REG_DIR..."
-$MOON_BIN registry create "$REG_DIR"
+$MOON_BIN registry init --file "$REG_DIR"
 
 echo "2. Preparing fake package descriptor and blob..."
 cat > "$TEST_ROOT/package.toml" << EOF
@@ -43,7 +43,7 @@ EOF
 tar -czf "$TEST_ROOT/blob.tar.gz" -T /dev/null
 
 echo "3. Pushing to local registry..."
-$MOON_BIN registry push "$REG_DIR" --descriptor "$TEST_ROOT/package.toml" --blob "$TEST_ROOT/blob.tar.gz"
+$MOON_BIN registry --file "$REG_DIR" publish --descriptor "$TEST_ROOT/package.toml" --blob "$TEST_ROOT/blob.tar.gz"
 
 if [ ! -f "$REG_DIR/index.sqlite.zst" ]; then
     echo "ERROR: Compact index (index.sqlite.zst) was not generated."
@@ -52,10 +52,10 @@ fi
 echo "Compact index exists: $(ls -lh "$REG_DIR/index.sqlite.zst" | awk '{print $5}')"
 
 echo "4. Purging package from registry..."
-$MOON_BIN registry purge "$REG_DIR" --p-name testpkg --version 1.0.0
+$MOON_BIN registry --file "$REG_DIR" remove testpkg@1.0.0
 
 echo "5. Re-pushing package to registry for resolution..."
-$MOON_BIN registry push "$REG_DIR" --descriptor "$TEST_ROOT/package.toml" --blob "$TEST_ROOT/blob.tar.gz"
+$MOON_BIN registry --file "$REG_DIR" publish --descriptor "$TEST_ROOT/package.toml" --blob "$TEST_ROOT/blob.tar.gz"
 
 echo "6. Testing client resolution..."
 PROJ_DIR="$TEST_ROOT/project"

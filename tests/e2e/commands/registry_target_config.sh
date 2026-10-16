@@ -130,4 +130,17 @@ if moon --config-file="${WORKDIR}/config.toml" registry user: fetch --descriptor
     exit 1
 fi
 moon registry nonexistent: sync --help | grep -Fq 'sync [--json]'
+for old_verb in create push purge; do
+    if moon registry "$old_verb" --help 2>&1 | grep -Fq "Usage: moon registry $old_verb"; then
+        echo "removed registry command still has a public help entry: $old_verb" >&2
+        exit 1
+    fi
+done
+for verb in sync remove doctor fetch publish; do
+    moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry user: " | grep -qx "$verb"
+done
+if moon --config-file="${WORKDIR}/config.toml" registry user: settings show >/dev/null 2>&1; then
+    echo "removed settings operation is still accepted" >&2
+    exit 1
+fi
 echo "━━━ ✓ Config-file registry target grammar passed ━━━"

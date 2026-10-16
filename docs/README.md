@@ -5,7 +5,7 @@ Use this directory by reader intent:
 - **Architecture:** [`ARCHITECTURE.md`](ARCHITECTURE.md), [`REGISTRY_MODEL.md`](REGISTRY_MODEL.md)
 - **User/reference:** [`USAGE.md`](USAGE.md), [`PROJECT_ENVIRONMENT.md`](PROJECT_ENVIRONMENT.md), [`PLATFORMS.md`](PLATFORMS.md), [`GLOSSARY.md`](GLOSSARY.md)
 - **Automation/protocols:** [`CLI_NDJSON_PROTOCOL.md`](CLI_NDJSON_PROTOCOL.md)
-- **Release notes:** [`releases/`](releases/) — [0.6.0](releases/0.6.0.md) (Lua flavors)
+- **Release notes:** [`releases/`](releases/) — [0.7.0](releases/0.7.0.md) (registry command migration), [0.6.0](releases/0.6.0.md) (Lua flavors)
 - **Examples:** [`../examples/`](../examples/)
 - **Maintenance and design history:** [`maintenance/`](maintenance/)
 
