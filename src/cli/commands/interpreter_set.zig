@@ -31,7 +31,7 @@ pub const InterpreterSetCommand = struct {
             \\  --target <t>     Target triple
             \\  --no-sync     Do not run moon sync
             \\  --no-save        Do not update moonstone.toml
-            \\  --json           Output results as JSON (bloated protocol)
+            \\  --json           Emit newline-delimited JSON events
             \\
         , .{});
     }

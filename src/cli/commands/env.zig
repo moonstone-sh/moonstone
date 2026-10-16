@@ -24,10 +24,18 @@ pub const EnvCommand = struct {
             \\Flags:
             \\  --json                Output as JSON
             \\  --paths               Output only PATH additions
-            \\  --shell <s>           Output export commands for shell: bash, zsh, fish, cmd, powershell
+            \\  --shell <s>           Output export commands for shell: bash, zsh, fish
             \\  --prod                Exclude development dependencies
             \\  --global              Show the global tools environment instead of the current project
             \\  --bin-runtime-names   List bin-runtime-scoped tool names (one per line), each usable with `moon exec`
+            \\
+            \\Environment exports are a shell-integration primitive; moon exec applies
+            \\the environment to one child process, and moon run executes a named task.
+            \\
+            \\Examples:
+            \\  moon env
+            \\  moon env --shell zsh
+            \\  moon exec -- lua build.lua
             \\
         , .{});
     }
@@ -105,6 +113,12 @@ pub const EnvCommand = struct {
     }
 
     pub fn run(self: EnvCommand, ctx: *router.Context) !void {
+        if (self.shell) |shell| {
+            if (!std.mem.eql(u8, shell, "bash") and !std.mem.eql(u8, shell, "zsh") and !std.mem.eql(u8, shell, "fish")) {
+                ctx.error_detail = .{ .message = .{ .msg = "Environment export supports bash, zsh, and fish. Choose one with --shell." } };
+                return error.UnsupportedShell;
+            }
+        }
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -183,7 +197,7 @@ pub const EnvCommand = struct {
                 defer allocator.free(content);
                 try stdout.writeAll(content);
             } else {
-                try stdout.print("Shell '{s}' not yet supported for env export.\n", .{s});
+                unreachable; // Shell names are validated before environment discovery.
             }
         } else {
             try stdout.print("Moonstone Environment:\n", .{});
@@ -200,3 +214,20 @@ pub const EnvCommand = struct {
         }
     }
 };
+
+test "unsupported shell fails before project or global environment discovery" {
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var ctx = router.Context{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdout = &writer,
+        .stderr = &writer,
+        .env = &env,
+    };
+    try std.testing.expectError(error.UnsupportedShell, (EnvCommand{ .shell = "powershell", .global = true }).run(&ctx));
+    try std.testing.expect(ctx.error_detail != null);
+    try std.testing.expectEqual(@as(usize, 0), writer.end);
+}

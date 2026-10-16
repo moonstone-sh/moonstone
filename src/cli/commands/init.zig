@@ -53,7 +53,7 @@ pub const init_command = struct {
             \\  --no-sync     Do not run moon sync after init
             \\  --empty          Create only moonstone.toml (no starter files or scripts)
             \\  --yes            Assume yes for all prompts
-            \\  --json           Output results as JSON (bloated protocol)
+            \\  --json           Emit newline-delimited JSON events
             \\
         , .{});
     }

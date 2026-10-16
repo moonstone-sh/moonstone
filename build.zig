@@ -104,6 +104,8 @@ pub fn build(b: *std.Build) void {
 
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_cli_tests = b.addRunArtifact(cli_tests);
+    const cli_test_step = b.step("test-cli", "Run CLI contract tests");
+    cli_test_step.dependOn(&run_cli_tests.step);
     const run_progress_ui_tests = b.addRunArtifact(progress_ui_tests);
     const run_profile_plan_tests = b.addRunArtifact(profile_plan_tests);
     const run_artifact_provider_tests = b.addRunArtifact(artifact_provider_tests);

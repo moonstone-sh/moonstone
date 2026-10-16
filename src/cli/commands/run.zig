@@ -18,14 +18,14 @@ pub const RunCommand = struct {
         try stdout.print(
             \\Usage: moon run <script-name> [-- [args...]]
             \\
-            \\Run a named opaque command from moonstone.toml. Moonstone projects
+            \\Run a named shell command from moonstone.toml. Moonstone projects
             \\the environment; the host shell interprets the command body.
             \\
             \\Flags:
             \\  --prod           Exclude development dependencies
             \\  --dev            Include development dependencies (default)
             \\  --interpreter <i> Override interpreter
-            \\  --json           Output results as JSON (bloated protocol)
+            \\  --json           Emit newline-delimited JSON events
             \\
         , .{});
     }

@@ -12,3 +12,7 @@ Use this directory by reader intent:
 The root README is the short first-success path. Keep detailed contracts here;
 avoid duplicating them in package registry READMEs. Maintenance notes are not
 normative until their conclusions are incorporated into a stable document.
+
+Current design review: [CLI UX north and command audit](maintenance/CLI_UX_NORTH.md).
+
+Command scope and shell primitives: [Choosing the right command](CLI_WORKFLOWS.md).

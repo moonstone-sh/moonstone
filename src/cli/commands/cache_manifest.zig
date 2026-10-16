@@ -26,6 +26,11 @@ fn parseSource(value: []const u8) ?SourceKind {
     return null;
 }
 
+fn selectedSource(args: []const []const u8) !?SourceKind {
+    if (args.len == 0 or std.mem.eql(u8, args[0], "all")) return null;
+    return parseSource(args[0]) orelse error.UnknownCommand;
+}
+
 fn initCache(ctx: *router.Context) !moonstone.cache.manifest.ManifestCache {
     const paths = try moonstone.platform.fs.resolve_moonstone(ctx.allocator, ctx.env, ctx.io);
     defer {
@@ -94,6 +99,12 @@ pub const CacheManifestPathCommand = struct {
         try stdout.print(
             \\Usage: moon cache manifest path [rocks|registry]
             \\
+            \\Print the metadata cache root, or the selected source subdirectory.
+            \\This reads user cache paths; it does not fetch or install packages.
+            \\
+            \\Example:
+            \\  moon cache manifest path registry
+            \\
         , .{});
     }
 
@@ -121,13 +132,20 @@ pub const CacheManifestClearCommand = struct {
         try stdout.print(
             \\Usage: moon cache manifest clear [rocks|registry|all]
             \\
+            \\Remove cached package metadata. The default is all sources.
+            \\Package artifacts, project manifests, and lockfiles are not removed.
+            \\Metadata will be fetched again when needed.
+            \\
+            \\Example:
+            \\  moon cache manifest clear rocks
+            \\
         , .{});
     }
 
     pub fn run(self: CacheManifestClearCommand, ctx: *router.Context) !void {
         var cache = try initCache(ctx);
         defer cache.deinit();
-        const source = if (self.positionals.len == 0) null else parseSource(self.positionals[0]) orelse return error.UnknownCommand;
+        const source = try selectedSource(self.positionals);
         cache.clearSource(source);
         try ctx.stdout.print("Manifest cache cleared.\n", .{});
     }
@@ -144,11 +162,18 @@ pub const CacheManifestRefreshCommand = struct {
         try stdout.print(
             \\Usage: moon cache manifest refresh [rocks|registry|all] [--abi <5.4>]
             \\
+            \\Clear and fetch package metadata. The default is all sources.
+            \\This uses the network and updates user caches, not project dependencies.
+            \\--abi selects the LuaRocks ABI (default: 5.4).
+            \\
+            \\Example:
+            \\  moon cache manifest refresh rocks --abi 5.4
+            \\
         , .{});
     }
 
     pub fn run(self: CacheManifestRefreshCommand, ctx: *router.Context) !void {
-        const source = if (self.positionals.len == 0) null else parseSource(self.positionals[0]) orelse return error.UnknownCommand;
+        const source = try selectedSource(self.positionals);
         var cache = try initCache(ctx);
         defer cache.deinit();
         if (source == null or source.? == .luarocks) {
@@ -175,3 +200,11 @@ pub const CacheManifestRefreshCommand = struct {
         }
     }
 };
+
+test "metadata source selection distinguishes all from an invalid source" {
+    try std.testing.expect((try selectedSource(&.{})) == null);
+    try std.testing.expect((try selectedSource(&.{"all"})) == null);
+    try std.testing.expectEqual(SourceKind.registry, (try selectedSource(&.{"registry"})).?);
+    try std.testing.expectEqual(SourceKind.luarocks, (try selectedSource(&.{"rocks"})).?);
+    try std.testing.expectError(error.UnknownCommand, selectedSource(&.{"typo"}));
+}

@@ -5,7 +5,7 @@ const router = @import("../router.zig");
 
 pub const SetupCommand = struct {
     pub const name = "setup";
-    pub const description = "Configure Moonstone shell integration and global shims";
+    pub const description = "Create POSIX lua and luac shims that delegate to moon exec";
 
     json: bool = false,
     force: bool = false,
@@ -14,9 +14,9 @@ pub const SetupCommand = struct {
         try stdout.print(
             \\Usage: moon setup [flags]
             \\
-            \\Configures Moonstone shell integration by:
-            \\  1. Creating global shims (lua, moon exec, etc.) in the shim directory.
-            \\  2. (Future) Attempting to update your shell profile (~/.zshrc, etc.).
+            \\Create POSIX-shell shims for lua and luac. Each shim delegates to moon exec.
+            \\The shim directory must be added to PATH explicitly.
+            \\This command does not edit your shell profile or activate a project.
             \\
             \\Flags:
             \\  --force    Overwrite existing files

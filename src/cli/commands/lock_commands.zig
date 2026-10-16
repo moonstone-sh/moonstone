@@ -13,7 +13,7 @@ pub const LockExportCommand = struct {
     pub const description = "Export the lockfile through the versioned JSON protocol";
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock export --json\n", .{});
+        try stdout.writeAll("Usage: moon lock export --json\n\nExport moonstone.lock as a versioned JSON document.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock export --json\n");
     }
     pub fn run(self: LockExportCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -30,7 +30,7 @@ pub const LockVerifyCommand = struct {
     json: bool = false,
     target_arg: ?[]const u8 = null,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock verify [--target <triple>] --json\n", .{});
+        try stdout.writeAll("Usage: moon lock verify [--target <triple>] --json\n\nVerify the lockfile contract and selected target profile.\nUse moon sync --check to check the project environment.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock verify --json\n");
     }
     pub fn run(self: LockVerifyCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -62,7 +62,7 @@ pub const LockProfileListCommand = struct {
     pub const description = "List locked resolution profiles";
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock profile list --json\n", .{});
+        try stdout.writeAll("Usage: moon lock profile list --json\n\nList locked resolution profiles and their identifiers.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock profile list --json\n");
     }
     pub fn run(self: LockProfileListCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -89,7 +89,7 @@ pub const LockPackageListCommand = struct {
     pub const description = "List locked packages";
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock package list --json\n", .{});
+        try stdout.writeAll("Usage: moon lock package list --json\n\nList packages recorded in moonstone.lock.\nUse moon list for the current project dependency view.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock package list --json\n");
     }
     pub fn run(self: LockPackageListCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -117,7 +117,7 @@ pub const LockPackageGetCommand = struct {
     positionals: []const []const u8 = &.{},
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock package get <name> --json\n", .{});
+        try stdout.writeAll("Usage: moon lock package get <name> --json\n\nInspect one package recorded in moonstone.lock.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock package get moonstone/valua --json\n");
     }
     pub fn run(self: LockPackageGetCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -155,7 +155,7 @@ pub const LockProfileGetCommand = struct {
     positionals: []const []const u8 = &.{},
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock profile get <id> --json\n", .{});
+        try stdout.writeAll("Usage: moon lock profile get <id> --json\n\nInspect one locked profile by identifier.\nFind identifiers with moon lock profile list --json.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock profile get <id> --json\n");
     }
     pub fn run(self: LockProfileGetCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -204,7 +204,7 @@ pub const LockRealizationListCommand = struct {
     pub const description = "List locked profile realizations";
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock realization list --json\n", .{});
+        try stdout.writeAll("Usage: moon lock realization list --json\n\nList profile-specific artifact realizations in moonstone.lock.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock realization list --json\n");
     }
     pub fn run(self: LockRealizationListCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -236,7 +236,7 @@ pub const LockRealizationGetCommand = struct {
     positionals: []const []const u8 = &.{},
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock realization get <hash> --json\n", .{});
+        try stdout.writeAll("Usage: moon lock realization get <hash> --json\n\nInspect a locked artifact realization by hash.\nFind hashes with moon lock realization list --json.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock realization get <hash> --json\n");
     }
     pub fn run(self: LockRealizationGetCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;
@@ -281,7 +281,7 @@ pub const LockGraphExportCommand = struct {
     pub const description = "Export locked dependency graphs for every profile";
     json: bool = false,
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print("Usage: moon lock graph export --json\n", .{});
+        try stdout.writeAll("Usage: moon lock graph export --json\n\nExport the locked dependency graph as versioned JSON.\n\nScope: moonstone.lock in the current directory; no changes are made.\nRequired: --json emits one versioned JSON response.\n\nExample:\n  moon lock graph export --json\n");
     }
     pub fn run(self: LockGraphExportCommand, ctx: *router.Context) !void {
         if (!self.json) return error.LockJsonRequired;

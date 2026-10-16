@@ -29,7 +29,7 @@ pub const update_command = struct {
             \\  --interactive Pick updates manually via prompts
             \\  --dry-run     Show what would be updated without modifying files
             \\  --locked      Fail if the lockfile would be changed
-            \\  --json        Output as JSON (bloated protocol)
+            \\  --json        Emit newline-delimited JSON events
             \\
         , .{});
     }

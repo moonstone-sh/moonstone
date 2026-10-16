@@ -21,7 +21,7 @@ pub const ListCommand = struct {
     pub const description = "List semantic manifest scripts";
     json: bool = false,
     pub fn printHelp(writer: *std.Io.Writer) !void {
-        try writer.writeAll("Usage: moon manifest script list --json\n");
+        try writer.writeAll("Usage: moon manifest script list --json\n\nList named scripts in the current project manifest.\n--json is required and emits one versioned JSON response.\n\nExample:\n  moon manifest script list --json\n");
     }
     pub fn run(self: ListCommand, ctx: *router.Context) !void {
         if (!self.json) return error.ManifestJsonRequired;
@@ -42,7 +42,7 @@ pub const GetCommand = struct {
     positionals: []const []const u8 = &.{},
     json: bool = false,
     pub fn printHelp(writer: *std.Io.Writer) !void {
-        try writer.writeAll("Usage: moon manifest script get <name> --json\n");
+        try writer.writeAll("Usage: moon manifest script get <name> --json\n\nRead one named script without executing it.\n--json is required; <name> is a script key in moonstone.toml.\n\nExample:\n  moon manifest script get build --json\n");
     }
     pub fn run(self: GetCommand, ctx: *router.Context) !void {
         if (!self.json) return error.ManifestJsonRequired;
@@ -62,7 +62,7 @@ pub const SetCommand = struct {
     positionals: []const []const u8 = &.{},
     command: ?[]const u8 = null,
     pub fn printHelp(writer: *std.Io.Writer) !void {
-        try writer.writeAll("Usage: moon manifest script set <name> --command <opaque-shell-command>\n");
+        try writer.writeAll("Usage: moon manifest script set <name> --command <opaque-shell-command>\n\nCreate or replace a named script in the current project manifest.\n--command is required. The host shell interprets its body when moon run\nexecutes it. Setting it does not execute it or sync dependencies.\n\nExample:\n  moon manifest script set build --command 'lua build.lua'\n");
     }
     pub fn run(self: SetCommand, ctx: *router.Context) !void {
         const script_name = if (self.positionals.len > 0) self.positionals[0] else return error.ScriptRequired;
@@ -82,7 +82,7 @@ pub const RemoveCommand = struct {
     pub const description = "Remove one manifest script";
     positionals: []const []const u8 = &.{},
     pub fn printHelp(writer: *std.Io.Writer) !void {
-        try writer.writeAll("Usage: moon manifest script remove <name>\n");
+        try writer.writeAll("Usage: moon manifest script remove <name>\n\nRemove a named script from the current project manifest.\nThis edits moonstone.toml, not dependencies or script files.\n\nExample:\n  moon manifest script remove build\n");
     }
     pub fn run(self: RemoveCommand, ctx: *router.Context) !void {
         const script_name = if (self.positionals.len > 0) self.positionals[0] else return error.ScriptRequired;

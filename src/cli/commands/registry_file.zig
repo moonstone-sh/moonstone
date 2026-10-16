@@ -439,7 +439,7 @@ pub const RegistrySyncCommand = struct {
         try stdout.print(
             \\Usage: moon registry sync <path> [name]
             \\
-            \\Delete and regenerate index.toml from packages/*/*/*/package.toml,
+            \\Rebuild local registry metadata from packages/*/*/*/package.toml,
             \\then refresh registry.toml metadata.
             \\
             \\Flags:
@@ -479,7 +479,7 @@ pub const RegistryPushCommand = struct {
         try stdout.print(
             \\Usage: moon registry push [registry] --descriptor <package.toml> [--blob <archive>] [flags]
             \\
-            \\Publish a package descriptor and regenerate the TOML and compact
+            \\Publish into a local file registry and regenerate the TOML and compact
             \\indexes. Supplying --blob copies the archive into the local blob
             \\store and rewrites its artifact metadata. Without --blob, every
             \\artifact URL must be an absolute HTTPS URL.

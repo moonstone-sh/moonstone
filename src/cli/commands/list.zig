@@ -16,7 +16,7 @@ pub const ListCommand = struct {
             \\List all dependencies for the current project.
             \\
             \\Flags:
-            \\  --json    Output results as JSON (bloated protocol)
+            \\  --json    Emit newline-delimited JSON events
             \\
         , .{});
     }
