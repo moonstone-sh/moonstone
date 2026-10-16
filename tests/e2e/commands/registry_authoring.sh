@@ -11,7 +11,7 @@ mkdir -p "${WORKDIR}/registry"
 REG_DIR="${WORKDIR}/registry"
 
 echo "=== 1. Creating registry ==="
-moon registry create "${REG_DIR}"
+moon registry init --file "${REG_DIR}"
 
 echo "=== 2. Pushing package to registry ==="
 cat > "${WORKDIR}/package.toml" << EOF
@@ -35,7 +35,7 @@ EOF
 
 tar -czf "${WORKDIR}/blob.tar.gz" -T /dev/null
 
-moon registry push "${REG_DIR}" --descriptor "${WORKDIR}/package.toml" --blob "${WORKDIR}/blob.tar.gz"
+moon registry --file "${REG_DIR}" publish --descriptor "${WORKDIR}/package.toml" --blob "${WORKDIR}/blob.tar.gz"
 
 if [ ! -f "${REG_DIR}/index.sqlite.zst" ]; then
     echo "✗ Compact index (index.sqlite.zst) was not generated."
@@ -44,10 +44,10 @@ fi
 echo "✓ Compact index exists"
 
 echo "=== 3. Purging package from registry ==="
-moon registry purge "${REG_DIR}" --p-name testorg/testpkg --version 1.0.0
+moon registry --file "${REG_DIR}" remove testorg/testpkg@1.0.0
 
 echo "=== 4. Re-pushing package to registry for resolution ==="
-moon registry push "${REG_DIR}" --descriptor "${WORKDIR}/package.toml" --blob "${WORKDIR}/blob.tar.gz"
+moon registry --file "${REG_DIR}" publish --descriptor "${WORKDIR}/package.toml" --blob "${WORKDIR}/blob.tar.gz"
 
 echo "=== 5. Testing client resolution ==="
 cd "${WORKDIR}/project"

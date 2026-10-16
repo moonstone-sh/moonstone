@@ -60,10 +60,10 @@ role = "runtime"
 EOF
     fi
 
-    moon registry push "${REGISTRY}" --descriptor "${descriptor}" --blob "${blob}"
+    moon registry --file "${REGISTRY}" publish --descriptor "${descriptor}" --blob "${blob}"
 }
 
-moon registry create "${REGISTRY}" local
+moon registry init --file "${REGISTRY}"
 publish "example/leaf"
 publish "example/middle" "example/leaf"
 publish "example/root" "example/middle"

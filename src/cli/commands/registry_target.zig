@@ -17,15 +17,14 @@ fn usage(stdout: *std.Io.Writer) !void {
         \\
         \\Target operations:
         \\  publish --descriptor <package.toml> [--artifact <archive>] [--json]
-        \\  index rebuild [--no-compact] [--json]
+        \\  sync [--json]
         \\  fetch --descriptor <name>@<version> [--output <path>] [--json]
-        \\  package delete <name>@<version> [--json]
-        \\  settings show [--json]
+        \\  remove <name>@<version> [--json]
         \\  doctor [--json]
         \\
         \\A trailing colon marks a configured registry target. Registry names
         \\are resolved from the user config and current project, with project
-        \\entries taking precedence.
+        \\entries taking precedence. Target authoring currently supports file:// only.
         \\
     , .{});
 }
@@ -70,6 +69,14 @@ fn hasFlag(args: []const []const u8, name: []const u8) bool {
 fn splitPackageSpec(spec: []const u8) !struct { name: []const u8, version: []const u8 } {
     const at = std.mem.lastIndexOfScalar(u8, spec, '@') orelse return error.InvalidPackageSpec;
     if (at == 0 or at + 1 == spec.len) return error.InvalidPackageSpec;
+    // Descriptor paths must remain under the selected registry.
+    var segments = std.mem.splitScalar(u8, spec[0..at], '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return error.InvalidPackageSpec;
+    }
+    if (std.mem.indexOfScalar(u8, spec, '\\') != null) return error.InvalidPackageSpec;
+    const version = spec[at + 1 ..];
+    if (std.mem.indexOfScalar(u8, version, '/') != null or std.mem.eql(u8, version, ".") or std.mem.eql(u8, version, "..")) return error.InvalidPackageSpec;
     return .{ .name = spec[0..at], .version = spec[at + 1 ..] };
 }
 
@@ -114,6 +121,8 @@ pub fn dispatch(args: []const []const u8, ctx: *router.Context) !void {
 fn dispatchImpl(args: []const []const u8, ctx: *router.Context) !void {
     if (args.len == 0 or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) return usage(ctx.stdout);
 
+    if (hasFlag(args, "--help") or hasFlag(args, "-h")) return usage(ctx.stdout);
+
     if (std.mem.eql(u8, args[0], "init")) {
         const path = option(args[1..], "--file") orelse return error.MissingArgument;
         const name = option(args[1..], "--name") orelse "local";
@@ -143,11 +152,13 @@ fn dispatchImpl(args: []const []const u8, ctx: *router.Context) !void {
             .json = hasFlag(rest, "--json"),
         }).run(ctx);
     }
-    if (std.mem.eql(u8, operation, "index") and rest.len >= 1 and std.mem.eql(u8, rest[0], "rebuild")) {
+    if (std.mem.eql(u8, operation, "sync")) {
+        for (rest) |arg| if (!std.mem.eql(u8, arg, "--json")) return error.UnexpectedArgument;
         return (file_commands.RegistrySyncCommand{ .positionals = &.{resolved.target.path}, .json = hasFlag(rest, "--json") }).run(ctx);
     }
-    if (std.mem.eql(u8, operation, "package") and rest.len >= 2 and std.mem.eql(u8, rest[0], "delete")) {
-        const package = try splitPackageSpec(rest[1]);
+    if (std.mem.eql(u8, operation, "remove") and rest.len >= 1) {
+        for (rest[1..]) |arg| if (!std.mem.eql(u8, arg, "--json")) return error.UnexpectedArgument;
+        const package = try splitPackageSpec(rest[0]);
         return (file_commands.RegistryPurgeCommand{
             .registry = resolved.target.path,
             .p_name = package.name,
@@ -179,17 +190,6 @@ fn dispatchImpl(args: []const []const u8, ctx: *router.Context) !void {
         }
         return;
     }
-    if (std.mem.eql(u8, operation, "settings") and rest.len >= 1 and std.mem.eql(u8, rest[0], "show")) {
-        const source = try std.fs.path.join(ctx.allocator, &.{ resolved.target.path, "registry.toml" });
-        defer ctx.allocator.free(source);
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(ctx.io, source, ctx.allocator, std.Io.Limit.limited(1024 * 1024));
-        defer ctx.allocator.free(bytes);
-        if (hasFlag(rest, "--json")) {
-            var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "registry-settings-show");
-            try emitter.terminate(ctx.io, "registry", "ok", .{ .path = source, .content = bytes });
-        } else try ctx.stdout.writeAll(bytes);
-        return;
-    }
     if (std.mem.eql(u8, operation, "doctor") and (rest.len == 0 or (rest.len == 1 and hasFlag(rest, "--json")))) {
         return doctor(ctx, resolved.target.path, hasFlag(rest, "--json"));
     }
@@ -215,7 +215,7 @@ pub fn complete(args: []const []const u8, ctx: *router.Context) ![]const []const
     }
 
     if (std.mem.endsWith(u8, args[0], ":") or std.mem.eql(u8, args[0], "--file")) {
-        const verbs = [_][]const u8{ "publish", "index", "fetch", "package", "settings", "doctor" };
+        const verbs = [_][]const u8{ "publish", "sync", "fetch", "remove", "doctor" };
         for (verbs) |verb| if (std.mem.startsWith(u8, verb, prefix)) try suggestions.append(ctx.allocator, verb);
     }
     return suggestions.toOwnedSlice(ctx.allocator);

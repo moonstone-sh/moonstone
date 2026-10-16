@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
         .all_args = all_args,
     };
 
-    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management\n\nGlobal options:\n  -C, --directory <path>  Change the project-resolution base before dispatch", &.{
+    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management\n\nGlobal options:\n  -C, --directory <path>  Change the project-resolution base before dispatch\n\nStart a project: moon init\nAdd a package: moon add <package>\nRun Lua: moon exec -- lua main.lua\nRun a project task: moon run <script>\nInspect or export its environment: moon env --help", &.{
         router.CommandNode.from(command_mod.add),
         router.CommandNode.from(command_mod.sync),
         router.CommandNode.from(command_mod.init),
@@ -157,10 +157,6 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/registry_list.zig").RegistryListCommand),
             router.CommandNode.from(@import("commands/registry_add.zig").RegistryAddCommand),
             router.CommandNode.from(@import("commands/registry_remove.zig").RegistryRemoveCommand),
-            router.CommandNode.from(@import("commands/registry_file.zig").RegistryCreateCommand),
-            router.CommandNode.from(@import("commands/registry_file.zig").RegistrySyncCommand),
-            router.CommandNode.from(@import("commands/registry_file.zig").RegistryPushCommand),
-            router.CommandNode.from(@import("commands/registry_file.zig").RegistryPurgeCommand),
         }, @import("commands/registry_target.zig").dispatch, @import("commands/registry_target.zig").complete),
 
         router.CommandNode.group("cache", "Manage Moonstone caches", &.{

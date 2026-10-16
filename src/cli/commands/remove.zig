@@ -37,7 +37,7 @@ pub const remove_command = struct {
             \\  --interpreter Remove project interpreter (sets to default)
             \\  --dev        Remove from dev-dependencies
             \\  --no-sync Do not run moon sync
-            \\  --json       Output results as JSON (bloated protocol)
+            \\  --json       Emit newline-delimited JSON events
             \\
         , .{});
     }

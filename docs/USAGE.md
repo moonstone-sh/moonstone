@@ -371,7 +371,7 @@ private registry profile:
 
 ```bash
 moon --config-file ./ci/moonstone.toml sync
-moon --config-file ./ci/moonstone.toml registry internal: index rebuild
+moon --config-file ./ci/moonstone.toml registry internal: sync
 ```
 
 `--config-file` is applied before command dispatch and is inherited by spawned
@@ -399,7 +399,7 @@ trailing colon for administrative operations:
 
 ```bash
 moon registry init --file ./packages --name internal
-moon registry internal: index rebuild
+moon registry internal: sync
 moon registry internal: publish --descriptor package.toml --artifact app.tar.gz
 moon registry internal: doctor
 ```

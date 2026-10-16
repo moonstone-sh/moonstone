@@ -18,7 +18,7 @@ pub const DoctorCommand = struct {
             \\Check the health of your Moonstone installation and project.
             \\
             \\Flags:
-            \\  --json    Output results as JSON (bloated protocol per docs/generic_message_types.md)
+            \\  --json    Emit newline-delimited JSON events
             \\  --fix     Attempt to fix common issues automatically
             \\
         , .{});

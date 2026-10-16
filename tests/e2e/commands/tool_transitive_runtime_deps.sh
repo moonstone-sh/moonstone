@@ -37,7 +37,7 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 REGISTRY="${WORKDIR}/registry"
 PROJECT="${WORKDIR}/project"
 
-"${MOON_BIN}" registry create "${REGISTRY}" local
+"${MOON_BIN}" registry init --file "${REGISTRY}"
 
 # --- example/greeter-lib: a pure-Lua library, published with `name` equal
 # to `path` in its lua_module provision -- the exact shape that broke
@@ -72,7 +72,7 @@ name = "greeter_lib/init.lua"
 path = "greeter_lib/init.lua"
 EOF
 
-"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/lib-pkg/package.toml" --blob "${WORKDIR}/lib-pkg/blob.tar.gz"
+"${MOON_BIN}" registry --file "${REGISTRY}" publish --descriptor "${WORKDIR}/lib-pkg/package.toml" --blob "${WORKDIR}/lib-pkg/blob.tar.gz"
 
 # --- example/greeter-tool: a "bin" package depending on greeter-lib
 # (role=runtime), whose own entry point requires it.
@@ -116,7 +116,7 @@ constraint = "^1.0.0"
 role = "runtime"
 EOF
 
-"${MOON_BIN}" registry push "${REGISTRY}" --descriptor "${WORKDIR}/tool-pkg/package.toml" --blob "${WORKDIR}/tool-pkg/blob.tar.gz"
+"${MOON_BIN}" registry --file "${REGISTRY}" publish --descriptor "${WORKDIR}/tool-pkg/package.toml" --blob "${WORKDIR}/tool-pkg/blob.tar.gz"
 
 # The consuming project: SAME interpreter as greeter-tool declares (lua@5.4.7)
 # -- no runtime mismatch, so bin-runtime isolation must NOT trigger -- and it

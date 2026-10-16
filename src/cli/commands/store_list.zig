@@ -40,7 +40,7 @@ pub const StoreListCommand = struct {
             \\  --resolver <r> Filter by resolver (moonstone, rocks)
             \\  --target <t> Filter by target triple
             \\  --abi <abi> Filter by Lua ABI
-            \\  --json      Output results as JSON (bloated protocol)
+            \\  --json      Emit newline-delimited JSON events
             \\
         , .{});
     }

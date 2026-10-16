@@ -56,7 +56,7 @@ grep -Fq "Data Directory:         ${WORKDIR}/configured-home/data" "${WORKDIR}/c
 
 moon --config-file="${WORKDIR}/config.toml" registry init --file "${WORKDIR}/user-registry" --name user --json | grep -Fq '"kind":"RESULT"'
 cd "${WORKDIR}/project"
-moon --config-file="${WORKDIR}/config.toml" registry user: settings show | grep -Fq 'name = "user"'
+moon --config-file="${WORKDIR}/config.toml" registry user: sync | grep -Fq 'Synced'
 moon --config-file="${WORKDIR}/config.toml" registry user: doctor | grep -Fq 'is healthy'
 moon --config-file="${WORKDIR}/config.toml" registry init --file "${WORKDIR}/profiled-registry" --name profiled --json | grep -Fq '"kind":"RESULT"'
 moon --config-file="${WORKDIR}/config.toml" registry profiled: doctor | grep -Fq 'is healthy'
@@ -87,7 +87,7 @@ moon --config-file="${WORKDIR}/config.toml" registry user: publish --descriptor 
 moon --config-file="${WORKDIR}/config.toml" registry user: publish --update --descriptor "${WORKDIR}/package.toml" --artifact "${WORKDIR}/artifact.tar.gz" | grep -Fq 'already published'
 moon --config-file="${WORKDIR}/config.toml" registry user: fetch --descriptor test/target@1.0.0 | grep -Fq 'first descriptor'
 moon --config-file="${WORKDIR}/config.toml" registry user: fetch --descriptor test/target@1.0.0 --json | grep -Fq '"kind":"RESULT"'
-moon --config-file="${WORKDIR}/config.toml" registry user: settings show --json | grep -Fq '"kind":"RESULT"'
+moon --config-file="${WORKDIR}/config.toml" registry user: sync --json | grep -Fq '"kind":"RESULT"'
 moon --config-file="${WORKDIR}/config.toml" registry user: doctor --json | grep -Fq '"kind":"RESULT"'
 mkdir -p "${WORKDIR}/incomplete-registry"
 if moon registry --file "${WORKDIR}/incomplete-registry" doctor --json >"${WORKDIR}/doctor-error.json" 2>&1; then
@@ -112,4 +112,35 @@ if moon --config-file="${WORKDIR}/config.toml" completions --complete "moon regi
     exit 1
 fi
 
+moon --config-file="${WORKDIR}/config.toml" registry user: sync
+# Every authoring operation must preserve the configured identity.
+grep -Fq 'name = "user"' "${WORKDIR}/user-registry/registry.toml"
+if moon --config-file="${WORKDIR}/config.toml" registry user: remove test/target@1.0.0 --typo >/dev/null 2>&1; then
+    echo "registry remove ignored an unsupported flag" >&2
+    exit 1
+fi
+moon --config-file="${WORKDIR}/config.toml" registry user: fetch --descriptor test/target@1.0.0 >/dev/null
+if moon registry --file "${WORKDIR}/user-registry" remove 'test/..@1.0.0' >/dev/null 2>&1; then
+    echo "registry remove accepted path traversal" >&2
+    exit 1
+fi
+moon --config-file="${WORKDIR}/config.toml" registry user: remove test/target@1.0.0 --json | grep -Fq '"kind":"RESULT"'
+if moon --config-file="${WORKDIR}/config.toml" registry user: fetch --descriptor test/target@1.0.0 >/dev/null 2>&1; then
+    echo "removed descriptor is still available" >&2
+    exit 1
+fi
+moon registry nonexistent: sync --help | grep -Fq 'sync [--json]'
+for old_verb in create push purge; do
+    if moon registry "$old_verb" --help 2>&1 | grep -Fq "Usage: moon registry $old_verb"; then
+        echo "removed registry command still has a public help entry: $old_verb" >&2
+        exit 1
+    fi
+done
+for verb in sync remove doctor fetch publish; do
+    moon --config-file="${WORKDIR}/config.toml" completions --complete "moon registry user: " | grep -qx "$verb"
+done
+if moon --config-file="${WORKDIR}/config.toml" registry user: settings show >/dev/null 2>&1; then
+    echo "removed settings operation is still accepted" >&2
+    exit 1
+fi
 echo "━━━ ✓ Config-file registry target grammar passed ━━━"
