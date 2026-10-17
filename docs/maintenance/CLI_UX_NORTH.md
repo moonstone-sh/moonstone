@@ -270,5 +270,26 @@ The public interpreter group is removed. Runtime installation/removal now uses
 `add --global` and `remove --global`, selection uses `set`, and inspection uses
 `env`, `store list --interpreters`, and `store path`. The original inventory is
 historical. This implementation also registers synced projects so reference
-checks can protect their artifacts. It does not implement the remaining store,
-link, orbit, or lifecycle redesign.
+checks can protect their artifacts, including retained lock profiles.
+
+## Remaining command consolidation implemented
+
+The same branch now completes the store, link, orbit, and lifecycle decisions.
+`store list --query` includes exact selectors and provenance-rich NDJSON;
+`store prune --compact` owns compaction. Project links use ordinary dependency
+removal, while `remove --global link:NAME` unregisters explicitly and preserves
+source files. Only unreferenced, owned artifact materializations are reclaimed.
+
+`--orbit NAME` is a global project selector, composable with `-C`. Orbit commands
+only manage declarations. `sync --all` synchronizes root then direct children,
+forwards flags, and stops on failure without rollback. Completion uses the same
+project selection. The runtime-only fresh-lock regression is covered.
+
+`self update` selects the install channel's latest release; `self install
+--version` selects an exact release. Uninstall preserves data by default,
+removes executable/shims, and guards explicit managed-data purges. Windows
+schedules executable removal after process exit. Package-manager ownership and
+the POSIX-only installer apply limit remain explicit.
+
+These changes are unreleased; see `../releases/next.md`. The original inventory
+is retained as audit history rather than presented as the current command tree.
