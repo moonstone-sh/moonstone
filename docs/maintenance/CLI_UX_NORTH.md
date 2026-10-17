@@ -291,5 +291,5 @@ removes executable/shims, and guards explicit managed-data purges. Windows
 schedules executable removal after process exit. Package-manager ownership and
 the POSIX-only installer apply limit remain explicit.
 
-These changes are unreleased; see `../releases/next.md`. The original inventory
+These changes belong to corrected 0.7.0; see `../releases/0.7.0.md`. The original inventory
 is retained as audit history rather than presented as the current command tree.

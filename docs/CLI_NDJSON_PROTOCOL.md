@@ -636,7 +636,7 @@ A compliant wrapper should accept **any** of the above. `terminator: true` is th
 | `MOONSTONE_QUIET` | Suppress human output; implies structured output. |
 | `MOONSTONE_PROGRESS_FD` | File descriptor for raw progress (unused in bloated protocol; everything is NDJSON). |
 
-## Consolidated listing and workspace commands (development branch)
+## Consolidated listing and workspace commands (corrected 0.7.0)
 
 `store list --json` emits `moonstone:cli-events:v1` envelopes: START, one STATUS
 per artifact, and one terminal RESULT with `data.count`. STATUS data includes

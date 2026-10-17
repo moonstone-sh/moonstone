@@ -44,8 +44,8 @@ It refuses removal while a known project or the global selection references it.
 Declared workspace children use the same commands: `moon --orbit NAME sync`,
 `moon --orbit NAME exec -- lua main.lua`, or `moon sync --all` for the root and
 its direct children. See [command workflows](docs/CLI_WORKFLOWS.md) for selection,
-links, store inspection, and installation lifecycle. This development branch's
-[next-release changes](docs/releases/next.md) are not yet in the 0.7.0 binary.
+links, store inspection, and installation lifecycle. See the [corrected 0.7.0 release notes](docs/releases/0.7.0.md) for the full
+command migration and reinstall instructions.
 
 ## Operational model
 
