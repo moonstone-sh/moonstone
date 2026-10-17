@@ -1,9 +1,50 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// A console handle alone does not imply ANSI support on Windows. Fail closed
+/// to line-oriented output if virtual-terminal processing cannot be enabled.
+pub fn supportsInteractive(io: std.Io, env: *std.process.Environ.Map, use_stderr: bool) bool {
+    if (env.get("TERM")) |term| if (std.mem.eql(u8, term, "dumb")) return false;
+    const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
+    if (!(file.isTty(io) catch false)) return false;
+    if (builtin.os.tag == .windows) {
+        const console = struct {
+            extern "kernel32" fn GetConsoleMode(std.os.windows.HANDLE, *u32) callconv(.winapi) i32;
+            extern "kernel32" fn SetConsoleMode(std.os.windows.HANDLE, u32) callconv(.winapi) i32;
+        };
+        var mode: u32 = 0;
+        if (console.GetConsoleMode(file.handle, &mode) == 0) return false;
+        return console.SetConsoleMode(file.handle, mode | std.os.windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+    }
+    return true;
+}
+
+const ConsoleDimensions = struct { columns: usize, rows: usize };
+fn windowsDimensions(use_stderr: bool) ?ConsoleDimensions {
+    if (builtin.os.tag != .windows) return null;
+    const Screen = extern struct {
+        size: std.os.windows.COORD,
+        cursor: std.os.windows.COORD,
+        attributes: u16,
+        window: extern struct { left: i16, top: i16, right: i16, bottom: i16 },
+        maximum: std.os.windows.COORD,
+    };
+    const api = struct {
+        extern "kernel32" fn GetConsoleScreenBufferInfo(std.os.windows.HANDLE, *Screen) callconv(.winapi) i32;
+    };
+    var screen: Screen = undefined;
+    const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
+    if (api.GetConsoleScreenBufferInfo(file.handle, &screen) == 0) return null;
+    const columns = @as(i32, screen.window.right) - screen.window.left + 1;
+    const rows = @as(i32, screen.window.bottom) - screen.window.top + 1;
+    if (columns < 1 or rows < 1) return null;
+    return .{ .columns = @intCast(columns), .rows = @intCast(rows) };
+}
+
 pub fn terminalColumns(io: std.Io, env: *std.process.Environ.Map, use_stderr: bool) usize {
     const fallback = columnsFromEnv(env) orelse 80;
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
+    if (builtin.os.tag == .windows) return if (windowsDimensions(use_stderr)) |size| size.columns else fallback;
+    if (builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
 
     var winsize: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
     const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
@@ -24,7 +65,8 @@ fn columnsFromEnv(env: *std.process.Environ.Map) ?usize {
 
 pub fn terminalRows(io: std.Io, env: ?*std.process.Environ.Map, use_stderr: bool) usize {
     const fallback = if (env) |e| rowsFromEnv(e) orelse 24 else 24;
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
+    if (builtin.os.tag == .windows) return if (windowsDimensions(use_stderr)) |size| size.rows else fallback;
+    if (builtin.os.tag == .wasi or builtin.os.tag == .freestanding) return fallback;
 
     var winsize: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
     const file = if (use_stderr) std.Io.File.stderr() else std.Io.File.stdout();
@@ -132,12 +174,12 @@ pub fn byteQuantity(value: u64) ByteQuantity {
 }
 
 /// Runtime-selected visual grammar for fancy progress. `MOONSTONE_PROGRESS_GLYPHS`
-/// accepts `unicode` (the default) or `ascii`; this narrow environment setting
+/// accepts `unicode` or `ascii` (the Windows default); this narrow environment setting
 /// is intentionally separate from plain/JSON output contracts.
 pub const GlyphMode = enum { unicode, ascii };
 
 pub fn glyphModeFromSetting(value: ?[]const u8) GlyphMode {
-    const setting = value orelse return .unicode;
+    const setting = value orelse return if (builtin.os.tag == .windows) .ascii else .unicode;
     return if (std.ascii.eqlIgnoreCase(setting, "ascii")) .ascii else .unicode;
 }
 
@@ -769,6 +811,14 @@ pub const WorkerContext = struct {
 // ────────────────────────────────────────────────────────────────────────────
 
 const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+const ascii_spinner_frames = [_][]const u8{ "|", "/", "-", "\\" };
+pub fn spinnerGlyph(mode: GlyphMode, index: usize) []const u8 {
+    return if (mode == .ascii) ascii_spinner_frames[index % ascii_spinner_frames.len] else spinner_frames[index % spinner_frames.len];
+}
+pub fn doneGlyph(mode: GlyphMode) []const u8 {
+    return if (mode == .ascii) "+" else "⠿";
+}
+
 const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿" };
 
 /// Stable package lifecycle states.  Textual task protocol states are reduced
@@ -1188,7 +1238,7 @@ pub const ProgressUi = struct {
                 if (self.is_tty) {
                     self.clearRenderedRows();
                     self.content_writer.clearRetainingCapacity();
-                    self.content_writer.writer.print("⠿ {s}", .{msg}) catch return;
+                    self.content_writer.writer.print("{s} {s}", .{ doneGlyph(self.glyph_mode), msg }) catch return;
                     self.renderBoundedLine(self.content_writer.writer.buffered());
                     self.rawWrite("\n");
                     self.rendered_lines = 0;
@@ -1200,7 +1250,7 @@ pub const ProgressUi = struct {
             .package_started => |name| {
                 self.setCurrentPackage(name);
                 if (!self.is_tty) {
-                    self.writer.print("  → {s}\n", .{name}) catch {};
+                    self.writer.print("  -> {s}\n", .{name}) catch {};
                     self.writer.flush() catch {};
                 }
             },
@@ -1488,7 +1538,7 @@ pub const ProgressUi = struct {
             self.renderTaskRows();
             return;
         }
-        const frame = spinner_frames[self.spinner_frame % spinner_frames.len];
+        const frame = spinnerGlyph(self.glyph_mode, self.spinner_frame);
         self.spinner_frame +%= 1;
 
         // If we have byte progress, show a filling bar.
@@ -1518,18 +1568,18 @@ pub const ProgressUi = struct {
         writer.print("{s} ", .{frame}) catch return;
 
         if (self.stopping) {
-            // Cancellation phase: show "Stopping… x/y"
+            // Cancellation phase: show "Stopping... x/y"
             if (self.stop_total > 0) {
-                writer.print("Stopping… {d}/{d}", .{ self.stopped_count, self.stop_total }) catch {};
+                writer.print("Stopping... {d}/{d}", .{ self.stopped_count, self.stop_total }) catch {};
             } else {
-                writer.writeAll("Stopping…") catch {};
+                writer.writeAll("Stopping...") catch {};
             }
         } else {
             if (self.current_phase.len > 0) {
                 writer.print("{s}", .{self.current_phase}) catch {};
             }
             if (self.current_package) |pkg| {
-                writer.print(" → {s}", .{pkg}) catch {};
+                writer.print(" -> {s}", .{pkg}) catch {};
             }
             if (self.dl_seen and self.dl_total == null) {
                 if (self.dl_label.len > 0) {
@@ -1606,20 +1656,20 @@ pub const ProgressUi = struct {
             const row = self.task_rows.items[row_index];
             written += 1;
             if (row.terminal) {
-                const mark: []const u8 = if (std.mem.eql(u8, row.state, "completed")) "✓" else "✗";
+                const mark: []const u8 = if (std.mem.eql(u8, row.state, "completed")) (if (self.glyph_mode == .ascii) "+" else "✓") else (if (self.glyph_mode == .ascii) "x" else "✗");
                 self.renderTaskLine(written == lines, "{s} {s}: {s}", .{ mark, row.state, row.message });
             } else {
-                const frame = spinner_frames[self.spinner_frame % spinner_frames.len];
+                const frame = spinnerGlyph(self.glyph_mode, self.spinner_frame);
                 self.renderTaskLine(written == lines, "{s} {s}: {s}", .{ frame, row.state, row.message });
             }
         }
         if (overflow > 0) {
             written += 1;
-            self.renderTaskLine(written == lines, "… {d} more tasks queued", .{overflow});
+            self.renderTaskLine(written == lines, "... {d} more tasks queued", .{overflow});
         }
         if (self.completed_tasks > 0) {
             written += 1;
-            self.renderTaskLine(written == lines, "✓ {d} task{s} completed", .{ self.completed_tasks, if (self.completed_tasks == 1) "" else "s" });
+            self.renderTaskLine(written == lines, "{s} {d} task{s} completed", .{ doneGlyph(self.glyph_mode), self.completed_tasks, if (self.completed_tasks == 1) "" else "s" });
         }
         self.rendered_lines = lines;
         self.spinner_frame +%= 1;
@@ -1720,7 +1770,7 @@ pub const ProgressUi = struct {
                 .failed => "x",
                 .cancelled => "-",
                 .queued => "·",
-                .active => spinner_frames[self.spinner_frame % spinner_frames.len],
+                .active => spinnerGlyph(self.glyph_mode, self.spinner_frame),
             },
             .ascii => switch (row.state) {
                 .ready => "+",
@@ -1873,7 +1923,7 @@ pub const ProgressUi = struct {
         }
         if (overflow > 0) {
             written += 1;
-            self.renderTaskLine(written == lines, "… {d} more packages", .{overflow});
+            self.renderTaskLine(written == lines, "... {d} more packages", .{overflow});
         }
         if (summary_lines > 0) {
             written += 1;
@@ -1960,12 +2010,12 @@ pub const ProgressUi = struct {
     }
 
     /// Begin the stopping phase: switch the spinner to show
-    /// "Stopping… x/y" and keep animating.
+    /// "Stopping... x/y" and keep animating.
     pub fn beginStopping(self: *ProgressUi, total: usize) void {
         self.stopping = true;
         self.stop_total = total;
         self.stopped_count = 0;
-        self.current_phase = "Stopping…";
+        self.current_phase = "Stopping...";
         self.current_package = null;
         self.dl_total = null;
         self.dl_seen = false;
@@ -1981,7 +2031,7 @@ pub const ProgressUi = struct {
         const n = self.stopped_count;
         if (self.is_tty) {
             self.content_writer.clearRetainingCapacity();
-            self.content_writer.writer.print("⠿ Stopped {d} process(es).", .{n}) catch {};
+            self.content_writer.writer.print("{s} Stopped {d} process(es).", .{ doneGlyph(self.glyph_mode), n }) catch {};
             self.renderBoundedLine(self.content_writer.writer.buffered());
             self.rawWrite("\n");
             self.restoreCursor();
@@ -2037,7 +2087,7 @@ fn runWorker(
     cmd_data: ?*anyopaque,
     show_ui: bool,
 ) !void {
-    const is_tty = show_ui and (std.Io.File.stderr().isTty(io) catch false);
+    const is_tty = show_ui and supportsInteractive(io, env, true);
 
     // Initialize the UI before any fallible setup so it owns cursor cleanup
     // even when queue or worker initialization fails.
@@ -2095,7 +2145,8 @@ fn runWorker(
                             } else {
                                 ui.clearRenderedRows();
                                 ui.content_writer.clearRetainingCapacity();
-                                ui.content_writer.writer.print("⠿ Synchronized {d} package{s}", .{
+                                ui.content_writer.writer.print("{s} Synchronized {d} package{s}", .{
+                                    doneGlyph(ui.glyph_mode),
                                     counts.total(),
                                     if (counts.total() == 1) "" else "s",
                                 }) catch {};
@@ -2132,7 +2183,7 @@ fn runWorker(
             cancellation_shown = true;
             ui.beginStopping(0); // total will be updated by events
             if (show_ui and !is_tty) {
-                progress_writer.print("Stopping…\n", .{}) catch {};
+                progress_writer.print("Stopping...\n", .{}) catch {};
                 progress_writer.flush() catch {};
             }
             workers.cancel(io);
@@ -2188,7 +2239,7 @@ pub const ProgressBackend = union(enum) {
     pub fn phaseDone(self: ProgressBackend, comptime fmt: []const u8, args: anytype) void {
         switch (self) {
             .direct => |w| {
-                w.print("⠿ " ++ fmt ++ "\n", args) catch {};
+                w.print(fmt ++ "\n", args) catch {};
                 w.flush() catch {};
             },
             .queue => |wctx| {
@@ -2202,7 +2253,7 @@ pub const ProgressBackend = union(enum) {
     pub fn packageStarted(self: ProgressBackend, name: []const u8) void {
         switch (self) {
             .direct => |w| {
-                w.print("  → {s}\n", .{name}) catch {};
+                w.print("  -> {s}\n", .{name}) catch {};
                 w.flush() catch {};
             },
             .queue => |wctx| wctx.sendPackageStarted(name),
@@ -2586,7 +2637,7 @@ test "package byte pairs normalize both fields to total unit across rollovers" {
 }
 
 test "glyph modes select explicit unicode and ascii numeric grammar" {
-    try std.testing.expectEqual(GlyphMode.unicode, glyphModeFromSetting(null));
+    try std.testing.expectEqual(if (builtin.os.tag == .windows) GlyphMode.ascii else GlyphMode.unicode, glyphModeFromSetting(null));
     try std.testing.expectEqual(GlyphMode.unicode, glyphModeFromSetting("unicode"));
     try std.testing.expectEqual(GlyphMode.ascii, glyphModeFromSetting("ASCII"));
 

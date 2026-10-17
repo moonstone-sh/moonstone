@@ -24,7 +24,7 @@ pub const EnvCommand = struct {
             \\Flags:
             \\  --json                Output as JSON
             \\  --paths               Output only PATH additions
-            \\  --shell <s>           Output export commands for shell: bash, zsh, fish
+            \\  --shell <s>           Output export commands for shell: bash, zsh, fish, powershell, cmd
             \\  --prod                Exclude development dependencies
             \\  --global              Show the global tools environment instead of the current project
             \\  --bin-runtime-names   List bin-runtime-scoped tool names (one per line), each usable with `moon exec`
@@ -54,6 +54,30 @@ pub const EnvCommand = struct {
         switch (syntax) {
             .posix => try writer.print("export {s}=\"{s}\"\n", .{ key, value }),
             .fish => try writer.print("set -gx {s} \"{s}\"\n", .{ key, value }),
+        }
+    }
+
+    /// CMD output is a batch-file fragment. Delayed expansion must be disabled
+    /// by the caller so literal exclamation marks in project paths survive.
+    fn writeWindowsAssignment(writer: *std.Io.Writer, powershell: bool, key: []const u8, value: []const u8, prepend: bool) !void {
+        // Environment values cannot safely span commands in either shell.
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.UnrepresentableShellValue;
+        if (powershell) {
+            try writer.print("$env:{s} = '", .{key});
+            for (value) |c| {
+                try writer.writeByte(c);
+                if (c == 39) try writer.writeByte(c);
+            }
+            try writer.writeAll(if (prepend) ";' + $env:PATH\n" else "'\n");
+        } else {
+            if (std.mem.indexOfScalar(u8, value, '"') != null) return error.UnrepresentableShellValue;
+            try writer.print("set \"{s}=", .{key});
+            for (value) |c| {
+                try writer.writeByte(c);
+                if (c == '%') try writer.writeByte(c);
+            }
+            if (prepend) try writer.writeAll(";%PATH%");
+            try writer.writeAll("\"\r\n");
         }
     }
 
@@ -114,8 +138,8 @@ pub const EnvCommand = struct {
 
     pub fn run(self: EnvCommand, ctx: *router.Context) !void {
         if (self.shell) |shell| {
-            if (!std.mem.eql(u8, shell, "bash") and !std.mem.eql(u8, shell, "zsh") and !std.mem.eql(u8, shell, "fish")) {
-                ctx.error_detail = .{ .message = .{ .msg = "Environment export supports bash, zsh, and fish. Choose one with --shell." } };
+            if (!std.mem.eql(u8, shell, "bash") and !std.mem.eql(u8, shell, "zsh") and !std.mem.eql(u8, shell, "fish") and !std.mem.eql(u8, shell, "powershell") and !std.mem.eql(u8, shell, "cmd")) {
+                ctx.error_detail = .{ .message = .{ .msg = "Environment export supports bash, zsh, fish, powershell, and cmd. Choose one with --shell." } };
                 return error.UnsupportedShell;
             }
         }
@@ -196,6 +220,13 @@ pub const EnvCommand = struct {
                 const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.fish, run_env, project_root, .fish);
                 defer allocator.free(content);
                 try stdout.writeAll(content);
+            } else if (std.mem.eql(u8, s, "powershell") or std.mem.eql(u8, s, "cmd")) {
+                const powershell = std.mem.eql(u8, s, "powershell");
+                try writeWindowsAssignment(stdout, powershell, "PATH", run_env.bin_path, true);
+                try writeWindowsAssignment(stdout, powershell, "LUA_PATH", run_env.lua_path, false);
+                try writeWindowsAssignment(stdout, powershell, "LUA_CPATH", run_env.lua_cpath, false);
+                for (run_env.package_roots) |entry| try writeWindowsAssignment(stdout, powershell, entry.key, entry.root, false);
+                try writeWindowsAssignment(stdout, powershell, "MOONSTONE_ENV_ACTIVE", project_root, false);
             } else {
                 unreachable; // Shell names are validated before environment discovery.
             }
@@ -227,7 +258,19 @@ test "unsupported shell fails before project or global environment discovery" {
         .stderr = &writer,
         .env = &env,
     };
-    try std.testing.expectError(error.UnsupportedShell, (EnvCommand{ .shell = "powershell", .global = true }).run(&ctx));
+    try std.testing.expectError(error.UnsupportedShell, (EnvCommand{ .shell = "unsupported", .global = true }).run(&ctx));
     try std.testing.expect(ctx.error_detail != null);
     try std.testing.expectEqual(@as(usize, 0), writer.end);
+}
+
+test "Windows environment exports quote literals and reject command injection" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try EnvCommand.writeWindowsAssignment(&writer, true, "PATH", "C:\\Lua's $tools", true);
+    try std.testing.expectEqualStrings("$env:PATH = 'C:\\Lua''s $tools;' + $env:PATH\n", writer.buffered());
+    writer.end = 0;
+    try EnvCommand.writeWindowsAssignment(&writer, false, "ROOT", "C:\\100% & tools", false);
+    try std.testing.expectEqualStrings("set \"ROOT=C:\\100%% & tools\"\r\n", writer.buffered());
+    try std.testing.expectError(error.UnrepresentableShellValue, EnvCommand.writeWindowsAssignment(&writer, true, "ROOT", "x\ny", false));
+    try std.testing.expectError(error.UnrepresentableShellValue, EnvCommand.writeWindowsAssignment(&writer, false, "ROOT", "x\" & echo bad", false));
 }

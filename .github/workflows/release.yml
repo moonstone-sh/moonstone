@@ -74,9 +74,12 @@ jobs:
       - name: Check Ctrl-C and Ctrl-Break during stalled registry requests
         run: python -u tests/scripts/test_sync_cancellation.py
 
+  native-lifecycle:
+    uses: ./.github/workflows/native-lifecycle.yml
+
   build-and-release:
     name: Build & Publish GitHub Release
-    needs: [verify-release, windows-cancellation]
+    needs: [verify-release, windows-cancellation, native-lifecycle]
     runs-on: ubuntu-latest
     outputs:
       mac_arm: ${{ steps.hashes.outputs.mac_arm }}

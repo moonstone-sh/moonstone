@@ -132,3 +132,36 @@ certify Windows runtime behavior.
 
 For compilation without execution, use
 `zig build check-cancellation -Dtarget=x86_64-windows-gnu`.
+
+### Native lifecycle release gates
+
+`.github/workflows/native-lifecycle.yml` is reusable by the release workflow.
+Windows core environment/projection checks and the installer contracts on
+PowerShell 7 and Windows PowerShell 5.1 are blocking. The deferred-update test
+serves a fixture installer over loopback HTTP and checks both successful and
+failed execution without changing the developer's installed CLI.
+
+Linux and native Apple Silicon/Intel macOS run the same file-registry runtime,
+project/orbit, link/store and disposable self-uninstall scenarios. These gates
+supplement Windows cancellation/process-tree certification; Wine remains an
+additional compatibility signal. Cross-compiled FreeBSD, RISC-V and Windows ARM
+artifacts do not acquire native certification merely by compiling.
+
+Windows progress uses ASCII decorations by default. Set
+`MOONSTONE_PROGRESS_GLYPHS=unicode` to opt into Unicode decorations with a suitable
+terminal/font. The setting does not transliterate filenames. ANSI repainting
+requires a console that accepts virtual-terminal processing; redirected output
+and `TERM=dumb` stay line-oriented. Windows console geometry is read from the
+visible window on each repaint, with environment/default sizes as fallback.
+
+`moon env --shell powershell` emits literal PowerShell assignments. CMD output
+is a **batch-file fragment**: save `moon env --shell cmd` to a `.cmd` file and
+call it with delayed expansion disabled. A double quote or line break in a value
+is rejected rather than emitted as executable CMD syntax. `moon setup` creates
+`.cmd` shims on Windows and POSIX shims elsewhere, without changing profiles.
+
+Windows `moon self update --apply` and `moon self install --version VERSION
+--apply` schedule the downloaded installer after the current process exits.
+Their terminal JSON status is `scheduled`, with a log path; inspect that log for
+completion or failure. They preserve the executable's installation directory
+and do not change PATH. A scheduled result is not a completed update.

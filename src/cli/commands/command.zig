@@ -503,11 +503,9 @@ pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype)
     try stdout.flush();
 }
 
-const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-
 pub fn renderSpinner(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
     if (!context.is_tty) return;
-    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    const frame = progress_runtime.spinnerGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")), context.spinner_frame);
     context.spinner_frame +%= 1;
     try renderVolatile(context, "{s} " ++ fmt, .{frame} ++ args);
 }
@@ -518,7 +516,7 @@ pub fn renderDone(context: *ResolveCallbackContext, comptime fmt: []const u8, ar
         try context.stdout.flush();
         return;
     }
-    try renderVolatile(context, "⠿ " ++ fmt, args);
+    try renderVolatile(context, "{s} " ++ fmt, .{progress_runtime.doneGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")))} ++ args);
     try context.stdout.print("\n", .{});
     try context.stdout.flush();
 }
@@ -527,7 +525,7 @@ const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "�
 
 pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: usize, comptime fmt: []const u8, args: anytype) !void {
     if (!context.is_tty) return;
-    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    const frame = progress_runtime.spinnerGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")), context.spinner_frame);
     context.spinner_frame +%= 1;
 
     var content = std.Io.Writer.Allocating.init(std.heap.page_allocator);
@@ -548,7 +546,7 @@ pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: us
         else
             current_state - i * 8;
 
-        try content.writer.print("{s}", .{fill_levels[char_state]});
+        try content.writer.writeAll(if (progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")) == .ascii) (if (char_state == 8) "#" else if (char_state == 0) " " else "=") else fill_levels[char_state]);
     }
 
     if (bar_width > 0) try content.writer.writeAll("]");

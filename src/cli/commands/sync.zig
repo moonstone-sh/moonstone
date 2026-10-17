@@ -2078,7 +2078,7 @@ pub const SyncCommand = struct {
                 .queue, .silent => stdout,
             },
             .emitter = emitter,
-            .is_tty = !effective_plain and !self.json and (std.Io.File.stderr().isTty(io) catch false),
+            .is_tty = !effective_plain and !self.json and @import("../progress.zig").supportsInteractive(io, env, true),
             .env = env,
             .use_stderr = true,
         };

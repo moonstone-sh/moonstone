@@ -173,6 +173,22 @@ if ($LASTEXITCODE -ne 0 -or $scripts.scripts[0].name -ne 'check') { throw 'scrip
 & $moon -C $project env --json | ConvertFrom-Json | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'environment projection failed' }
 
+# Exercise exports as commands, rather than checking their spelling only.
+$originalPath = $env:PATH
+$psExports = & $moon -C $project env --shell powershell
+if ($LASTEXITCODE -ne 0) { throw 'PowerShell export failed' }
+Invoke-Expression ($psExports -join "`n")
+if ($env:MOONSTONE_ENV_ACTIVE -ne $project) { throw 'PowerShell export selected the wrong project' }
+$env:PATH = $originalPath
+$batch = Join-Path $work 'environment.cmd'
+$cmdExports = & $moon -C $project env --shell cmd
+if ($LASTEXITCODE -ne 0) { throw 'CMD export failed' }
+@('@echo off', 'setlocal DisableDelayedExpansion') + $cmdExports + @('if not defined MOONSTONE_ENV_ACTIVE exit /b 1', 'exit /b 0') | Set-Content -Encoding ASCII $batch
+& cmd.exe /d /c $batch
+if ($LASTEXITCODE -ne 0) { throw 'CMD exports could not be executed' }
+& $moon setup --force --json | ConvertFrom-Json | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Windows shim setup failed' }
+
 $environment = & $moon -C $project env --json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $environment.lua_cpath -notmatch '\?\.dll') { throw 'Windows Lua C module projection did not use .dll paths' }
 
