@@ -68,9 +68,10 @@ pub fn main(init: std.process.Init) !void {
         working_directory = @import("commands/orbit_selection.zig").select(arena, init.io, orbit) catch |err| {
             const message = try std.fmt.allocPrint(arena, "Cannot select orbit '{s}': {s}. Use `moon orbit list` from the workspace root to inspect declared members.", .{ orbit, @errorName(err) });
             var json = false;
-            for (all_args) |arg| if (std.mem.eql(u8, arg, "--json")) {
-                json = true;
-            };
+            for (all_args) |arg| {
+                if (std.mem.eql(u8, arg, "--")) break;
+                if (std.mem.eql(u8, arg, "--json")) json = true;
+            }
             try command_mod.reportError(arena, init.io, stdout, json, err, "moon", .{ .message = .{ .msg = message } });
             try stdout.flush();
             std.process.exit(1);

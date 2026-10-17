@@ -78,7 +78,7 @@ pub const StorePruneCommand = struct {
             defer moonstone.store.links.deinitEntries(links, allocator);
 
             for (links) |link| {
-                const toml_path = try std.fs.path.join(allocator, &.{ link.path, "moonstone.toml" });
+                const toml_path = try std.fs.path.join(allocator, &.{ link.path, if (link.mode == .artifact) "manifest.toml" else "moonstone.toml" });
                 defer allocator.free(toml_path);
 
                 var is_valid = true;
@@ -92,7 +92,12 @@ pub const StorePruneCommand = struct {
                     };
                     if (content) |c| {
                         defer allocator.free(c);
-                        if (moonstone.domain.manifest.MoonstoneToml.parse(allocator, c)) |mt| {
+                        if (link.mode == .artifact) {
+                            if (moonstone.domain.manifest.StoreManifest.parse(allocator, c)) |manifest| {
+                                var owned = manifest;
+                                owned.deinit(allocator);
+                            } else |_| is_valid = false;
+                        } else if (moonstone.domain.manifest.MoonstoneToml.parse(allocator, c)) |mt| {
                             var mut_mt = mt;
                             mut_mt.deinit(allocator);
                         } else |_| {

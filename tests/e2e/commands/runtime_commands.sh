@@ -138,6 +138,15 @@ done
 if "$MOON" sync --all --locked --offline > "$WORK/fail-fast.log" 2>&1; then echo 'Missing member lock ignored' >&2; exit 1; fi
 grep -q "orbit 'blocked'" "$WORK/fail-fast.log"
 test ! -f later/moonstone.lock
+if "$MOON" sync --all --locked --offline --json > "$WORK/fail-fast.jsonl"; then exit 1; fi
+python3 - "$WORK/fail-fast.jsonl" <<'PY_FAILURE'
+import json,sys
+rows=[json.loads(line) for line in open(sys.argv[1])]
+assert sum(r['terminator'] for r in rows)==1
+assert rows[-1]['kind']=='ERROR' and rows[-1]['data']['orbit']=='blocked'
+assert [r['seq'] for r in rows]==list(range(1,len(rows)+1))
+assert not any(r['value']=='workspace.complete' for r in rows)
+PY_FAILURE
 # Dispose of the complete fixture project; there are now no project references.
 cd "$WORK"
 rm -rf "$WORK/project"

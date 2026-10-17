@@ -3990,13 +3990,25 @@ pub const SyncCommand = struct {
         defer moonstone.platform.fs.setCurrentPath(ctx.io, root.path) catch {};
         ctx.working_directory = root.path;
         if (self.json) try workspace_events.emit(ctx.io, .INFO, root.path, "project.begin", .{ .root = true });
-        try child.runImpl(ctx, backend);
+        child.runImpl(ctx, backend) catch |err| {
+            if (self.json and err != error.AlreadyReported) {
+                try workspace_events.fail(ctx.io, root.path, try std.fmt.allocPrint(ctx.allocator, "error.{s}", .{@errorName(err)}), .{ .error_name = @errorName(err), .project = root.path, .root = true });
+                return error.AlreadyReported;
+            }
+            return err;
+        };
         for (orbits) |orbit| {
             try moonstone.platform.fs.setCurrentPath(ctx.io, orbit.path);
             ctx.working_directory = orbit.path;
             if (self.json) try workspace_events.emit(ctx.io, .INFO, orbit.path, "project.begin", .{ .orbit = orbit.name });
             child.runImpl(ctx, backend) catch |err| {
                 ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(ctx.allocator, "Sync failed for orbit '{s}' ({s}): {s}. Earlier projects may already be synchronized; no rollback was attempted. Retry with `moon --orbit {s} sync` to inspect this member.", .{ orbit.name, orbit.path, @errorName(err), orbit.name }) } };
+                if (self.json and err != error.AlreadyReported) {
+                    try workspace_events.fail(ctx.io, orbit.path, try std.fmt.allocPrint(ctx.allocator, "error.{s}", .{@errorName(err)}), .{ .error_name = @errorName(err), .orbit = orbit.name, .project = orbit.path, .message = ctx.error_detail.?.message.msg });
+                    ctx.error_detail = null;
+                    return error.AlreadyReported;
+                }
+                if (!self.json and err == error.AlreadyReported) try ctx.stderr.print("Workspace stopped at orbit '{s}' ({s}); earlier projects remain synchronized.\n", .{ orbit.name, orbit.path });
                 return err;
             };
         }
