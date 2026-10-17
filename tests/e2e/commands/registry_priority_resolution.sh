@@ -119,7 +119,7 @@ PROJECT="${WORKDIR}/project"
 mkdir -p "${PROJECT}"
 cd "${PROJECT}"
 moon init . --name registry-priority-test --no-git --no-sync >/dev/null
-moon interpreter set lua@5.4 --no-sync >/dev/null
+moon set lua@5.4 --no-sync >/dev/null
 moon registry add low "file://${REG_LOW}" >/dev/null
 # --default: highest priority in the project (bug #3's fix). Also exercises
 # that flag doing something, rather than being parsed and silently ignored.
@@ -173,7 +173,7 @@ TIEBREAK_PROJECT="${WORKDIR}/tiebreak-project"
 mkdir -p "${TIEBREAK_PROJECT}"
 cd "${TIEBREAK_PROJECT}"
 moon init . --name registry-tiebreak-test --no-git --no-sync >/dev/null
-moon interpreter set lua@5.4 --no-sync >/dev/null
+moon set lua@5.4 --no-sync >/dev/null
 # Both declared at the default priority (0): "first" is added -- and thus
 # declared -- before "second".
 moon registry add first "file://${REG_FIRST}" >/dev/null

@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name add-contract --no-git
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 
 moon add inspect@3.1.2 --no-sync
 assert_file_contains moonstone.toml 'name = "inspect"'

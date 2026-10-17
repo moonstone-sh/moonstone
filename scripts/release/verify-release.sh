@@ -51,6 +51,8 @@ run "Compile Windows x86_64 GNU target" zig build -Dtarget=x86_64-windows-gnu
 run "Compile Windows ARM64 GNU target" zig build -Dtarget=aarch64-windows-gnu
 run "Run Zig tests" zig build test
 run "Run CLI contract tests" zig build test-cli
+run "Verify runtime and workspace command contract" bash tests/e2e/commands/runtime_commands.sh
+run "Verify self-managed lifecycle" bash tests/e2e/commands/self_lifecycle.sh
 run "Check sync signal cancellation" python3 tests/scripts/test_sync_cancellation.py
 
 if [[ "${WITH_UPSTREAM}" == true ]]; then

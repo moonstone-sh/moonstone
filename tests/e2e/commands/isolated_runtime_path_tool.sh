@@ -38,7 +38,7 @@ LUA
 
 # Create the app with a different runtime and add the linked tool as a tool-scope dependency
 (cd "$WORKDIR/app" && moon init . --name my-app --no-git --no-sync)
-(cd "$WORKDIR/app" && moon interpreter set lua@5.4.7 --no-sync)
+(cd "$WORKDIR/app" && moon set lua@5.4.7 --no-sync)
 
 cat > "$WORKDIR/app/moonstone.toml" <<'TOML'
 manifest_version = 2

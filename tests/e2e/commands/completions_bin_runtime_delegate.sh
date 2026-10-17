@@ -57,7 +57,7 @@ mkdir -p "${WORKDIR}/app-store"
 # synthetic-only fixture package instead of silently finding nothing on the
 # real registry.
 (cd "${WORKDIR}/app-store" && "${MOON_BIN}" registry add moonstone "${MOONSTONE_REGISTRY_PATH}" >/dev/null)
-(cd "${WORKDIR}/app-store" && "${MOON_BIN}" interpreter set lua@5.4.7 --no-sync >/dev/null)
+(cd "${WORKDIR}/app-store" && "${MOON_BIN}" set lua@5.4.7 --no-sync >/dev/null)
 (cd "${WORKDIR}/app-store" && "${MOON_BIN}" add synthetic-isolated-bin --tool >/dev/null)
 
 SCOPE="${WORKDIR}/app-store/.moonstone/env/bin-runtime/synthetic-isolated-bin/env.toml"
@@ -160,7 +160,7 @@ LUA
 
 (cd "${WORKDIR}/tool" && "${MOON_BIN}" link >/dev/null)
 (cd "${WORKDIR}/app-link" && "${MOON_BIN}" init . --name my-app --no-git --no-sync >/dev/null)
-(cd "${WORKDIR}/app-link" && "${MOON_BIN}" interpreter set lua@5.4.7 --no-sync >/dev/null)
+(cd "${WORKDIR}/app-link" && "${MOON_BIN}" set lua@5.4.7 --no-sync >/dev/null)
 cat > "${WORKDIR}/app-link/moonstone.toml" <<'TOML'
 manifest_version = 2
 

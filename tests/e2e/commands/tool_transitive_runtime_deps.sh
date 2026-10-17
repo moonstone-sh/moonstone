@@ -123,7 +123,7 @@ EOF
 # does NOT itself depend on greeter-lib at all.
 mkdir -p "${PROJECT}"
 (cd "${PROJECT}" && "${MOON_BIN}" init . --name tool-transitive-deps-app --no-git --no-sync)
-(cd "${PROJECT}" && "${MOON_BIN}" interpreter set lua@5.4.7 --no-sync)
+(cd "${PROJECT}" && "${MOON_BIN}" set lua@5.4.7 --no-sync)
 (cd "${PROJECT}" && "${MOON_BIN}" registry add local "file://${REGISTRY}")
 (cd "${PROJECT}" && "${MOON_BIN}" add "local:example/greeter-tool@1.0.0" --tool --jobs 1)
 

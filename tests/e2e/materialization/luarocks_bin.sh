@@ -45,7 +45,7 @@ moon init . --name my-app --no-git
 moon registry add synthetic "${SANDBOX_DIR}/registry" --default
 
 echo "━━━ add rocks:fakebin ━━━"
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:fakebin
 moon sync
 

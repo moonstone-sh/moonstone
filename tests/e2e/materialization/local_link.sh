@@ -42,7 +42,7 @@ path = "${SANDBOX_DIR}/registry"
 EOF
 
 moon add link:my-lib --no-sync
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon sync
 
 echo "━━━ verify project linking and method call ━━━"

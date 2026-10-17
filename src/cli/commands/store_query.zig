@@ -69,7 +69,7 @@ const QueryResult = struct {
 };
 
 pub const StoreQueryCommand = struct {
-    pub const name = "query";
+    pub const name = "list";
     pub const description = "Query local content store artifacts";
 
     by_artifact_hash: ?[]const u8 = null,
@@ -77,26 +77,11 @@ pub const StoreQueryCommand = struct {
     by_package: ?[]const u8 = null,
     by_name: ?[]const u8 = null,
     json: bool = false,
+    kind: ?[]const u8 = null,
+    resolver: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+    abi: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
-
-    pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print(
-            \\Usage: moon store query [selector] [flags]
-            \\
-            \\Query local content-addressed store artifacts.
-            \\
-            \\Selectors:
-            \\  <name>                       Fuzzy package name search
-            \\  --by-artifact-hash <b3:...>  Match exact artifact hash
-            \\  --by-source-hash <b3:...>    Match exact source hash
-            \\  --by-package <name>           Match package name
-            \\  --by-name <name>              Fuzzy package name search
-            \\
-            \\Flags:
-            \\  --json                        Emit stable JSON array instead of a table
-            \\
-        , .{});
-    }
 
     pub fn run(self: StoreQueryCommand, ctx: *router.Context) !void {
         if (self.positionals.len > 1) return error.UnexpectedPositionalArgument;
@@ -105,7 +90,10 @@ pub const StoreQueryCommand = struct {
             @as(u8, if (self.by_package != null) 1 else 0) +
             @as(u8, if (self.by_name != null) 1 else 0) +
             @as(u8, if (self.positionals.len == 1) 1 else 0);
-        if (selector_count != 1) return error.MissingArgument;
+        if (selector_count > 1) {
+            ctx.error_detail = .{ .message = .{ .msg = "Choose one name query or exact store selector; kind, resolver, target, and ABI filters can be combined with it." } };
+            return error.IncompatibleStoreSelectors;
+        }
 
         const paths = try moonstone.platform.fs.resolve_moonstone(ctx.allocator, ctx.env, ctx.io);
         defer {
@@ -124,7 +112,10 @@ pub const StoreQueryCommand = struct {
         }
         std.mem.sort(QueryResult, results.items, {}, resultLessThan);
         if (self.json) {
-            try writeJsonResults(ctx.allocator, ctx.stdout, results.items);
+            var emitter = @import("ndjson.zig").Emitter.init(ctx.allocator, ctx.stdout, "store-list");
+            try emitter.emit(ctx.io, .START, "store-list", "begin", .{});
+            for (results.items) |result| try emitter.emit(ctx.io, .STATUS, result.package, "artifact", result);
+            try emitter.terminate(ctx.io, "store-list", "ok", .{ .count = results.items.len });
         } else {
             try writeTableResults(ctx.stdout, results.items);
         }
@@ -171,7 +162,7 @@ fn scanIndex(ctx: *router.Context, paths: moonstone.platform.fs.MOONSTONE_PATHS,
     } else if (selectedName(query)) |name| {
         try queryIndexByName(ctx, driver.db, name, &indexed);
     } else {
-        return false;
+        try collectIndexedArtifacts(ctx, driver.db, "SELECT path, manifest_path FROM artifacts ORDER BY name, version;", &.{}, &indexed);
     }
 
     for (indexed.items) |item| {
@@ -179,13 +170,14 @@ fn scanIndex(ctx: *router.Context, paths: moonstone.platform.fs.MOONSTONE_PATHS,
         defer ctx.allocator.free(content);
         var sm = moonstone.domain.manifest.StoreManifest.parse(ctx.allocator, content) catch continue;
         defer sm.deinit(ctx.allocator);
+        if (!matchesFilters(query, sm)) continue;
         try results.append(ctx.allocator, try makeResult(ctx, sm, try ctx.allocator.dupe(u8, item.artifact_path), item.manifest_path));
     }
     return true;
 }
 
 fn queryIndexExact(ctx: *router.Context, db: ?*sqlite.sqlite3, where_sql: []const u8, value: []const u8, results: *std.ArrayList(IndexedArtifact)) !void {
-    const sql = try std.fmt.allocPrint(ctx.allocator, "SELECT path, manifest_path FROM artifacts WHERE {s} ORDER BY name, version DESC LIMIT 200;", .{where_sql});
+    const sql = try std.fmt.allocPrint(ctx.allocator, "SELECT path, manifest_path FROM artifacts WHERE {s} ORDER BY name, version DESC;", .{where_sql});
     defer ctx.allocator.free(sql);
     try collectIndexedArtifacts(ctx, db, sql, &.{value}, results);
 }
@@ -194,9 +186,9 @@ fn queryIndexByName(ctx: *router.Context, db: ?*sqlite.sqlite3, name: []const u8
     if (name.len < 3) {
         try collectIndexedArtifacts(ctx, db,
             \\SELECT path, manifest_path FROM artifacts
-            \\WHERE lower(name) LIKE '%' || lower(?) || '%'
+            \\WHERE instr(lower(name), lower(?)) > 0
             \\ORDER BY CASE WHEN lower(name) = lower(?) THEN 0 WHEN lower(name) LIKE lower(?) || '%' THEN 1 ELSE 2 END, length(name), name, version DESC
-            \\LIMIT 100;
+            \\;
         , &.{ name, name, name }, results);
         return;
     }
@@ -223,7 +215,7 @@ fn queryIndexByName(ctx: *router.Context, db: ?*sqlite.sqlite3, name: []const u8
         \\WHERE t.trigram IN ({s})
         \\GROUP BY a.artifact_hash
         \\ORDER BY CASE WHEN lower(a.name) = lower(?) THEN 0 WHEN lower(a.name) LIKE lower(?) || '%' THEN 1 ELSE 2 END, score DESC, length(a.name), a.name, a.version DESC
-        \\LIMIT 100;
+        \\;
     , .{placeholders.items});
     defer ctx.allocator.free(sql);
 
@@ -303,12 +295,20 @@ fn scanStore(ctx: *router.Context, store_root: []const u8, query: StoreQueryComm
     }
 }
 
+fn matchesFilters(query: StoreQueryCommand, sm: moonstone.domain.manifest.StoreManifest) bool {
+    if (query.kind) |kind| if (!std.mem.eql(u8, kind, @tagName(sm.artifact.kind)) and !(std.mem.eql(u8, kind, "interpreter") and sm.artifact.kind == .runtime)) return false;
+    if (query.resolver) |value| if (!std.mem.eql(u8, value, sm.origin.resolver)) return false;
+    if (query.target) |value| if (!std.mem.eql(u8, value, sm.artifact.target)) return false;
+    if (query.abi) |value| if (!std.mem.eql(u8, value, sm.compat.lua_abi)) return false;
+    return true;
+}
 fn matches(query: StoreQueryCommand, sm: moonstone.domain.manifest.StoreManifest) bool {
+    if (!matchesFilters(query, sm)) return false;
     if (query.by_artifact_hash) |hash| return std.mem.eql(u8, sm.artifact.artifact_hash, hash);
     if (query.by_source_hash) |hash| return std.mem.eql(u8, sm.artifact.source_hash, hash);
     if (query.by_package) |name| return std.mem.eql(u8, sm.artifact.name, name);
-    if (query.by_name) |name| return std.mem.eql(u8, sm.artifact.name, name);
-    return false;
+    if (selectedName(query)) |name| return fuzzyMatches(sm.artifact.name, name);
+    return true;
 }
 
 fn makeResult(ctx: *router.Context, sm: moonstone.domain.manifest.StoreManifest, artifact_path: []const u8, manifest_path: []const u8) !QueryResult {
@@ -472,4 +472,18 @@ fn writeJsonEscaped(stdout: *std.Io.Writer, value: []const u8) !void {
         }
     }
     try stdout.print("\"", .{});
+}
+
+fn fuzzyMatches(package: []const u8, query: []const u8) bool {
+    if (query.len < 3) return std.ascii.indexOfIgnoreCase(package, query) != null;
+    var i: usize = 0;
+    while (i + 3 <= query.len) : (i += 1) {
+        if (std.ascii.indexOfIgnoreCase(package, query[i..][0..3]) != null) return true;
+    }
+    return false;
+}
+test "fuzzy matching uses trigrams in both indexed and fallback store listings" {
+    try std.testing.expect(fuzzyMatches("moonstone/ballad", "balald"));
+    try std.testing.expect(!fuzzyMatches("moonstone/valua", "xyz"));
+    try std.testing.expect(fuzzyMatches("moonstone/valua", "VA"));
 }

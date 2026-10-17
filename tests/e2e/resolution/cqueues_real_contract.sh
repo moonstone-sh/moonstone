@@ -114,7 +114,7 @@ resolver = "moonstone"
 path = "${SANDBOX_DIR}/registry"
 priority = 10
 EOF
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add "rocks:${PACKAGE}@${VERSION}"
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+
 if [[ -z "${MOONSTONE_HOME:-}" ]]; then
     source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
 fi
@@ -60,11 +62,11 @@ child
 EOF
 
 # Sync child explicitly
-"$MOON_BIN" orbit sync child
+"$MOON_BIN" --orbit child sync
 
 # 1. Orbit exec runs inside child env
-echo "Testing orbit exec runs inside child env..."
-OUTPUT=$("$MOON_BIN" orbit exec child -- lua -e 'print("orbit:" .. _VERSION)')
+echo "Testing --orbit runs exec inside child env..."
+OUTPUT=$("$MOON_BIN" --orbit child exec -- lua -e 'print("orbit:" .. _VERSION)')
 if [[ "$OUTPUT" != *"orbit:Lua 5.4"* ]]; then
     echo "Fail: Expected orbit:Lua 5.4, got $OUTPUT"
     exit 1
@@ -72,32 +74,29 @@ fi
 
 # 2. Orbit run executes child script
 echo "Testing orbit run executes child script..."
-OUTPUT=$("$MOON_BIN" orbit run child -- hello)
+OUTPUT=$("$MOON_BIN" --orbit child run hello)
 if [[ "$OUTPUT" != *"hello from child"* ]]; then
     echo "Fail: Expected hello from child, got $OUTPUT"
     exit 1
 fi
 
 # 3. Orbit exec does not use root cwd
-echo "Testing orbit exec does not use root cwd..."
-OUTPUT=$("$MOON_BIN" orbit exec child -- lua -e 'local f=io.open("file.txt"); print(f:read("*a"))')
+echo "Testing --orbit does exec not use root cwd..."
+OUTPUT=$("$MOON_BIN" --orbit child exec -- lua -e 'local f=io.open("file.txt"); print(f:read("*a"))')
 if [[ "$OUTPUT" != *"child"* ]]; then
     echo "Fail: Expected child, got $OUTPUT"
     exit 1
 fi
 
-# 4. Selector by path works
-echo "Testing selector by path..."
-OUTPUT=$("$MOON_BIN" orbit exec ./child -- lua -e 'print("ok")')
-if [[ "$OUTPUT" != *"ok"* ]]; then
-    echo "Fail: Expected ok, got $OUTPUT"
-    exit 1
+# Only declared names select orbits; arbitrary paths use -C.
+if "$MOON_BIN" --orbit ./child exec -- lua -e 'print("ok")' >/dev/null 2>&1; then
+    echo "Unexpected path alias accepted as an orbit name" >&2; exit 1
 fi
 
 # 5. Direct `orbit exec` without `--` now fails: `--` is a mandatory separator.
-echo "Testing orbit exec without -- fails..."
-if OUTPUT=$("$MOON_BIN" orbit exec child lua -e 'print("no-dash-dash-ok")' 2>&1); then
-    echo "Fail: Expected orbit exec without -- to fail, got success: $OUTPUT"
+echo "Testing --orbit without exec -- fails..."
+if OUTPUT=$("$MOON_BIN" --orbit child exec lua -e 'print("no-dash-dash-ok")' 2>&1); then
+    echo "Fail: Expected --orbit without exec -- to fail, got success: $OUTPUT"
     exit 1
 fi
 if [[ "$OUTPUT" != *"--"* ]]; then
@@ -107,7 +106,7 @@ fi
 
 # 6. Unknown orbit fails clearly
 echo "Testing unknown orbit..."
-if "$MOON_BIN" orbit run does-not-exist -- hello >/dev/null 2>&1; then
+if "$MOON_BIN" --orbit does-not-exist run hello >/dev/null 2>&1; then
     echo "Fail: Expected unknown orbit to fail"
     exit 1
 fi
@@ -115,7 +114,7 @@ fi
 # 7. Cwd restoration
 echo "Testing cwd restoration..."
 # After an orbit command fails, another root-relative operation should still work from the original root cwd.
-"$MOON_BIN" orbit run does-not-exist -- hello >/dev/null 2>&1 || true
+"$MOON_BIN" --orbit does-not-exist run hello >/dev/null 2>&1 || true
 # We should still be in $PROJECT_DIR
 if [ ! -f "moonstone.toml" ] || [ ! -f "file.txt" ]; then
     echo "Fail: CWD was not restored after failure!"

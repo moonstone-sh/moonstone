@@ -164,13 +164,15 @@ Moonstone project with its own isolated environment and `moonstone.lock`.
 - A member specifies a `name` and a `path`.
 - An orbit path must be a child project directory with its own valid `moonstone.toml`.
 - Orbit names and paths are unique within the root project.
-- `moon orbit sync` synchronizes every configured child, or one selected child;
-  `moon sync` continues to synchronize only the current project.
-- `moon orbit sync --locked` requires each selected child lockfile to be
-  current; `--update` refreshes it within declared constraints; `--offline`
-  limits resolution to locally available sources.
-- `moon orbit exec` and `moon orbit run` execute within the selected child
-  environment without introducing a separate executor.
+- `moon sync` synchronizes the current project. `moon sync --all` synchronizes
+  the root first, then each directly declared child in manifest order.
+- `moon --orbit NAME sync` selects one declared child. The global selector also
+  works with `exec`, `run`, `env`, and other project commands, and composes with
+  `-C ROOT`. Use `-C PATH` for arbitrary directories.
+- `--locked`, `--update`, `--offline`, and other sync flags apply to each selected
+  project. Workspace sync stops at the first failure; earlier changes remain.
+  It does not recursively traverse nested orbits or roll back completed work.
+- `--orbit NAME sync --all` is rejected: select either one child or the workspace.
 
 Orbit members keep independent dependency closures and runtime scopes. A path
 or link dependency brought in by an orbit is expanded with its transitive
@@ -180,15 +182,15 @@ remain ABI-bound to their matching runtime.
 
 Ballad can consume an orbit only when a parent partiture explicitly maps it to
 a child partiture. This is not Orbit metadata: Moonstone remains unaware of
-Ballad release policy, while `moon orbit exec` supplies the child-scoped
+Ballad release policy, while `moon --orbit NAME exec` supplies the child-scoped
 interpreter and tool closure needed to run the export safely.
 
 **Managing Members:**
 ```bash
 moon orbit add --name openresty --path bench/competitors/openresty
 moon orbit remove openresty
-moon orbit sync                 # all configured children
-moon orbit sync openresty       # one child
+moon sync --all                 # root, then direct children
+moon --orbit openresty sync      # one declared child
 ```
 
 `moon orbit add --path` offers completion for descendant directories that

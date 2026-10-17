@@ -18,7 +18,7 @@ cd "${CLEAN_WORKDIR}"
 
 # 1. Set global runtime
 echo "━━━ set global runtime 5.4 ━━━"
-moon interpreter set --global lua@5.4.7
+moon set --global lua@5.4.7
 
 # 2. Verify config.toml
 echo "━━━ verify config.toml ━━━"

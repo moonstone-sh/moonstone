@@ -6,6 +6,8 @@ pub const Context = struct {
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     env: *std.process.Environ.Map,
+    orbit_selected: bool = false,
+    workspace_emitter: ?*@import("commands/ndjson.zig").Emitter = null,
     working_directory: ?[]const u8 = null,
     root: ?*const @import("router.zig").CommandNode = null,
     error_detail: ?@import("commands/command.zig").CliErrorDetail = null,

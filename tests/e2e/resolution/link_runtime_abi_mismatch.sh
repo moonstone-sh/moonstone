@@ -25,7 +25,7 @@ return true
 LUA
 
 (cd "$WORKDIR/linked" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-mismatch-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-mismatch-app --no-git --no-sync && "$MOON_BIN" set lua@5.4 --no-sync)
 if (cd "$WORKDIR/app" && "$MOON_BIN" add link:hyg-mismatch >"$WORKDIR/output" 2>&1); then
   echo "expected linked Lua ABI mismatch" >&2
   exit 1

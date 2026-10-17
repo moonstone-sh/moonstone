@@ -352,11 +352,11 @@ moon exec [options] -- <command> [args...]
 - **Mandatory `--` Boundary**: `--` is a required, single-purpose separator between Moonstone's own options (`--global`, `--json`, `--dev`, `--prod`, etc.) and `<command>`. All Moonstone options must precede it. Moonstone no longer infers the boundary from argument position — omitting `--` before `<command>` is a parse error, not a fallback.
 - **Forwarding After `--`**: once the mandatory `--` is seen, Moonstone transfers ownership of every remaining argument to `<command>` without interpreting them, including any further `--` the command's own argument grammar needs (e.g. `docker run x -- y`) — Moonstone never guesses and never drops one. `moon exec -- docker run x -- y` gives `docker` exactly `run x -- y`. The same mandatory `--` also escapes a hyphen-leading command name, e.g. `moon exec -- -strange-program arg`.
 - **Direct Execution**: Arguments are passed directly via `spawn` array boundaries (`child.argv`) without shell string re-assembly, preserving exact argument boundaries.
-- **`orbit exec`/`orbit run`**: the same mandatory `--` rule applies after the leading `<orbit>` selector: `moon orbit exec [flags] <orbit> -- <command> [args...]` and `moon orbit run [flags] <orbit> -- <script> [args...]`.
+- **Orbit selection**: `moon --orbit NAME exec [flags] -- <command> [args...]` uses the same executor and boundary rules in a declared child. `moon --orbit NAME run <script> [args...]` uses the ordinary named-script grammar. Global selectors precede the command and are never parsed from child arguments.
 
 ### Shell Completion
 
-`moon completions bash|zsh|fish` generates a completion script that, once past `<command>` on an `exec`/`orbit exec`/`orbit run` line, delegates entirely to whatever completion is registered for that command — Moonstone doesn't need to know anything about `docker`, `hydronium-create`, or any other tool to complete their own arguments correctly. This uses each shell's own real mechanism for "a wrapper whose tail is another command" (the same one `env`, `sudo`, `time`, and `nice` use): bash's `complete -F`-registered function lookup, zsh's `_normal -p` (as used by zsh's own `_precommand`), and fish's `complete -C`. Before delegating, the moon-managed bin directory (`moon env --paths`) is added to `PATH` for that one completion call, so a tool only materialized there — not on the ambient shell `PATH` — is both completable as a command name and resolvable by whatever it delegates to.
+`moon completions bash|zsh|fish` generates a completion script that, once past `<command>` on an `exec` line (including `--orbit NAME exec`), delegates entirely to whatever completion is registered for that command — Moonstone doesn't need to know anything about `docker`, `hydronium-create`, or any other tool to complete their own arguments correctly. This uses each shell's own real mechanism for "a wrapper whose tail is another command" (the same one `env`, `sudo`, `time`, and `nice` use): bash's `complete -F`-registered function lookup, zsh's `_normal -p` (as used by zsh's own `_precommand`), and fish's `complete -C`. Before delegating, the moon-managed bin directory (`moon env --paths`) is added to `PATH` for that one completion call, so a tool only materialized there — not on the ambient shell `PATH` — is both completable as a command name and resolvable by whatever it delegates to.
 
 If nothing is registered yet for the target command — the common case for a project-scoped tool that was never installed system-wide, so nothing ever ran the usual one-time shell setup for it — moon asks the binary itself for its own bridge script (`<binary> --__moonstone-complete-script <shell> <name>`, the Moonstone completion convention — Clingy's `docs/COMPLETION_PROTOCOL.md` documents the two-endpoint contract any tool in any language can implement) and `eval`s it before delegating — a real, one-time-per-shell-session registration using the tool's own tested rendering code, not a protocol client moon maintains itself. A command that answers neither endpoint just falls back to generic PATH-based command-name completion, same as always.
 
@@ -443,7 +443,7 @@ moon remove --global --tool moonstone/love-importer
 Use `--link` for global link registry entries:
 
 ```bash
-moon remove --global --link my-linked-package
+moon remove --global link:my-linked-package
 ```
 
 `--bin` remains a deprecated alias for project tool dependencies, but new commands should use `--tool`.

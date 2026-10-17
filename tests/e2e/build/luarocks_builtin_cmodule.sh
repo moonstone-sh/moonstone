@@ -36,7 +36,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name "rocks-builtin-test"
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 # 3. Add and install rock using the mock server
 export MOONSTONE_LUAROCKS_URL="http://localhost:${RANDOM_PORT}"

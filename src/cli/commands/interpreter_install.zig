@@ -8,12 +8,15 @@ pub const InterpreterInstallCommand = struct {
 
     positionals: []const []const u8 = &.{},
     target: ?[]const u8 = null,
-    force: bool = false,
+    json: bool = false,
+    offline: bool = false,
+    dry_run: bool = false,
+    prefer_local: bool = false,
     registry: ?[]const u8 = null,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
-            \\Usage: moon interpreter install [flags] <spec>
+            \\Usage: moon add --global [flags] <spec>
             \\
             \\Installs a Lua interpreter from a registry.
             \\
@@ -22,7 +25,6 @@ pub const InterpreterInstallCommand = struct {
             \\
             \\Flags:
             \\  --target <t>  Target triple
-            \\  --force       Force re-installation
             \\  --registry <r> Force use of specific registry URL
             \\
         , .{});
@@ -34,10 +36,16 @@ pub const InterpreterInstallCommand = struct {
         const stdout = ctx.stdout;
         const env = ctx.env;
 
-        if (self.positionals.len == 0) return error.MissingArgument;
+        if (self.positionals.len != 1) return error.MissingArgument;
         const spec = self.positionals[0];
 
-        try stdout.print("Adding interpreter: {s}...\n", .{spec});
+        var emitter_obj = if (self.json) @import("ndjson.zig").Emitter.init(allocator, stdout, "add") else null;
+        const emitter = if (emitter_obj) |*value| value else null;
+        if (self.dry_run) {
+            if (emitter) |e| try e.terminate(io, spec, "planned", .{ .runtime = true, .global = true, .target = self.target }) else try stdout.print("Would install global runtime {s}; selection is unchanged.\n", .{spec});
+            return;
+        }
+        if (emitter) |e| try e.emit(io, .START, spec, "begin", .{ .runtime = true, .global = true }) else try stdout.print("Adding runtime: {s}...\n", .{spec});
 
         const paths = try moonstone.platform.fs.resolve_moonstone(allocator, env, io);
         defer {
@@ -69,14 +77,16 @@ pub const InterpreterInstallCommand = struct {
         var resolve_cb_ctx = @import("command.zig").ResolveCallbackContext{
             .io = io,
             .stdout = stdout,
-            .emitter = null,
-            .is_tty = std.Io.File.stdout().isTty(io) catch false,
+            .emitter = emitter,
+            .is_tty = !self.json and (std.Io.File.stdout().isTty(io) catch false),
             .env = env,
             .use_stderr = false,
         };
 
         var final_res = if (self.registry) |reg_url| blk: {
+            if (self.offline) return error.OfflineMode;
             const res = try resolver.resolve_remote(pkg_name, pkg_ver, reg_url, null, .{
+                .target = self.target,
                 .on_event = @import("command.zig").onResolveEvent,
                 .on_event_context = &resolve_cb_ctx,
             }, env);
@@ -96,12 +106,16 @@ pub const InterpreterInstallCommand = struct {
                 .remote_desc = res.desc,
             };
         } else try resolver.resolve(pkg_name, pkg_ver, idx, registries, .{
+            .offline = self.offline,
+            .prefer_local = self.prefer_local,
+            .target = self.target,
             .on_event = @import("command.zig").onResolveEvent,
             .on_event_context = &resolve_cb_ctx,
         }, env);
         defer final_res.deinit(allocator);
 
-        try stdout.print("Resolved to {s}@{s}\n", .{ final_res.name, final_res.version });
+        if (final_res.kind != .runtime) return error.ExpectedRuntimePackage;
+        if (!self.json) try stdout.print("Resolved to {s}@{s}\n", .{ final_res.name, final_res.version });
 
         var mat = moonstone.materialization.materializer.Materializer{
             .allocator = allocator,
@@ -128,7 +142,14 @@ pub const InterpreterInstallCommand = struct {
             },
         };
         defer mat_res.deinit(allocator);
+        if (try idx.get_provision_runtime(mat_res.artifact_hash)) |provision| {
+            var mutable = provision;
+            mutable.deinit(allocator);
+        } else {
+            ctx.error_detail = .{ .message = .{ .msg = "The runtime package does not declare a runtime provision. Correct its descriptor before selecting it." } };
+            return error.RuntimeProvisionMissing;
+        }
 
-        try stdout.print("Interpreter installed successfully to {s}\n", .{mat_res.path});
+        if (emitter) |e| try e.terminate(io, final_res.name, "ok", .{ .version = final_res.version, .path = mat_res.path, .runtime = true, .global = true }) else try stdout.print("Runtime installed to {s}. Select it with `moon set`.\n", .{mat_res.path});
     }
 };

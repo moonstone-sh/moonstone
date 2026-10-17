@@ -73,7 +73,7 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 
 cd "${TEST_APP}"
 moon init . --name source-dir-contract --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:source-dir-rock
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

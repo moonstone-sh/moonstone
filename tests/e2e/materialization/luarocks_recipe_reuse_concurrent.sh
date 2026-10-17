@@ -44,7 +44,7 @@ prepare_app() {
         cd "${app_path}"
         moon init . --name "${app_name}" --no-git --no-sync
         moon registry add synthetic "${SANDBOX_DIR}/registry" --default
-        moon interpreter set lua@5.4 --no-sync
+        moon set lua@5.4 --no-sync
         cat >> moonstone.toml <<'EOF_TOML'
 
 [[dependencies]]

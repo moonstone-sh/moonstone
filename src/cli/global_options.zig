@@ -3,6 +3,7 @@ const std = @import("std");
 pub const DirectoryArgs = struct {
     args: []const []const u8,
     directory: ?[]const u8 = null,
+    orbit: ?[]const u8 = null,
 
     pub fn deinit(self: DirectoryArgs, allocator: std.mem.Allocator) void {
         allocator.free(self.args);
@@ -19,6 +20,7 @@ pub fn extractDirectory(allocator: std.mem.Allocator, raw_args: []const []const 
     try args.append(allocator, raw_args[0]);
 
     var directory: ?[]const u8 = null;
+    var orbit: ?[]const u8 = null;
     var parsing_global_flags = true;
     var index: usize = 1;
     while (index < raw_args.len) : (index += 1) {
@@ -37,6 +39,20 @@ pub fn extractDirectory(allocator: std.mem.Allocator, raw_args: []const []const 
             index += 1;
             if (index >= raw_args.len) return error.MissingArgument;
             try args.append(allocator, raw_args[index]);
+            continue;
+        }
+        if (parsing_global_flags and std.mem.eql(u8, arg, "--orbit")) {
+            index += 1;
+            if (index >= raw_args.len or raw_args[index].len == 0) return error.MissingArgument;
+            if (orbit != null) return error.DuplicateOrbitOption;
+            orbit = raw_args[index];
+            continue;
+        }
+        if (parsing_global_flags and std.mem.startsWith(u8, arg, "--orbit=")) {
+            if (orbit != null) return error.DuplicateOrbitOption;
+            const value = arg["--orbit=".len..];
+            if (value.len == 0) return error.MissingArgument;
+            orbit = value;
             continue;
         }
         if (parsing_global_flags and (std.mem.eql(u8, arg, "-C") or std.mem.eql(u8, arg, "--directory"))) {
@@ -58,7 +74,7 @@ pub fn extractDirectory(allocator: std.mem.Allocator, raw_args: []const []const 
         if (parsing_global_flags and !std.mem.startsWith(u8, arg, "-")) parsing_global_flags = false;
     }
 
-    return .{ .args = try args.toOwnedSlice(allocator), .directory = directory };
+    return .{ .args = try args.toOwnedSlice(allocator), .directory = directory, .orbit = orbit };
 }
 
 test "directory extraction keeps child arguments opaque after a command" {
@@ -96,4 +112,13 @@ test "directory extraction accepts config selection before the directory" {
     try std.testing.expectEqualStrings("--config-file", parsed.args[1]);
     try std.testing.expectEqualStrings("settings.toml", parsed.args[2]);
     try std.testing.expectEqualStrings("manifest", parsed.args[3]);
+}
+
+test "orbit selection composes with directory and keeps process arguments opaque" {
+    var parsed = try extractDirectory(std.testing.allocator, &.{ "moon", "--orbit=api", "-C", "workspace", "exec", "lua", "--orbit", "opaque" });
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("api", parsed.orbit.?);
+    try std.testing.expectEqualStrings("workspace", parsed.directory.?);
+    try std.testing.expectEqualStrings("--orbit", parsed.args[3]);
+    try std.testing.expectError(error.DuplicateOrbitOption, extractDirectory(std.testing.allocator, &.{ "moon", "--orbit=x", "--orbit", "y", "env" }));
 }

@@ -10,7 +10,7 @@ cp -R "${SANDBOX_DIR}/my-lib" "${WORKDIR}/my-lib"
 cd "${WORKDIR}/consumer"
 
 moon init . --name link-check-consumer --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 moon add path:../my-lib --no-sync
 assert_file_contains moonstone.toml 'constraint = "path:../my-lib"'

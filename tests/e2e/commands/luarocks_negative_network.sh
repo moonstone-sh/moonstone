@@ -9,7 +9,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name rocks-negative-network --interpreter lua@5.4 --no-sync --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 cat >> "${MOONSTONE_CONFIG}/config.toml" <<'TOML'
 [network]

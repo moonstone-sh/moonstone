@@ -199,7 +199,7 @@ EOF
 cd "${APP}"
 "${MOON_BIN}" init . --name foreign-pure-lua --no-git --no-sync
 "${MOON_BIN}" registry add moonstone "${REGISTRY}"
-"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" set lua@5.4.7 --no-sync
 "${MOON_BIN}" add rocks:foreign-root@1.0-1
 "${MOON_BIN}" sync --target "${TARGET}" --progress plain
 
@@ -248,7 +248,7 @@ mkdir -p "${TRANSITIVE_APP}"
 cd "${TRANSITIVE_APP}"
 "${MOON_BIN}" init . --name foreign-transitive-rocks --no-git --no-sync
 "${MOON_BIN}" registry add moonstone "${REGISTRY}"
-"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" set lua@5.4.7 --no-sync
 "${MOON_BIN}" sync --progress plain
 "${MOON_BIN}" registry add local-synthetic "${REGISTRY}" --default
 "${MOON_BIN}" add local-synthetic:moonstone/foreign-parent@1.0.0 --no-sync
@@ -264,7 +264,7 @@ mkdir -p "${NATIVE_APP}"
 cd "${NATIVE_APP}"
 "${MOON_BIN}" init . --name foreign-native-rejection --no-git --no-sync
 "${MOON_BIN}" registry add moonstone "${REGISTRY}"
-"${MOON_BIN}" interpreter set lua@5.4.7 --no-sync
+"${MOON_BIN}" set lua@5.4.7 --no-sync
 cat >> moonstone.toml <<'EOF'
 
 [[dependencies]]

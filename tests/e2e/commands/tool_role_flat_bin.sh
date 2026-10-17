@@ -39,7 +39,7 @@ mkdir -p "$WORKDIR/app"
 # resolves the synthetic-only fixture package instead of silently finding
 # nothing on the real registry.
 (cd "$WORKDIR/app" && moon registry add moonstone "${MOONSTONE_REGISTRY_PATH}")
-(cd "$WORKDIR/app" && moon interpreter set luajit@2.1.1783773675 --no-sync)
+(cd "$WORKDIR/app" && moon set luajit@2.1.1783773675 --no-sync)
 (cd "$WORKDIR/app" && moon add synthetic-isolated-bin --tool)
 
 # (a) The binary must be flat-projected into .moonstone/env/bin/, exactly

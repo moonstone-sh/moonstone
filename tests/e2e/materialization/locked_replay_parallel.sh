@@ -46,7 +46,7 @@ mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name locked-replay-parallel --no-git --no-sync
 moon registry add synthetic "${SANDBOX_DIR}/registry" --default
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon add rocks:fakebin
 moon add rocks:fakealt
 

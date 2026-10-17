@@ -15,7 +15,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name "run-test"
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 # Add scripts under [scripts]: `moon init` no longer leaves it as the
 # manifest's last table (a [[registries]] entry follows it).

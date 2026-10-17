@@ -296,3 +296,16 @@ pub const ConfigUnsetCommand = struct {
         } else try ctx.stdout.print("Unset {s} in {s}.\n", .{ setting.key, config_file });
     }
 };
+
+pub fn setDefaultRuntime(ctx: *router.Context, runtime_spec: []const u8) !void {
+    const setting = Setting{ .key = "moonstone.default_runtime", .section = "moonstone", .field = "default_runtime", .kind = .string, .default_value = "" };
+    const path = try moonstone.platform.fs.resolve_config_file(ctx.allocator, ctx.env);
+    defer ctx.allocator.free(path);
+    const content = try readConfig(ctx.allocator, ctx.io, path);
+    defer ctx.allocator.free(content);
+    const literal = try quotedValue(ctx.allocator, runtime_spec);
+    defer ctx.allocator.free(literal);
+    const updated = try setValue(ctx.allocator, content, setting, literal);
+    defer ctx.allocator.free(updated);
+    try writeConfig(ctx.io, path, updated);
+}

@@ -36,7 +36,7 @@ mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
 
 moon init . --name "rocks-make-test"
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 # Append build.env block BEFORE adding the rock
 cat <<EOF >> moonstone.toml

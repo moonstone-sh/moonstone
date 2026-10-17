@@ -203,7 +203,7 @@ done
 cd "${APP_DIR}"
 moon init . --name test-revisions --no-git --no-sync
 moon registry add local-synthetic "${SANDBOX_DIR}/registry" --default
-moon interpreter set lua@5.4.7
+moon set lua@5.4.7
 
 echo "━━━ add rocks:luv@== 1.52.1 ━━━"
 moon add "rocks:luv@== 1.52.1" --progress plain

@@ -29,6 +29,24 @@ moon -C ./my-app sync
 moon --directory ./my-app run dev
 ```
 
+Install runtimes separately from choosing the active one:
+
+```bash
+moon add --global luajit@2.1
+moon set luajit@2.1
+moon store list --interpreters
+moon env
+```
+
+`moon remove --global RUNTIME@VERSION` removes an unused installed runtime.
+It refuses removal while a known project or the global selection references it.
+
+Declared workspace children use the same commands: `moon --orbit NAME sync`,
+`moon --orbit NAME exec -- lua main.lua`, or `moon sync --all` for the root and
+its direct children. See [command workflows](docs/CLI_WORKFLOWS.md) for selection,
+links, store inspection, and installation lifecycle. See the [corrected 0.7.0 release notes](docs/releases/0.7.0.md) for the full
+command migration and reinstall instructions.
+
 ## Operational model
 
 - `moonstone.toml` is the project manifest. It declares metadata, the selected

@@ -86,6 +86,7 @@ jobs:
       riscv_linux: ${{ steps.hashes.outputs.riscv_linux }}
       freebsd_arm: ${{ steps.hashes.outputs.freebsd_arm }}
       freebsd_intel: ${{ steps.hashes.outputs.freebsd_intel }}
+      release_revision: ${{ steps.hashes.outputs.release_revision }}
 
     steps:
       - name: Checkout code
@@ -97,6 +98,11 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          REVISION=$(jq -r --arg version "$VERSION" '.[$version] // 0' scripts/release/revisions.json)
+          echo "RELEASE_REVISION=${REVISION}" >> $GITHUB_ENV
+          label=standalone
+          if (( REVISION > 0 )); then label="standalone-reissue.${REVISION}"; fi
+          echo "BUILD_LABEL=${label}" >> $GITHUB_ENV
 
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -110,14 +116,16 @@ jobs:
           fi
 
           echo "Building Moonstone release target matrix via 'zig build release'..."
-          zig build release -Doptimize=ReleaseSafe
+          zig build release -Doptimize=ReleaseSafe -Ddistribution-label="${BUILD_LABEL}"
 
           python3 -m pip install --user blake3
-          python3 scripts/release/package-release.py --overwrite
+          python3 -m unittest discover -s scripts/release -p 'test_*.py'
+          python3 scripts/release/package-release.py --overwrite --release-revision "$RELEASE_REVISION" --source-commit "$(git rev-parse HEAD)" --build-label "$BUILD_LABEL"
 
       - name: Compute Hashes
         id: hashes
         run: |
+          echo "release_revision=${RELEASE_REVISION}" >> $GITHUB_OUTPUT
           release_dir="dist/releases/${VERSION}"
           hash_for() {
             awk -v name="$1" '$2 == name { print $1; exit }' "$release_dir/SHA256SUMS"
@@ -134,7 +142,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/releases/${{ env.VERSION }}/*
-          generate_release_notes: true
+          body_path: docs/releases/${{ env.VERSION }}.md
+          overwrite_files: true
+          make_latest: true
 
   homebrew-publish:
     name: Update Homebrew Formula
@@ -148,6 +158,7 @@ jobs:
       RISCV_LINUX: ${{ needs.build-and-release.outputs.riscv_linux }}
       FREEBSD_ARM: ${{ needs.build-and-release.outputs.freebsd_arm }}
       FREEBSD_INTEL: ${{ needs.build-and-release.outputs.freebsd_intel }}
+      RELEASE_REVISION: ${{ needs.build-and-release.outputs.release_revision }}
     steps:
       - name: Extract version from tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
@@ -167,6 +178,7 @@ jobs:
             desc "Reliable Lua environments, ready at a snap"
             homepage "https://moonstone.sh"
             version "${{ env.VERSION }}"
+            revision ${{ env.RELEASE_REVISION }}
             
             if OS.mac? && Hardware::CPU.arm?
                 url "https://github.com/moonstone-sh/moonstone/releases/download/v${{ env.VERSION }}/moon-v${{ env.VERSION }}-aarch64-macos.tar.gz"
@@ -228,7 +240,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/moonstone.rb
-          git commit -m "Update moonstone to v${{ env.VERSION }}"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Update moonstone to v${{ env.VERSION }} revision ${{ env.RELEASE_REVISION }}"
           git push origin main
 
   docker-publish:
@@ -274,6 +287,7 @@ jobs:
           file: docker/alpine/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          no-cache: true
           tags: ${{ steps.meta-alpine.outputs.tags }}
           labels: ${{ steps.meta-alpine.outputs.labels }}
           build-args: |
@@ -296,6 +310,7 @@ jobs:
           file: docker/ubuntu/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          no-cache: true
           tags: ${{ steps.meta-ubuntu.outputs.tags }}
           labels: ${{ steps.meta-ubuntu.outputs.labels }}
           build-args: |

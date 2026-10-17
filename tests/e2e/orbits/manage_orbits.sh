@@ -83,18 +83,19 @@ if moon orbit add --name outside --path "${OUTSIDE_DIR}/child" >/tmp/moonstone-o
 fi
 grep -q 'must be a subdirectory' /tmp/moonstone-orbit-outside.log
 
-moon orbit sync child --json > "${WORKDIR}/orbit-sync.ndjson"
+moon --orbit child registry add moonstone "$MOONSTONE_REGISTRY_PATH" >/dev/null
+moon --orbit child sync --json > "${WORKDIR}/orbit-sync.ndjson"
 grep -Eq '^\{"contract":"moonstone:cli-events:v1"' "${WORKDIR}/orbit-sync.ndjson"
-grep -Fq '"task_id":"orbit-sync:child"' "${WORKDIR}/orbit-sync.ndjson"
-grep -Fq '"state":"completed"' "${WORKDIR}/orbit-sync.ndjson"
-moon orbit sync child --quiet > "${WORKDIR}/orbit-sync-quiet.stdout" 2> "${WORKDIR}/orbit-sync-quiet.stderr"
+grep -Fq '"meta":{"command":"sync"' "${WORKDIR}/orbit-sync.ndjson"
+grep -Fq '"value":"sync.complete"' "${WORKDIR}/orbit-sync.ndjson"
+moon --orbit child sync --quiet > "${WORKDIR}/orbit-sync-quiet.stdout" 2> "${WORKDIR}/orbit-sync-quiet.stderr"
 test ! -s "${WORKDIR}/orbit-sync-quiet.stdout"
 test ! -s "${WORKDIR}/orbit-sync-quiet.stderr"
-moon orbit sync child --progress plain > "${WORKDIR}/orbit-sync-plain.stdout" 2> "${WORKDIR}/orbit-sync-plain.stderr"
-grep -Fq 'running orbit-sync:child: child' "${WORKDIR}/orbit-sync-plain.stderr"
-grep -Fq 'completed orbit-sync:child: child' "${WORKDIR}/orbit-sync-plain.stderr"
+moon --orbit child sync --progress plain > "${WORKDIR}/orbit-sync-plain.stdout" 2> "${WORKDIR}/orbit-sync-plain.stderr"
+grep -Fq 'Reading registry configuration'  "${WORKDIR}/orbit-sync-plain.stderr"
+grep -Fq 'Project environment synchronized'  "${WORKDIR}/orbit-sync-plain.stderr"
 if grep -q $'\033' "${WORKDIR}/orbit-sync-plain.stderr"; then
-    echo "ERROR: plain orbit sync emitted terminal control sequences"
+    echo "ERROR: plain --orbit emitted sync terminal control sequences"
     exit 1
 fi
 moon orbit remove child --json | grep -Fq '"kind":"RESULT"'

@@ -263,7 +263,7 @@ pub const DoctorCommand = struct {
                                     rt_msg = try std.fmt.allocPrint(allocator, "OK ({s})", .{rt_spec});
                                 } else {
                                     rt_ok = false;
-                                    rt_msg = try std.fmt.allocPrint(allocator, "WARN: Default interpreter {s} not found in store. Run 'moon interpreter set --global <spec>'", .{rt_spec});
+                                    rt_msg = try std.fmt.allocPrint(allocator, "WARN: Default interpreter {s} not found in store. Run 'moon set --global <spec>'", .{rt_spec});
                                 }
                             } else {
                                 rt_ok = false;

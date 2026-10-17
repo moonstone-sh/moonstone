@@ -81,7 +81,7 @@ cd "${TEST_APP}"
 
 echo "━━━ materialize pinned luv CMake module ━━━"
 moon init . --name real-luv-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add "rocks:${PACKAGE}@${VERSION}"
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

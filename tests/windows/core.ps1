@@ -52,17 +52,18 @@ try {
 
 Push-Location $bootstrapProject
 try {
-    # Query remote metadata without requiring a published Windows runtime.
-    # This exercises the default registry and cache paths in a normal Windows
-    # environment; runtime installation belongs to the runtime release matrix.
-    $availableInterpreters = & $moon interpreter list --available
-    if ($LASTEXITCODE -ne 0 -or -not ($availableInterpreters -match 'moonstone/lua@')) { throw 'moon interpreter list --available failed in the normal Windows environment' }
+    # Installed runtime inspection is part of the shared store surface.
+    $installedInterpreters = & $moon store list --interpreters
+    if ($LASTEXITCODE -ne 0) { throw 'moon store list --interpreters failed in the normal Windows environment' }
+    $runtimePlan = & $moon add --global lua@5.4 --dry-run
+    if ($LASTEXITCODE -ne 0 -or -not ($runtimePlan -match 'Would install global runtime')) { throw 'global runtime installation planning failed' }
 } finally {
     Pop-Location
 }
 
 if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/data/index'))) { throw 'Moonstone did not create its data index below LOCALAPPDATA' }
-if (-not (Test-Path (Join-Path $windowsLocalAppData 'moonstone/cache'))) { throw 'Moonstone did not create its cache below LOCALAPPDATA' }
+$pathConfiguration = & $moon config show
+if ($LASTEXITCODE -ne 0 -or -not (($pathConfiguration -join "`n").Contains((Join-Path $windowsLocalAppData 'moonstone/cache')))) { throw 'Moonstone cache is not configured below LOCALAPPDATA' }
 
 $env:MOONSTONE_HOME = Join-Path $work 'moonstone-home'
 $env:MOONSTONE_DATA = Join-Path $work 'moonstone-data'

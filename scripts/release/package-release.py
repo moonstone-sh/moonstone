@@ -53,7 +53,7 @@ def write_archive(binary: Path, archive: Path, entry_name: str = "moon") -> None
                 tar.addfile(info, io.BytesIO(payload))
 
 
-def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: bool) -> Path:
+def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: bool, release_revision: int = 0, source_commit: str | None = None, build_label: str | None = None) -> Path:
     prefix = f"moon-{version}-"
     binaries = sorted(path for path in bin_dir.glob(f"{prefix}*") if path.is_file())
     if not binaries:
@@ -95,7 +95,7 @@ def package_release(output_root: Path, bin_dir: Path, version: str, overwrite: b
         sha_lines.append(f"{sha256}  {archive_name}\n")
         b3_lines.append(f"{b3_hash}  {archive_name}\n")
 
-    manifest = {"version": version, "artifacts": artifacts}
+    manifest = {"version": version, "release_revision": release_revision, "source_commit": source_commit, "build_label": build_label, "artifacts": artifacts}
     (release_dir / "release-manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
@@ -110,13 +110,18 @@ def main() -> None:
     parser.add_argument("--bin-dir", type=Path, default=ROOT / "zig-out" / "bin")
     parser.add_argument("--version")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--release-revision", type=int, default=0)
+    parser.add_argument("--source-commit")
+    parser.add_argument("--build-label")
     parser.add_argument("--print-version", action="store_true")
     args = parser.parse_args()
+    if args.release_revision < 0:
+        parser.error("--release-revision must be nonnegative")
     version = args.version or read_version()
     if args.print_version:
         print(version)
         return
-    print(package_release(args.output_dir, args.bin_dir, version, args.overwrite))
+    print(package_release(args.output_dir, args.bin_dir, version, args.overwrite, args.release_revision, args.source_commit, args.build_label))
 
 
 if __name__ == "__main__":

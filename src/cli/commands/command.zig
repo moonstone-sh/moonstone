@@ -59,7 +59,6 @@ pub const store = struct {
     pub const verify = @import("store_verify.zig").StoreVerifyCommand;
     pub const path = @import("store_path.zig").StorePathCommand;
     pub const list = @import("store_list.zig").StoreListCommand;
-    pub const query = @import("store_query.zig").StoreQueryCommand;
     pub const purge = @import("store_purge.zig").StorePurgeCommand;
 };
 
@@ -68,7 +67,6 @@ pub const index = struct {
     pub const rebuild = @import("index_rebuild.zig").StoreDriverRebuildCommand;
     pub const check = @import("index_check.zig").StoreDriverCheckCommand;
     pub const stats = @import("index_stats.zig").StoreDriverStatsCommand;
-    pub const vacuum = @import("index_vacuum.zig").StoreDriverVacuumCommand;
 };
 
 // Registry group
@@ -96,14 +94,11 @@ pub const config = struct {
     pub const unset = @import("config_settings.zig").ConfigUnsetCommand;
 };
 
-// Interpreter group
-pub const interpreter = struct {
+// Runtime implementation helpers (no public interpreter command group)
+pub const runtime = struct {
     pub const set = @import("interpreter_set.zig").InterpreterSetCommand;
     pub const install = @import("interpreter_install.zig").InterpreterInstallCommand;
     pub const remove = @import("interpreter_remove.zig").InterpreterRemoveCommand;
-    pub const list = @import("interpreter_list.zig").InterpreterListCommand;
-    pub const current = @import("interpreter_current.zig").InterpreterCurrentCommand;
-    pub const path = @import("interpreter_path.zig").InterpreterPathCommand;
 };
 
 pub const CliErrorSet = error{

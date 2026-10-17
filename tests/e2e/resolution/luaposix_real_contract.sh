@@ -112,7 +112,7 @@ cd "${TEST_APP}"
 
 echo "━━━ materialize pinned luaposix command backend ━━━"
 moon init . --name real-luaposix-contract --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add "rocks:${PACKAGE}@${VERSION}"
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

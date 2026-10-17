@@ -142,7 +142,7 @@ for case_entry in "${cases[@]}"; do
 
     pushd "${test_app}" >/dev/null
     moon init . --name "${package_name}" --no-git
-    moon interpreter set lua@5.4
+    moon set lua@5.4
     if output="$(moon add "rocks:${package_name}" 2>&1)"; then
         echo "ERROR: Moonstone materialized unsupported LuaRocks capability ${case_name}" >&2
         exit 1

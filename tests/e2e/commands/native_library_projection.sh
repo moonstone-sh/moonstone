@@ -128,7 +128,7 @@ perl -0pi -e "s/hash = \"b3:[a-f0-9]+\"/hash = \"b3:${INDEX_HASH}\"/; s/bytes = 
 
 cd "${APP}"
 moon init . --name native-library-projection --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon registry add native-loader "${REGISTRY}" --default
 moon add "native-loader:${PACKAGE}"
 

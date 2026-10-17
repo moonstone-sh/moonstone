@@ -37,7 +37,7 @@ cd "${TEST_APP}"
 
 echo "━━━ create lockfile for rocks:fakebin ━━━"
 moon init . --name rocks-lock-replay-app --no-git
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:fakebin
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

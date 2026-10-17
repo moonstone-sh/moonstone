@@ -34,7 +34,7 @@ priority = 10
 [dependencies.runtime]
 EOF
 
-moon interpreter set lua@5.4
+moon set lua@5.4
 
 echo "━━━ report missing native materialization input during add ━━━"
 MISSING_ADD_LOG="${SANDBOX_DIR}/native-cmodule-missing-add.log"

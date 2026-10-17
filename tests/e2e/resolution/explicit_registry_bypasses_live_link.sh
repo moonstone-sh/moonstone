@@ -37,7 +37,7 @@ LUA
 
 cd "${WORKDIR}/app"
 moon init . --name explicit-registry-link-app --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 moon registry add local-synthetic "${SANDBOX_DIR}/registry" --default
 moon add moonstone:inspect@3.1.3
 

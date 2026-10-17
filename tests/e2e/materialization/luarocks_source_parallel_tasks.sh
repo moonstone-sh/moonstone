@@ -62,7 +62,7 @@ curl -fsS "${MOONSTONE_LUAROCKS_URL}/manifest-5.4.json" >/dev/null
 mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name rocks-source-parallel --no-git --no-sync
-moon interpreter set lua@5.4 --no-sync
+moon set lua@5.4 --no-sync
 cat >> moonstone.toml <<'DEPENDENCIES'
 
 [[dependencies]]

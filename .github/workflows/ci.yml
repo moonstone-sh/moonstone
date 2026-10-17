@@ -47,6 +47,12 @@ jobs:
           zig build test
           zig build test-cli
 
+      - name: Verify self-managed uninstall and preservation
+        run: bash tests/e2e/commands/self_lifecycle.sh
+
+      - name: Verify runtime and workspace command contract
+        run: bash tests/e2e/commands/runtime_commands.sh
+
       - name: Checkout pinned LuaRocks reference
         uses: actions/checkout@v4
         with:

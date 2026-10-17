@@ -35,7 +35,7 @@ mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
 moon init . --name locked-hash-mismatch --no-git
 moon registry add synthetic "${SANDBOX_DIR}/registry" --default
-moon interpreter set lua@5.4
+moon set lua@5.4
 moon add rocks:fakebin
 
 STORE_DIR="${MOONSTONE_DATA}/store/v0"

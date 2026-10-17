@@ -65,6 +65,6 @@ return { child = require("child") }
 LUA
 
 (cd "$WORKDIR/parent" && "$MOON_BIN" link)
-(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-rocks-app --no-git --no-sync && "$MOON_BIN" interpreter set lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-rocks-parent)
+(cd "$WORKDIR/app" && "$MOON_BIN" init . --name hyg-rocks-app --no-git --no-sync && "$MOON_BIN" set lua@5.4 --no-sync && "$MOON_BIN" add link:hyg-rocks-parent)
 grep 'name = "child"' "$WORKDIR/app/moonstone.lock"
 (cd "$WORKDIR/app" && "$MOON_BIN" exec -- lua -e 'assert(require("hyg_rocks_parent").child ~= nil); print("rocks-child-ok")') | grep 'rocks-child-ok'
