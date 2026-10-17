@@ -58,12 +58,25 @@ pub fn main(init: std.process.Init) !void {
 
     const raw_args = try init.minimal.args.toSlice(arena);
     const directory_args = try global_options.extractDirectory(arena, raw_args);
-    const working_directory = if (directory_args.directory) |directory|
+    var working_directory: ?[]const u8 = if (directory_args.directory) |directory|
         try std.Io.Dir.cwd().realPathFileAlloc(init.io, directory, arena)
     else
         null;
     if (working_directory) |directory| try moonstone.platform.fs.setCurrentPath(init.io, directory);
     const all_args = try applyGlobalConfigFile(arena, directory_args.args, init.environ_map);
+    if (directory_args.orbit) |orbit| {
+        working_directory = @import("commands/orbit_selection.zig").select(arena, init.io, orbit) catch |err| {
+            const message = try std.fmt.allocPrint(arena, "Cannot select orbit '{s}': {s}. Use `moon orbit list` from the workspace root to inspect declared members.", .{ orbit, @errorName(err) });
+            var json = false;
+            for (all_args) |arg| if (std.mem.eql(u8, arg, "--json")) {
+                json = true;
+            };
+            try command_mod.reportError(arena, init.io, stdout, json, err, "moon", .{ .message = .{ .msg = message } });
+            try stdout.flush();
+            std.process.exit(1);
+        };
+        try moonstone.platform.fs.setCurrentPath(init.io, working_directory.?);
+    }
 
     profiler.init(init.environ_map);
 
@@ -74,11 +87,12 @@ pub fn main(init: std.process.Init) !void {
         .stderr = stderr,
         .env = init.environ_map,
         .working_directory = working_directory,
+        .orbit_selected = directory_args.orbit != null,
         .root = null,
-        .all_args = all_args,
+        .all_args = raw_args,
     };
 
-    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management\n\nGlobal options:\n  -C, --directory <path>  Change the project-resolution base before dispatch\n\nStart a project: moon init\nAdd a package: moon add <package>\nRun Lua: moon exec -- lua main.lua\nRun a project task: moon run <script>\nInspect or export its environment: moon env --help", &.{
+    const App = router.CommandNode.group("moon", "Moonstone - Modern, deterministic Lua project environments and package management\n\nGlobal options:\n  -C, --directory <path>  Change the project-resolution base before dispatch\n  --orbit <name>          Select a declared child project\n\nStart a project: moon init\nAdd a package: moon add <package>\nRun Lua: moon exec -- lua main.lua\nRun a project task: moon run <script>\nInspect or export its environment: moon env --help", &.{
         router.CommandNode.from(command_mod.add),
         router.CommandNode.from(command_mod.sync),
         router.CommandNode.from(command_mod.init),
@@ -126,6 +140,7 @@ pub fn main(init: std.process.Init) !void {
 
         router.CommandNode.group("self", "Manage Moonstone installation and lifecycle", &.{
             router.CommandNode.from(command_mod.self_cmd.install),
+            router.CommandNode.from(@import("commands/self_install.zig").SelfUpdateCommand),
             router.CommandNode.from(command_mod.self_cmd.uninstall),
         }),
 
@@ -134,7 +149,6 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.store.verify),
             router.CommandNode.from(command_mod.store.path),
             router.CommandNode.from(command_mod.store.list),
-            router.CommandNode.from(command_mod.store.query),
             router.CommandNode.from(command_mod.store.purge),
         }),
 
@@ -150,7 +164,6 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(command_mod.index.rebuild),
             router.CommandNode.from(command_mod.index.check),
             router.CommandNode.from(command_mod.index.stats),
-            router.CommandNode.from(command_mod.index.vacuum),
         }),
 
         router.CommandNode.groupWithFallback("registry", "Manage registries", &.{
@@ -183,9 +196,6 @@ pub fn main(init: std.process.Init) !void {
             router.CommandNode.from(@import("commands/orbit_add.zig").OrbitAddCommand),
             router.CommandNode.from(@import("commands/orbit_list.zig").OrbitListCommand),
             router.CommandNode.from(@import("commands/orbit_remove.zig").OrbitRemoveCommand),
-            router.CommandNode.from(@import("commands/orbit_sync.zig").OrbitSyncCommand),
-            router.CommandNode.from(@import("commands/orbit_exec.zig").OrbitExecCommand),
-            router.CommandNode.from(@import("commands/orbit_run.zig").OrbitRunCommand),
         }),
     });
 

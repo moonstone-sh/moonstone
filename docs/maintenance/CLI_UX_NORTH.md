@@ -1,7 +1,12 @@
 # Moonstone CLI UX north
 
-Status: proposed direction and initial audit, 2026-10-15. This is a launch
-backlog, not a claim that its acceptance checks already pass.
+Status: initial audit recorded 2026-10-15; command consolidation implemented on
+`feat/runtime-command-consolidation`. The audit inventory below is historical.
+Runtime add/remove/set, explicit link removal, unified store listing, prune
+compaction, global orbit selection, root-first workspace sync, and self lifecycle
+are covered by the current change. See `../CLI_WORKFLOWS.md` for the maintained
+command contract. Broader UX acceptance goals remain measurements to perform,
+not claims inferred from implementation tests.
 
 ## North
 

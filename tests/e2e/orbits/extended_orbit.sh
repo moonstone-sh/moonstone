@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+
 if [[ -z "${MOONSTONE_HOME:-}" ]]; then
     source "${PROJECT_ROOT}/tests/scripts/install_synthetic.sh"
 fi
@@ -42,38 +44,39 @@ name = "luajit"
 version = "2.1.1783773675"
 
 [scripts]
-test-script = "luajit -v"
+test-script = "luajit -e 'print(_VERSION)'"
 EOF
 
-# Sync child explicitly
-moon orbit sync child
+# Sync child explicitly against the local deterministic registry.
+moon --orbit child registry add moonstone "$MOONSTONE_REGISTRY_PATH" >/dev/null
+moon --orbit child sync
 
 echo "Testing explicit locked orbit sync..."
-moon orbit sync child --locked
+moon --orbit child sync --locked
 
 echo "Testing that child uses luajit..."
-OUTPUT=$(moon orbit exec child -- luajit -v 2>&1)
-if [[ "$OUTPUT" != *"luajit"* ]]; then
+OUTPUT=$(moon --orbit child exec -- lua -e 'print(_VERSION)' 2>&1)
+if [[ "$OUTPUT" != *"LuaJIT"* ]]; then
     echo "Fail: Expected luajit, got $OUTPUT"
     exit 1
 fi
 
 echo "Testing completions for orbit command..."
 OUTPUT=$(moon completions --complete "moon orbit ")
-if [[ "$OUTPUT" != *"exec"* ]] || [[ "$OUTPUT" != *"run"* ]] || [[ "$OUTPUT" != *"list"* ]] || [[ "$OUTPUT" != *"sync"* ]]; then
+if [[ "$OUTPUT" != *"list"* ]] || [[ "$OUTPUT" == *"exec"* ]] || [[ "$OUTPUT" == *"sync"* ]]; then
     echo "Fail: Expected subcommands in moon orbit completions, got $OUTPUT"
     exit 1
 fi
 
 echo "Testing completions for orbit run..."
-OUTPUT=$(moon completions --complete "moon orbit run ")
+OUTPUT=$(moon completions --complete "moon --orbit ")
 if [[ "$OUTPUT" != *"child"* ]]; then
     echo "Fail: Expected 'child' in orbit run completions, got $OUTPUT"
     exit 1
 fi
 
 echo "Testing completions for scripts inside orbit..."
-OUTPUT=$(moon completions --complete "moon orbit run child ")
+OUTPUT=$(moon completions --complete "moon --orbit child run ")
 if [[ "$OUTPUT" != *"test-script"* ]]; then
     echo "Fail: Expected 'test-script' in script completions, got $OUTPUT"
     exit 1

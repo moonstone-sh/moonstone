@@ -97,3 +97,72 @@ sync to register them; moved projects need a sync at their new path.
 
 Project dependency removal never chooses a replacement runtime. Use `set`
 explicitly. Global runtime removal has no force option that bypasses references.
+
+## Workspace selection
+
+Keep orbit declarations for stable names and discovery; use ordinary commands
+inside them:
+
+```sh
+moon orbit add --name server --path apps/server
+moon -C . --orbit server sync --locked
+moon --orbit server exec -- lua main.lua
+moon --orbit server run test
+moon sync --all --offline
+```
+
+`sync --all` preflights member paths, then synchronizes the root followed by its
+direct members in declaration order. Each keeps its own lock and environment.
+All sync flags carry through. Failure stops traversal; completed changes remain.
+There is no recursive traversal or rollback. Combining `--orbit` and `--all` is
+an error. With `--json`, project events share one sequence and a single final
+`workspace.complete` RESULT; individual member completion is a STATUS.
+`orbit add/list/remove` manage declarations; `-C PATH` addresses any
+project without declaring an orbit.
+
+## Local links and store maintenance
+
+```sh
+moon link                            # register current source project
+moon add link:my-library
+moon remove my-library               # remove ordinary project dependency
+moon remove --global link:my-library # unregister; preserve source files
+moon store list --query valua --kind lib --json
+moon store list --by-artifact-hash b3:HASH --json
+moon store prune --compact --dry-run
+moon store prune --compact
+```
+
+Global link removal validates every requested registration before changing any.
+Live source directories are never deleted. Only registered artifact-mode links
+whose paths are canonical CAS materializations are eligible for reclamation;
+other links and registered project locks protect shared artifacts.
+
+`store list` accepts one name query or exact selector (`--by-package`,
+`--by-artifact-hash`, `--by-source-hash`) and combines it with kind, resolver,
+target, and ABI filters. JSON is NDJSON: START, one STATUS per artifact, then a
+RESULT with the count. Artifact data retains hashes, provenance, paths, and
+warnings. `--links` lists registrations using the same event envelope.
+`store query` is removed. Index compaction belongs to `store prune --compact`;
+`--dry-run` never compacts. `index vacuum` is removed.
+
+## CLI installation lifecycle
+
+```sh
+moon self update                       # preview latest-release installer
+moon self update --apply               # run installer (POSIX)
+moon self install --version 0.7.0       # preview exact-release installer
+moon self uninstall --dry-run --json
+moon self uninstall --yes              # executable and shims only
+moon self uninstall --yes --purge-data # also remove listed managed data
+```
+
+Self-managed builds retain their configured installer channel. Externally
+managed builds direct users to their package manager instead of overwriting its
+files. Windows previews its installer command; `--apply` is currently POSIX-only.
+Uninstall removes the running executable on POSIX; Windows schedules removal
+after the process exits. Store, caches, configuration, and project tracking
+survive by default. `--purge-data` previews and deletes specific managed paths,
+not their parent directories, and refuses home/root/current-project ancestors.
+Project sources and unrelated files are preserved. Deletion is irreversible;
+there is no rollback if a later filesystem operation fails.

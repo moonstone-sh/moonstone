@@ -322,12 +322,12 @@ fn buildMissingDashDashSuggestion(
     try out.appendSlice(allocator, "moon");
 
     // ctx.all_args is [program, ...subcommand path..., ...leaf_args]; the
-    // subcommand path (e.g. "exec" or "orbit exec") is whatever sits
+    // global selectors and subcommand path (e.g. "--orbit child exec") is whatever sits
     // between the program name and leaf_args.
     if (ctx.all_args.len >= leaf_args.len + 1) {
         for (ctx.all_args[1 .. ctx.all_args.len - leaf_args.len]) |part| {
             try out.append(allocator, ' ');
-            try out.appendSlice(allocator, part);
+            try appendQuotedArg(allocator, &out, part);
         }
     }
 
@@ -614,46 +614,17 @@ test "an unknown short flag is echoed back with a single dash, not '--'" {
     try testing.expect(std.mem.indexOf(u8, printed, "--x") == null);
 }
 
-test "orbit exec: a wrapped command's flag before '--' suggests inserting '--' before the orbit selector" {
+test "exec recovery preserves project selectors and quotes their values" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const allocator = arena_state.allocator();
-
-    var stdout_bytes: [1024]u8 = undefined;
-    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
-    var env_map = std.process.Environ.Map.init(allocator);
-
-    const leaf_args = [_][]const u8{ "child", "lua", "-e", "print(1)" };
-    const all_args = [_][]const u8{ "moon", "orbit", "exec", "child", "lua", "-e", "print(1)" };
-    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
-
-    const OrbitExecCommand = @import("commands/orbit_exec.zig").OrbitExecCommand;
-    const node = CommandNode.from(OrbitExecCommand);
-    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
-
-    const detail = ctx.error_detail.?;
-    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
-    try testing.expectEqualStrings("moon orbit exec -- child lua -e 'print(1)'", detail.missing_dashdash.suggestion);
-}
-
-test "orbit run: a wrapped script's flag before '--' suggests inserting '--' before the orbit selector" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const allocator = arena_state.allocator();
-
-    var stdout_bytes: [1024]u8 = undefined;
-    var stdout_writer = std.Io.Writer.fixed(&stdout_bytes);
-    var env_map = std.process.Environ.Map.init(allocator);
-
-    const leaf_args = [_][]const u8{ "child", "hello", "-e", "x" };
-    const all_args = [_][]const u8{ "moon", "orbit", "run", "child", "hello", "-e", "x" };
-    var ctx = testContext(allocator, &stdout_writer, &env_map, all_args[0..]);
-
-    const OrbitRunCommand = @import("commands/orbit_run.zig").OrbitRunCommand;
-    const node = CommandNode.from(OrbitRunCommand);
-    try testing.expectError(error.AlreadyReported, node.run_fn.?(leaf_args[0..], &ctx));
-
-    const detail = ctx.error_detail.?;
-    try testing.expect(std.meta.activeTag(detail) == .missing_dashdash);
-    try testing.expectEqualStrings("moon orbit run -- child hello -e x", detail.missing_dashdash.suggestion);
+    var bytes: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env = std.process.Environ.Map.init(allocator);
+    const args = [_][]const u8{ "lua", "-e", "print(1)" };
+    const all = [_][]const u8{ "moon", "-C", "workspace root", "--orbit", "child", "exec", "lua", "-e", "print(1)" };
+    var ctx = testContext(allocator, &writer, &env, &all);
+    const node = CommandNode.from(@import("commands/exec.zig").ExecCommand);
+    try testing.expectError(error.AlreadyReported, node.run_fn.?(&args, &ctx));
+    try testing.expectEqualStrings("moon -C 'workspace root' --orbit child exec -- lua -e 'print(1)'", ctx.error_detail.?.missing_dashdash.suggestion);
 }

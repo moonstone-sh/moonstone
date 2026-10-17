@@ -59,7 +59,6 @@ pub const store = struct {
     pub const verify = @import("store_verify.zig").StoreVerifyCommand;
     pub const path = @import("store_path.zig").StorePathCommand;
     pub const list = @import("store_list.zig").StoreListCommand;
-    pub const query = @import("store_query.zig").StoreQueryCommand;
     pub const purge = @import("store_purge.zig").StorePurgeCommand;
 };
 
@@ -68,7 +67,6 @@ pub const index = struct {
     pub const rebuild = @import("index_rebuild.zig").StoreDriverRebuildCommand;
     pub const check = @import("index_check.zig").StoreDriverCheckCommand;
     pub const stats = @import("index_stats.zig").StoreDriverStatsCommand;
-    pub const vacuum = @import("index_vacuum.zig").StoreDriverVacuumCommand;
 };
 
 // Registry group

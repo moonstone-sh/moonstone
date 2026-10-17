@@ -14,7 +14,6 @@ pub const remove_command = struct {
     target: ?[]const u8 = null,
     dev: bool = false,
     tool: bool = false,
-    link: bool = false,
     global: bool = false,
     no_sync: bool = false,
     file: ?[]const u8 = null,
@@ -32,7 +31,6 @@ pub const remove_command = struct {
             \\Flags:
             \\  --global     Operate on global state
             \\  --tool       Remove a global or project tool dependency
-            \\  --link       Unregister from the global link registry
             \\  --lib        Remove runtime library dependency
             \\  --bin        Deprecated alias for --tool
             \\  --runtime    Remove a custom installed runtime (requires --global)
@@ -100,7 +98,7 @@ pub const remove_command = struct {
         var has_runtime = self.runtime;
         for (self.positionals) |spec| has_runtime = has_runtime or @import("runtime_spec.zig").isOfficial(spec);
         if (self.global and has_runtime) {
-            if (self.positionals.len != 1 or self.tool or self.bin or self.lib or self.dev or self.link or self.no_sync or self.file != null) return error.UnsupportedRuntimeOption;
+            if (self.positionals.len != 1 or self.tool or self.bin or self.lib or self.dev or self.no_sync or self.file != null) return error.UnsupportedRuntimeOption;
             return (@import("interpreter_remove.zig").InterpreterRemoveCommand{ .positionals = self.positionals, .target = self.target, .json = self.json }).run(ctx);
         }
         if (self.runtime or self.target != null) return error.UnsupportedRuntimeOption;
@@ -117,24 +115,24 @@ pub const remove_command = struct {
         const emitter = if (emitter_obj) |*e| e else null;
 
         if (self.global) {
-            if (self.tool or self.bin) {
-                var global_self = self;
-                global_self.global = false;
-                global_self.tool = true;
-                global_self.bin = false;
-
-                const global_project = try @import("global_tools.zig").enterProject(allocator, ctx.env, io);
-                defer @import("global_tools.zig").leaveProject(allocator, io, global_project);
-
-                if (!self.json) try stdout.print("Using global tools environment: {s}\n", .{global_project.path});
-                return try global_self.run(ctx);
+            var link_count: usize = 0;
+            for (self.positionals) |spec| if (std.mem.startsWith(u8, spec, "link:")) {
+                link_count += 1;
+            };
+            if (link_count > 0) {
+                if (link_count != self.positionals.len or self.tool or self.bin or self.lib or self.dev or self.file != null or self.no_sync) return error.MixedGlobalRemoval;
+                return self.runGlobal(ctx);
             }
-            if (self.link) {
-                try self.runGlobal(ctx);
-                return;
-            }
-            ctx.error_detail = .{ .message = .{ .msg = "--global requires --tool to remove global tools or --link to unregister links." } };
-            return error.MissingArgument;
+            if (self.positionals.len == 0) return error.MissingArgument;
+            if (self.lib or self.dev or self.file != null) return error.UnsupportedGlobalRemovalOption;
+            var global_self = self;
+            global_self.global = false;
+            global_self.tool = true;
+            global_self.bin = false;
+            const global_project = try @import("global_tools.zig").enterProject(allocator, ctx.env, io);
+            defer @import("global_tools.zig").leaveProject(allocator, io, global_project);
+            if (!self.json) try stdout.print("Using global tools environment: {s}\n", .{global_project.path});
+            return global_self.run(ctx);
         }
 
         if (self.positionals.len == 0) {
@@ -247,24 +245,28 @@ pub const remove_command = struct {
 
         var lr = moonstone.store.links.LinkStore.init(&idx);
 
-        if (self.positionals.len == 0) {
-            // Unregister current project
-            const toml_content = try std.Io.Dir.cwd().readFileAlloc(io, "moonstone.toml", allocator, std.Io.Limit.limited(1024 * 1024));
-            defer allocator.free(toml_content);
-            var mt = try moonstone.domain.manifest.MoonstoneToml.parse(allocator, toml_content);
-            defer mt.deinit(allocator);
-
-            try lr.unregister(mt.package.name);
-            if (!self.json) try stdout.print("Unregistered '{s}' from global link registry.\n", .{mt.package.name});
-        } else {
-            for (self.positionals) |pkg_spec| {
-                var pkg_name = pkg_spec;
-                if (std.mem.startsWith(u8, pkg_spec, "link:")) {
-                    pkg_name = pkg_spec[5..];
-                }
-                try lr.unregister(pkg_name);
-                if (!self.json) try stdout.print("Unregistered '{s}' from global link registry.\n", .{pkg_name});
-            }
+        // Validate the whole request before unregistering anything.
+        for (self.positionals, 0..) |spec, index| {
+            for (self.positionals[0..index]) |previous| if (std.mem.eql(u8, previous, spec)) return error.DuplicatePackage;
+            const pkg_name = spec[5..];
+            if (pkg_name.len == 0) return error.InvalidPackageSpec;
+            var entry = (try lr.get(pkg_name)) orelse return error.LinkNotFound;
+            entry.deinit(allocator);
+        }
+        for (self.positionals) |spec| {
+            const pkg_name = spec[5..];
+            var entry = (try lr.get(pkg_name)) orelse return error.LinkNotFound;
+            defer entry.deinit(allocator);
+            const prune = @import("store_prune.zig");
+            const hash = if (entry.mode == .artifact) try prune.ownedArtifactHash(allocator, io, paths.store, entry.path) else null;
+            defer if (hash) |h| allocator.free(h);
+            try lr.unregister(pkg_name);
+            if (hash) |h| try (prune.StorePruneCommand{}).runSelected(ctx, h, self.json);
+            if (!self.json) try stdout.print("Unregistered '{s}'. Source files were preserved.\n", .{pkg_name});
+        }
+        if (self.json) {
+            var emitter = ndjson.Emitter.init(allocator, stdout, "remove");
+            try emitter.terminate(io, "links", "ok", .{ .unregistered = self.positionals });
         }
     }
 };

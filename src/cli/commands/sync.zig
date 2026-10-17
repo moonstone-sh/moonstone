@@ -1899,6 +1899,7 @@ pub const SyncCommand = struct {
     offline: bool = false,
     json: bool = false,
     quiet: bool = false,
+    all: bool = false,
     target_arg: ?[]const u8 = null,
     jobs_arg: ?[]const u8 = null,
     progress_arg: ?[]const u8 = null,
@@ -1910,6 +1911,7 @@ pub const SyncCommand = struct {
             \\Synchronizes the project environment with moonstone.toml and moonstone.lock.
             \\
             \\Flags:
+            \\  --all        Sync the root and its declared child projects, in order
             \\  --locked     Error if moonstone.lock is out of sync
             \\  --update     Re-resolve dependencies and update moonstone.lock within constraints
             \\  --check      Validate lockfile/env without modifying files
@@ -1972,6 +1974,7 @@ pub const SyncCommand = struct {
     }
 
     pub fn runImpl(self: SyncCommand, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
+        if (self.all) return self.runWorkspace(ctx, backend);
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -1985,7 +1988,7 @@ pub const SyncCommand = struct {
 
         var report = SyncReport{};
         var emitter_obj = if (self.json) ndjson.Emitter.init(allocator, stdout, name) else null;
-        const emitter = if (emitter_obj) |*e| e else null;
+        const emitter = ctx.workspace_emitter orelse (if (emitter_obj) |*e| e else null);
 
         if (emitter) |e| if (!self.check) {
             try e.emit(io, .START, name, "sync.begin", .{
@@ -3912,7 +3915,7 @@ pub const SyncCommand = struct {
         if (!target_is_host) {
             report.total_ms = elapsedMs(io, started_ns);
             if (emitter) |e| {
-                try e.terminate(io, name, "sync.complete", .{ .summary = report, .target = lock_target, .projected = false });
+                try finishSync(ctx, e, "sync.complete", .{ .summary = report, .target = lock_target, .projected = false });
             } else {
                 backend.phaseDone("Target profile synchronized; host environment was not projected.", .{});
             }
@@ -3944,12 +3947,66 @@ pub const SyncCommand = struct {
         report.total_ms = elapsedMs(io, started_ns);
 
         if (emitter) |e| {
-            try e.terminate(io, name, "sync.complete", .{
+            try finishSync(ctx, e, "sync.complete", .{
                 .summary = report,
             });
         } else {
             backend.phaseDone("Project environment synchronized.", .{});
         }
+    }
+
+    fn runWorkspace(self: SyncCommand, ctx: *router.Context, backend: progress_runtime.ProgressBackend) !void {
+        if (ctx.orbit_selected) {
+            ctx.error_detail = .{ .message = .{ .msg = "Use `sync --all` at the workspace root, or `--orbit NAME sync` for one child." } };
+            return error.ConflictingWorkspaceSelection;
+        }
+        const root = try moonstone.project.discovery.enterRoot(ctx.allocator, ctx.io, ".");
+        defer root.deinit(ctx.allocator);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(ctx.io, "moonstone.toml", ctx.allocator, std.Io.Limit.limited(1024 * 1024));
+        defer ctx.allocator.free(bytes);
+        var manifest = try moonstone.domain.manifest.MoonstoneToml.parse(ctx.allocator, bytes);
+        defer manifest.deinit(ctx.allocator);
+        const orbits = try moonstone.project.orbits.resolveOrbits(ctx.allocator, ctx.io, root.path, &manifest);
+        defer {
+            for (orbits) |*orbit| orbit.deinit(ctx.allocator);
+            ctx.allocator.free(orbits);
+        }
+        // Validate canonical children before touching any project.
+        for (orbits) |orbit| {
+            const checked = try @import("orbit_selection.zig").select(ctx.allocator, ctx.io, orbit.name);
+            ctx.allocator.free(checked);
+        }
+        var workspace_events = ndjson.Emitter.init(ctx.allocator, ctx.stdout, "sync");
+        const previous_emitter = ctx.workspace_emitter;
+        defer ctx.workspace_emitter = previous_emitter;
+        if (self.json) {
+            ctx.workspace_emitter = &workspace_events;
+            try workspace_events.emit(ctx.io, .START, root.path, "workspace.begin", .{ .projects = orbits.len + 1 });
+        }
+        var child = self;
+        child.all = false;
+        const previous_directory = ctx.working_directory;
+        defer ctx.working_directory = previous_directory;
+        defer moonstone.platform.fs.setCurrentPath(ctx.io, root.path) catch {};
+        ctx.working_directory = root.path;
+        if (self.json) try workspace_events.emit(ctx.io, .INFO, root.path, "project.begin", .{ .root = true });
+        try child.runImpl(ctx, backend);
+        for (orbits) |orbit| {
+            try moonstone.platform.fs.setCurrentPath(ctx.io, orbit.path);
+            ctx.working_directory = orbit.path;
+            if (self.json) try workspace_events.emit(ctx.io, .INFO, orbit.path, "project.begin", .{ .orbit = orbit.name });
+            child.runImpl(ctx, backend) catch |err| {
+                ctx.error_detail = .{ .message = .{ .msg = try std.fmt.allocPrint(ctx.allocator, "Sync failed for orbit '{s}' ({s}): {s}. Earlier projects may already be synchronized; no rollback was attempted. Retry with `moon --orbit {s} sync` to inspect this member.", .{ orbit.name, orbit.path, @errorName(err), orbit.name }) } };
+                return err;
+            };
+        }
+        if (self.json) try workspace_events.terminate(ctx.io, root.path, "workspace.complete", .{ .projects = orbits.len + 1 });
+    }
+
+    fn finishSync(ctx: *router.Context, emitter: *ndjson.Emitter, value: []const u8, data: anytype) !void {
+        if (ctx.workspace_emitter != null) {
+            try emitter.emit(ctx.io, .STATUS, ctx.working_directory orelse name, value, data);
+        } else try emitter.terminate(ctx.io, name, value, data);
     }
 
     fn runCheck(self: SyncCommand, ctx: *router.Context, mt: *moonstone.domain.manifest.MoonstoneToml, idx: *moonstone.store.driver.StoreDriver) !void {
@@ -3958,7 +4015,7 @@ pub const SyncCommand = struct {
         const stdout = ctx.stdout;
 
         var emitter_obj = if (self.json) ndjson.Emitter.init(allocator, stdout, name) else null;
-        const emitter = if (emitter_obj) |*e| e else null;
+        const emitter = ctx.workspace_emitter orelse (if (emitter_obj) |*e| e else null);
 
         if (emitter) |e| {
             try e.emit(io, .START, name, "check.begin", .{});
@@ -4026,7 +4083,7 @@ pub const SyncCommand = struct {
         }
 
         if (emitter) |e| {
-            try e.terminate(io, name, "ok", .{ .issues = issues });
+            try finishSync(ctx, e, "ok", .{ .issues = issues });
         } else {
             try stdout.print("Project is up to date.\n", .{});
         }
@@ -4135,7 +4192,9 @@ fn lockedDependenciesMatch(
     deps: []const moonstone.domain.manifest.StoreDependency,
     lf: *moonstone.domain.lockfile.LockFile,
 ) bool {
-    if (deps.len == 0 and lf.packages.items.len > 0) return false;
+    if (deps.len == 0) for (lf.packages.items) |entry| {
+        if (entry.kind != .runtime) return false;
+    };
 
     for (deps) |dep| {
         const dep_name = normalizedLockDependencyName(dep.name);
@@ -4338,7 +4397,9 @@ fn lockedEntriesDependenciesMatch(
     deps: []const moonstone.domain.manifest.StoreDependency,
     entries: []const *const moonstone.domain.lockfile.LockEntry,
 ) bool {
-    if (deps.len == 0 and entries.len > 0) return false;
+    if (deps.len == 0) for (entries) |entry| {
+        if (entry.kind != .runtime) return false;
+    };
     for (deps) |dep| {
         if (dep.resolver) |resolver| {
             if (std.mem.eql(u8, resolver, "link") or std.mem.eql(u8, resolver, "path") or std.mem.eql(u8, resolver, "artifact")) continue;
@@ -5100,4 +5161,11 @@ test "attributed resolve event delivers determinate progress to package row" {
     try std.testing.expect(cell_writer.buffered().len > 0);
     try std.testing.expect(!std.mem.eql(u8, cell_writer.buffered(), "     "));
     try std.testing.expect(!std.mem.eql(u8, cell_writer.buffered(), "⣿⣿⣿⣿⣿"));
+}
+
+test "runtime-only project can replay a fresh lock without dependencies" {
+    const runtime = moonstone.domain.lockfile.LockEntry{ .name = "moonstone/lua", .kind = .runtime };
+    const library = moonstone.domain.lockfile.LockEntry{ .name = "stale-library", .kind = .lib };
+    try std.testing.expect(lockedEntriesDependenciesMatch(&.{}, &.{&runtime}));
+    try std.testing.expect(!lockedEntriesDependenciesMatch(&.{}, &.{ &runtime, &library }));
 }

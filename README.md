@@ -41,6 +41,12 @@ moon env
 `moon remove --global RUNTIME@VERSION` removes an unused installed runtime.
 It refuses removal while a known project or the global selection references it.
 
+Declared workspace children use the same commands: `moon --orbit NAME sync`,
+`moon --orbit NAME exec -- lua main.lua`, or `moon sync --all` for the root and
+its direct children. See [command workflows](docs/CLI_WORKFLOWS.md) for selection,
+links, store inspection, and installation lifecycle. This development branch's
+[next-release changes](docs/releases/next.md) are not yet in the 0.7.0 binary.
+
 ## Operational model
 
 - `moonstone.toml` is the project manifest. It declares metadata, the selected

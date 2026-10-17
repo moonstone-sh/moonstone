@@ -19,7 +19,7 @@ pub const ReleaseSelection = union(enum) {
     }
 };
 
-pub const SelfInstallCommand = struct {
+const Installer = struct {
     pub const name = "install";
     pub const description = "Install or update a Moonstone CLI release";
 
@@ -28,22 +28,7 @@ pub const SelfInstallCommand = struct {
     apply: bool = false,
     json: bool = false,
 
-    pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print(
-            \\Usage: moon self install (--version <version> | --latest) [--apply] [flags]
-            \\
-            \\Install or update a Moonstone CLI release.
-            \\
-            \\Flags:
-            \\  --apply        Download and run the installer immediately
-            \\  -v, --version  Install an exact Moonstone release
-            \\  --latest       Install the latest published Moonstone release
-            \\  --json         Output result as JSON
-            \\
-        , .{});
-    }
-
-    pub fn releaseSelection(self: SelfInstallCommand) !ReleaseSelection {
+    pub fn releaseSelection(self: Installer) !ReleaseSelection {
         if (self.version != null and self.latest) {
             return error.ConflictingReleaseSelection;
         }
@@ -57,7 +42,7 @@ pub const SelfInstallCommand = struct {
         return error.MissingReleaseSelection;
     }
 
-    pub fn run(self: SelfInstallCommand, ctx: *router.Context) !void {
+    pub fn run(self: Installer, ctx: *router.Context) !void {
         const selection = try self.releaseSelection();
 
         try ensureSelfManaged(ctx, self.json);
@@ -67,6 +52,40 @@ pub const SelfInstallCommand = struct {
         }
 
         return applyInstaller(ctx, build_options.default_installer_url, selection, self.json);
+    }
+};
+
+fn eventName(selection: ReleaseSelection) []const u8 {
+    return switch (selection) {
+        .latest => "self-update",
+        .exact => "self-install",
+    };
+}
+
+pub const SelfInstallCommand = struct {
+    pub const name = "install";
+    pub const description = "Install an exact Moonstone CLI release";
+    version: ?[]const u8 = null,
+    apply: bool = false,
+    json: bool = false,
+    pub fn printHelp(stdout: *std.Io.Writer) !void {
+        try stdout.writeAll("Usage: moon self install --version VERSION [--apply] [--json]\n\nPrint the installation command, or download and run it with --apply.\nFor the latest release, use moon self update. Package-manager installs must\nbe updated through their package manager.\n");
+    }
+    pub fn run(self: SelfInstallCommand, ctx: *router.Context) !void {
+        return (Installer{ .version = self.version, .apply = self.apply, .json = self.json }).run(ctx);
+    }
+};
+
+pub const SelfUpdateCommand = struct {
+    pub const name = "update";
+    pub const description = "Update Moonstone through its installation channel";
+    apply: bool = false,
+    json: bool = false,
+    pub fn printHelp(stdout: *std.Io.Writer) !void {
+        try stdout.writeAll("Usage: moon self update [--apply] [--json]\n\nPrint the latest-release installation command; --apply runs it.\nExternally managed installations must use their package manager.\n");
+    }
+    pub fn run(self: SelfUpdateCommand, ctx: *router.Context) !void {
+        return (Installer{ .latest = true, .apply = self.apply, .json = self.json }).run(ctx);
     }
 };
 
@@ -100,8 +119,8 @@ fn printInstallerCommand(ctx: *router.Context, installer_url: []const u8, select
         };
         defer ctx.allocator.free(command_str);
 
-        var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, SelfInstallCommand.name);
-        try emitter.terminate(ctx.io, SelfInstallCommand.name, "ok", .{
+        var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, eventName(selection));
+        try emitter.terminate(ctx.io, eventName(selection), "ok", .{
             .installer_url = installer_url,
             .bootstrap_command = command_str,
             .apply = false,
@@ -134,8 +153,8 @@ fn applyPosixInstaller(ctx: *router.Context, installer_url: []const u8, selectio
     const io = ctx.io;
 
     if (is_json) {
-        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, SelfInstallCommand.name);
-        try emitter.emit(io, .INFO, SelfInstallCommand.name, "downloading installer script", .{ .url = installer_url });
+        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, eventName(selection));
+        try emitter.emit(io, .INFO, eventName(selection), "downloading installer script", .{ .url = installer_url });
     } else {
         try ctx.stdout.print("Downloading installer script from {s}...\n", .{installer_url});
         try ctx.stdout.flush();
@@ -166,8 +185,8 @@ fn applyPosixInstaller(ctx: *router.Context, installer_url: []const u8, selectio
     try selection.appendInstallerArgs(&argv, allocator);
 
     if (is_json) {
-        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, SelfInstallCommand.name);
-        try emitter.emit(io, .INFO, SelfInstallCommand.name, "executing installer script", .{ .installer_url = installer_url });
+        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, eventName(selection));
+        try emitter.emit(io, .INFO, eventName(selection), "executing installer script", .{ .installer_url = installer_url });
     } else {
         try ctx.stdout.print("Executing Moonstone installer...\n", .{});
         try ctx.stdout.flush();
@@ -220,8 +239,8 @@ fn applyPosixInstaller(ctx: *router.Context, installer_url: []const u8, selectio
     }
 
     if (is_json) {
-        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, SelfInstallCommand.name);
-        try emitter.terminate(io, SelfInstallCommand.name, "ok", .{
+        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, eventName(selection));
+        try emitter.terminate(io, eventName(selection), "ok", .{
             .installer_url = installer_url,
             .apply = true,
         });
@@ -229,21 +248,21 @@ fn applyPosixInstaller(ctx: *router.Context, installer_url: []const u8, selectio
 }
 
 test "releaseSelection validation" {
-    const cmd1 = SelfInstallCommand{ .latest = true };
+    const cmd1 = Installer{ .latest = true };
     const sel1 = try cmd1.releaseSelection();
     try std.testing.expect(sel1 == .latest);
 
-    const cmd2 = SelfInstallCommand{ .version = "0.3.24" };
+    const cmd2 = Installer{ .version = "0.3.24" };
     const sel2 = try cmd2.releaseSelection();
     switch (sel2) {
         .exact => |v| try std.testing.expectEqualStrings("0.3.24", v),
         .latest => return error.TestUnexpectedResult,
     }
 
-    const cmd3 = SelfInstallCommand{};
+    const cmd3 = Installer{};
     try std.testing.expectError(error.MissingReleaseSelection, cmd3.releaseSelection());
 
-    const cmd4 = SelfInstallCommand{ .latest = true, .version = "0.3.24" };
+    const cmd4 = Installer{ .latest = true, .version = "0.3.24" };
     try std.testing.expectError(error.ConflictingReleaseSelection, cmd4.releaseSelection());
 }
 

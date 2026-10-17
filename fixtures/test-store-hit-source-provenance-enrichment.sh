@@ -76,12 +76,12 @@ MANIFEST
 echo ""
 echo "--- BEFORE enrichment ---"
 
-BEFORE_QUERY=$("$MOON_BIN" store query --by-package moonstone/lua --json 2>/dev/null)
-BEFORE_SOURCE_KIND=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_kind',''))")
-BEFORE_SOURCE_PAYLOAD=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_payload',''))")
-BEFORE_ARTIFACT_HASH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['artifact_hash'])")
-BEFORE_RECIPE_HASH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['recipe_hash'])")
-BEFORE_SOURCE_PAYLOAD_PATH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_payload_path','') or '')")
+BEFORE_QUERY=$("$MOON_BIN" store list --by-package moonstone/lua --json 2>/dev/null)
+BEFORE_SOURCE_KIND=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_kind',''))")
+BEFORE_SOURCE_PAYLOAD=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_payload',''))")
+BEFORE_ARTIFACT_HASH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0]['artifact_hash'])")
+BEFORE_RECIPE_HASH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0]['recipe_hash'])")
+BEFORE_SOURCE_PAYLOAD_PATH=$(echo "$BEFORE_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_payload_path','') or '')")
 
 echo "  source_kind: $BEFORE_SOURCE_KIND"
 echo "  source_payload: $BEFORE_SOURCE_PAYLOAD"
@@ -136,14 +136,14 @@ MANIFEST
 echo ""
 echo "--- AFTER enrichment ---"
 
-AFTER_QUERY=$("$MOON_BIN" store query --by-package moonstone/lua --json 2>/dev/null)
-AFTER_SOURCE_KIND=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_kind',''))")
-AFTER_SOURCE_PAYLOAD=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_payload',''))")
-AFTER_SOURCE_URL=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_url','') or '')")
-AFTER_ARTIFACT_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['artifact_hash'])")
-AFTER_RECIPE_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['recipe_hash'])")
-AFTER_SOURCE_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['source_hash'])")
-AFTER_SOURCE_PAYLOAD_PATH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('source_payload_path','') or '')")
+AFTER_QUERY=$("$MOON_BIN" store list --by-package moonstone/lua --json 2>/dev/null)
+AFTER_SOURCE_KIND=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_kind',''))")
+AFTER_SOURCE_PAYLOAD=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_payload',''))")
+AFTER_SOURCE_URL=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_url','') or '')")
+AFTER_ARTIFACT_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0]['artifact_hash'])")
+AFTER_RECIPE_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0]['recipe_hash'])")
+AFTER_SOURCE_HASH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0]['source_hash'])")
+AFTER_SOURCE_PAYLOAD_PATH=$(echo "$AFTER_QUERY" | python3 -c "import json,sys; d=[r['data'] for r in map(json.loads,sys.stdin) if r['kind']=='STATUS']; print(d[0].get('source_payload_path','') or '')")
 
 echo "  source_kind: $AFTER_SOURCE_KIND"
 echo "  source_payload: $AFTER_SOURCE_PAYLOAD"

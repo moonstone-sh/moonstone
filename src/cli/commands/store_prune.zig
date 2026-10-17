@@ -7,6 +7,7 @@ pub const StorePruneCommand = struct {
     pub const description = "Prune unreferenced store artifacts";
 
     dry_run: bool = false,
+    compact: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
         try stdout.print(
@@ -16,12 +17,17 @@ pub const StorePruneCommand = struct {
             \\by any local project's moonstone.lock.
             \\
             \\Flags:
+            \\  --compact     Reclaim index space after pruning
             \\  --dry-run     Show what would be deleted without actually deleting
             \\
         , .{});
     }
 
     pub fn run(self: StorePruneCommand, ctx: *router.Context) !void {
+        return self.runSelected(ctx, null, false);
+    }
+
+    pub fn runSelected(self: StorePruneCommand, ctx: *router.Context, selected_hash: ?[]const u8, quiet: bool) !void {
         const allocator = ctx.allocator;
         const io = ctx.io;
         const stdout = ctx.stdout;
@@ -97,17 +103,19 @@ pub const StorePruneCommand = struct {
                     is_valid = false;
                 }
 
-                if (!is_valid) {
+                if (!is_valid and selected_hash == null) {
                     if (self.dry_run) {
-                        try stdout.print("Would unregister stale link: {s} -> {s}\n", .{ link.name, link.path });
+                        if (!quiet) try stdout.print("Would unregister stale link: {s} -> {s}\n", .{ link.name, link.path });
                     } else {
                         try lr.unregister(link.name);
-                        try stdout.print("Unregistered stale link: {s}\n", .{link.name});
+                        if (!quiet) try stdout.print("Unregistered stale link: {s}\n", .{link.name});
                     }
                 } else {
-                    // Valid links keep their artifacts (if any) reachable
-                    // Note: link entries in the 'artifacts' table use 'link' as artifact_hash,
-                    // which is already filtered out in the scan candidates step by checking b3/ directory.
+                    if (link.mode == .artifact) {
+                        if (try ownedArtifactHash(allocator, io, paths.store, link.path)) |hash| {
+                            if (!reachable.contains(hash)) try reachable.put(hash, {}) else allocator.free(hash);
+                        }
+                    }
                 }
             }
         }
@@ -136,10 +144,34 @@ pub const StorePruneCommand = struct {
                 const lock_path = try std.fs.path.join(allocator, &.{ proj_root, "moonstone.lock" });
                 defer allocator.free(lock_path);
 
-                const lock_content = std.Io.Dir.cwd().readFileAlloc(io, lock_path, allocator, std.Io.Limit.limited(50 * 1024 * 1024)) catch continue;
+                const env_path = try std.fs.path.join(allocator, &.{ proj_root, ".moonstone/env/env.toml" });
+                defer allocator.free(env_path);
+                const env_content = std.Io.Dir.cwd().readFileAlloc(io, env_path, allocator, std.Io.Limit.limited(50 * 1024 * 1024)) catch |err| switch (err) {
+                    error.FileNotFound => null,
+                    else => return err,
+                };
+                if (env_content) |content| {
+                    defer allocator.free(content);
+                    var offset: usize = 0;
+                    while (std.mem.indexOfPos(u8, content, offset, "b3:")) |start| {
+                        offset = start + 3;
+                        if (content.len - start < 67) continue;
+                        const hash = content[start..][0..67];
+                        var valid = true;
+                        for (hash[3..]) |ch| if (!std.ascii.isHex(ch)) {
+                            valid = false;
+                            break;
+                        };
+                        if (valid and !reachable.contains(hash)) try reachable.put(try allocator.dupe(u8, hash), {});
+                    }
+                }
+                const lock_content = std.Io.Dir.cwd().readFileAlloc(io, lock_path, allocator, std.Io.Limit.limited(50 * 1024 * 1024)) catch |err| switch (err) {
+                    error.FileNotFound => continue,
+                    else => return err,
+                };
                 defer allocator.free(lock_content);
 
-                var lf = moonstone.domain.lockfile.LockFile.parse(allocator, lock_content) catch continue;
+                var lf = moonstone.domain.lockfile.LockFile.parse(allocator, lock_content) catch return error.InvalidProjectLockfile;
                 defer lf.deinit();
 
                 for (lf.packages.items) |pkg| {
@@ -182,10 +214,9 @@ pub const StorePruneCommand = struct {
                     var art_it = h2h3_dir.iterate();
                     while (try art_it.next(io)) |art_entry| {
                         if (art_entry.kind != .directory) continue;
-                        var parts = std.mem.splitScalar(u8, art_entry.name, '-');
-                        const hash_part = parts.first();
-                        const full_hash = try std.fmt.allocPrint(allocator, "b3:{s}", .{hash_part});
-                        try candidates.append(allocator, full_hash);
+                        const candidate_path = try std.fs.path.join(allocator, &.{ h2h3_path, art_entry.name });
+                        defer allocator.free(candidate_path);
+                        if (try ownedArtifactHash(allocator, io, paths.store, candidate_path)) |hash| try candidates.append(allocator, hash);
                     }
                 }
             }
@@ -195,6 +226,7 @@ pub const StorePruneCommand = struct {
         var freed_bytes: usize = 0;
 
         for (candidates.items) |hash| {
+            if (selected_hash) |selected| if (!std.mem.eql(u8, selected, hash)) continue;
             if (reachable.contains(hash)) continue;
 
             const art_hash = hash[3..];
@@ -223,19 +255,24 @@ pub const StorePruneCommand = struct {
                     freed_bytes += size;
 
                     if (self.dry_run) {
-                        try stdout.print("Would GC: {s} ({d} bytes)\n", .{ hash, size });
+                        if (!quiet) try stdout.print("Would GC: {s} ({d} bytes)\n", .{ hash, size });
                     } else {
-                        try stdout.print("GC: {s} ({d} bytes)\n", .{ hash, size });
+                        if (!quiet) try stdout.print("GC: {s} ({d} bytes)\n", .{ hash, size });
                     }
                     break;
                 }
             }
         }
 
+        if (self.compact and !self.dry_run) {
+            const sql_c = moonstone.store.driver.c;
+            if (sql_c.sqlite3_exec(idx.db, "VACUUM;", null, null, null) != sql_c.SQLITE_OK) return error.SQLiteExecError;
+            if (!quiet) try stdout.print("Index compacted.\n", .{});
+        }
         if (self.dry_run) {
-            try stdout.print("Would delete {d} artifact(s), freeing {d} bytes\n", .{ deleted, freed_bytes });
+            if (!quiet) try stdout.print("Would delete {d} artifact(s), freeing {d} bytes\n", .{ deleted, freed_bytes });
         } else {
-            try stdout.print("Deleted {d} artifact(s), freed {d} bytes\n", .{ deleted, freed_bytes });
+            if (!quiet) try stdout.print("Deleted {d} artifact(s), freed {d} bytes\n", .{ deleted, freed_bytes });
         }
     }
 };
@@ -258,4 +295,37 @@ fn calculateDirSize(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
         }
     }
     return size;
+}
+
+// Only canonical CAS materializations may be reclaimed. Never infer ownership
+// from a registration name or follow an external source directory.
+pub fn ownedArtifactHash(allocator: std.mem.Allocator, io: std.Io, store: []const u8, path: []const u8) !?[]const u8 {
+    const root = std.Io.Dir.cwd().realPathFileAlloc(io, store, allocator) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(root);
+    const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(canonical);
+    const relative = try std.fs.path.relative(allocator, root, null, root, canonical);
+    defer allocator.free(relative);
+    var parts = std.mem.tokenizeAny(u8, relative, "/\\");
+    if (!std.mem.eql(u8, parts.next() orelse return null, "b3")) return null;
+    const first = parts.next() orelse return null;
+    const second = parts.next() orelse return null;
+    const leaf = parts.next() orelse return null;
+    if (leaf.len < 64) return null;
+    if (parts.next() != null) {
+        const manifest = try std.fs.path.join(allocator, &.{ canonical, "manifest.toml" });
+        defer allocator.free(manifest);
+        std.Io.Dir.cwd().access(io, manifest, .{}) catch return null;
+    }
+    const hash = leaf[0..64];
+    for (hash) |ch| if (!std.ascii.isHex(ch)) return null;
+    if (!std.mem.eql(u8, first, hash[0..2]) or !std.mem.eql(u8, second, hash[2..4])) return null;
+    if (leaf.len > 64 and leaf[64] != '-') return null;
+    return try std.fmt.allocPrint(allocator, "b3:{s}", .{hash});
 }

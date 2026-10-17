@@ -67,8 +67,8 @@ cd "${WORKDIR}"
 # forwarded; only "--" tokens AFTER that boundary are forwarded verbatim
 # (see tests/e2e/commands/exec_semantics.sh for the full rationale) — these
 # orbit variants share the same router.zig parsing as `exec`.
-"${MOON_BIN}" orbit run child -- args first "two words" | grep -Fx 'RUN[first][two words]'
-"${MOON_BIN}" orbit exec child -- tool first "two words" | grep -Fx 'EXEC[first][two words]'
-"${MOON_BIN}" orbit exec child -- tool -- -- | grep -Fx 'EXEC[--][--]'
+"${MOON_BIN}" --orbit child run args first "two words" | grep -Fx 'RUN[first][two words]'
+"${MOON_BIN}" --orbit child exec -- tool first "two words" | grep -Fx 'EXEC[first][two words]'
+"${MOON_BIN}" --orbit child exec -- tool -- -- | grep -Fx 'EXEC[--][--]'
 
 echo "━━━ ✓ orbit delimiter semantics passed ━━━"

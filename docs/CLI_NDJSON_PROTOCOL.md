@@ -635,3 +635,16 @@ A compliant wrapper should accept **any** of the above. `terminator: true` is th
 | `MOONSTONE_JSON` | Force `--json` behavior even if flag not passed. |
 | `MOONSTONE_QUIET` | Suppress human output; implies structured output. |
 | `MOONSTONE_PROGRESS_FD` | File descriptor for raw progress (unused in bloated protocol; everything is NDJSON). |
+
+## Consolidated listing and workspace commands (development branch)
+
+`store list --json` emits `moonstone:cli-events:v1` envelopes: START, one STATUS
+per artifact, and one terminal RESULT with `data.count`. STATUS data includes
+package identity, all recorded hashes, provenance and payload paths, and
+warnings. `--links --json` emits the same envelope for registered links. Consumers
+must read NDJSON records rather than parse the whole stream as one JSON array.
+
+`sync --all --json` shares an emitter across the root and direct members.
+`project.begin` INFO identifies the selected project; member completion is a
+STATUS. A successful invocation ends with one `workspace.complete` RESULT.
+A failed invocation does not emit workspace success; completed projects remain.

@@ -114,6 +114,8 @@ check "only-in-moon-env" moon exec -- only-in-moon-env
 
 # Past the command name: delegates to docker's own completion, words shifted.
 check "run build" moon exec -- docker ""
+check "run build" moon -C "$WORKDIR" exec -- docker ""
+check "run build" moon --orbit child exec -- docker ""
 check "--rm --name" moon exec -- docker run ""
 
 # Moon's own words are unaffected.

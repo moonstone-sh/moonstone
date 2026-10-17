@@ -86,6 +86,58 @@ fi
 if "$MOON" remove --global luajit@2.1.0-beta3 --json > "$WORK/profile-blocked.jsonl"; then
     echo 'Removed a runtime retained by a lock profile' >&2; exit 1
 fi
+# Root-first workspace sync; each child remains an independent project.
+"$MOON" init child --name workspace-child --interpreter lua@5.4.123 --no-sync --no-git >/dev/null
+"$MOON" orbit add --name child --path child >/dev/null
+"$MOON" sync --all --offline --json > "$WORK/workspace.log" 2>&1 || { cat "$WORK/workspace.log"; exit 1; }
+test -f child/moonstone.lock
+python3 - "$WORK/workspace.log" <<'PY_WORKSPACE'
+import json,sys
+rows=[json.loads(line) for line in open(sys.argv[1])]
+assert sum(r['terminator'] for r in rows)==1
+assert rows[-1]['value']=='workspace.complete'
+assert [r['seq'] for r in rows]==list(range(1,len(rows)+1))
+assert [r['data'].get('orbit') for r in rows if r['value']=='project.begin']==[None,'child']
+PY_WORKSPACE
+"$MOON" -C "$WORK/project" --orbit child exec -- lua > "$WORK/orbit-exec"
+grep -q 'lua 5.4.123' "$WORK/orbit-exec"
+if "$MOON" --orbit child sync --all > /dev/null 2>&1; then echo 'Conflicting workspace selection accepted' >&2; exit 1; fi
+"$MOON" completions --complete "moon --orbit " | grep -Fx child
+# Link registration and dependency removal never delete the source project.
+"$MOON" -C child link >/dev/null
+"$MOON" add link:workspace-child --no-sync >/dev/null
+"$MOON" remove workspace-child --no-sync >/dev/null
+if "$MOON" remove --global link:workspace-child link:missing > /dev/null 2>&1; then exit 1; fi
+"$MOON" store list --links --json > "$WORK/links.jsonl"
+grep -q workspace-child "$WORK/links.jsonl"
+"$MOON" remove --global link:workspace-child --json > "$WORK/unlink.jsonl"
+test -f child/moonstone.toml
+# Exact selectors and fuzzy search share provenance-rich NDJSON output.
+"$MOON" store list --query moonstone/lua --kind runtime --json > "$WORK/list.jsonl"
+python3 - "$WORK/list.jsonl" <<'PY_LIST'
+import sys,json
+rows=[json.loads(line) for line in open(sys.argv[1])]
+assert rows[0]['kind']=='START' and rows[-1]['terminator']
+artifacts=[r['data'] for r in rows if r['kind']=='STATUS']
+assert artifacts and all('source_hash' in r and 'warnings' in r for r in artifacts)
+assert rows[-1]['data']['count']==len(artifacts)
+PY_LIST
+"$MOON" store prune --compact --dry-run > "$WORK/compact-plan"
+if grep -q 'Index compacted' "$WORK/compact-plan"; then exit 1; fi
+"$MOON" store prune --compact > "$WORK/compact"
+grep -q 'Index compacted' "$WORK/compact"
+for legacy in 'store query' 'index vacuum' 'orbit sync' 'orbit exec' 'orbit run'; do
+    if "$MOON" $legacy > /dev/null 2>&1; then echo "Legacy command still public: $legacy" >&2; exit 1; fi
+done
+# Failure in a member stops before later members; --locked reaches children.
+"$MOON" init blocked --name blocked-child --interpreter lua@5.4.123 --no-sync --no-git >/dev/null
+"$MOON" init later --name later-child --interpreter lua@5.4.123 --no-sync --no-git >/dev/null
+"$MOON" orbit add --name blocked --path blocked >/dev/null
+"$MOON" orbit add --name later --path later >/dev/null
+"$MOON" sync --offline > "$WORK/root-refresh.log" 2>&1
+if "$MOON" sync --all --locked --offline > "$WORK/fail-fast.log" 2>&1; then echo 'Missing member lock ignored' >&2; exit 1; fi
+grep -q "orbit 'blocked'" "$WORK/fail-fast.log"
+test ! -f later/moonstone.lock
 # Dispose of the complete fixture project; there are now no project references.
 cd "$WORK"
 rm -rf "$WORK/project"
