@@ -81,7 +81,12 @@ fn safeDirectory(ctx: *router.Context, path: []const u8) !void {
     defer ctx.allocator.free(absolute);
     const parent = std.fs.path.dirname(absolute) orelse return error.UnsafeUninstallPath;
     if (std.fs.path.dirname(parent) == null or std.mem.eql(u8, absolute, parent)) return error.UnsafeUninstallPath;
-    if (ctx.env.get("HOME") orelse ctx.env.get("USERPROFILE")) |home| if (std.mem.eql(u8, home, absolute)) return error.UnsafeUninstallPath;
+    if (ctx.env.get("HOME") orelse ctx.env.get("USERPROFILE")) |home| {
+        const canonical_home = std.Io.Dir.cwd().realPathFileAlloc(ctx.io, home, ctx.allocator) catch try std.fs.path.resolve(ctx.allocator, &.{home});
+        defer ctx.allocator.free(canonical_home);
+        const is_home = if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(canonical_home, absolute) else std.mem.eql(u8, canonical_home, absolute);
+        if (is_home) return error.UnsafeUninstallPath;
+    }
     const cwd = try std.process.currentPathAlloc(ctx.io, ctx.allocator);
     defer ctx.allocator.free(cwd);
     const relative = try std.fs.path.relative(ctx.allocator, cwd, null, absolute, cwd);

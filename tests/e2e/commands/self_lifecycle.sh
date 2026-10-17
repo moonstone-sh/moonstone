@@ -41,6 +41,12 @@ echo "━━━ 5. Testing --json output mode across all commands ━━━"
 "$MOON_BIN" cache clean --json | grep '"kind":"RESULT"'
 "$MOON_BIN" store purge --json | grep '"kind":"RESULT"'
 "$MOON_BIN" config reset --json | grep '"kind":"RESULT"'
+# Unsafe configured roots are refused even during preview.
+printf '[paths]\nshims = "/"\n' > "$WORKDIR/unsafe.toml"
+if "$MOON_BIN" --config-file "$WORKDIR/unsafe.toml" self uninstall --dry-run > "$WORKDIR/unsafe.log" 2>&1; then
+    echo 'Uninstall accepted a filesystem root' >&2; exit 1
+fi
+grep -q UnsafeUninstallPath "$WORKDIR/unsafe.log"
 # Uninstall only disposable copies, never the test runner executable.
 mkdir -p "$MOONSTONE_HOME/data/store/v0" "$MOONSTONE_HOME/data/v0/shims"
 printf keep > "$MOONSTONE_HOME/data/store/v0/keep"
