@@ -44,7 +44,8 @@ fn descriptorPath(allocator: std.mem.Allocator, registry: []const u8, name: []co
 }
 
 fn descriptorRelPath(allocator: std.mem.Allocator, name: []const u8, version: []const u8) ![]const u8 {
-    return try std.fs.path.join(allocator, &.{ "packages", name, version, "package.toml" });
+    // Registry descriptor references are portable URLs, not host paths.
+    return try std.fmt.allocPrint(allocator, "packages/{s}/{s}/package.toml", .{ name, version });
 }
 
 fn packageKindString(kind: moonstone.domain.manifest.Kind) []const u8 {
@@ -809,4 +810,10 @@ test "registry authoring suite" {
         .positionals = &.{"myreg:testpkg@1.0.0"},
     };
     try add_cmd.run(&ctx);
+}
+
+test "registry descriptor references use portable separators" {
+    const path = try descriptorRelPath(std.testing.allocator, "moonstone/lua", "5.4.123");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("packages/moonstone/lua/5.4.123/package.toml", path);
 }
