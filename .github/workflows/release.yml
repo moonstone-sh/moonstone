@@ -78,7 +78,7 @@ jobs:
     uses: ./.github/workflows/native-lifecycle.yml
 
   build-and-release:
-    name: Build & Publish GitHub Release
+    name: Build Candidate Release
     needs: [verify-release, windows-cancellation, native-lifecycle]
     runs-on: ubuntu-latest
     outputs:
@@ -141,17 +141,69 @@ jobs:
           echo "freebsd_arm=$(hash_for "moon-v${VERSION}-aarch64-freebsd.tar.gz")" >> $GITHUB_OUTPUT
           echo "freebsd_intel=$(hash_for "moon-v${VERSION}-x86_64-freebsd.tar.gz")" >> $GITHUB_OUTPUT
 
+      - name: Stage candidate archives for native certification
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidates
+          path: dist/releases/${{ env.VERSION }}/*
+          retention-days: 3
+
+  verify-native-archives:
+    name: Verify Candidate Archive
+    needs: build-and-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-windows-gnu
+          - os: macos-15
+            target: aarch64-macos
+          - os: macos-15-intel
+            target: x86_64-macos
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-linux-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidates
+          path: candidate-release
+      - run: python scripts/release/verify-native-archive.py candidate-release ${{ matrix.target }}
+
+  publish-release:
+    name: Publish Certified Release
+    needs: [build-and-release, verify-native-archives]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidates
+          path: candidate-release
+      - name: Extract version from tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/releases/${{ env.VERSION }}/*
+          files: candidate-release/*
           body_path: docs/releases/${{ env.VERSION }}.md
           overwrite_files: true
           make_latest: true
 
   homebrew-publish:
     name: Update Homebrew Formula
-    needs: build-and-release
+    needs: [build-and-release, publish-release]
     runs-on: ubuntu-latest
     env:
       MAC_ARM: ${{ needs.build-and-release.outputs.mac_arm }}
@@ -249,7 +301,7 @@ jobs:
 
   docker-publish:
     name: Build & Publish Docker Images
-    needs: build-and-release
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

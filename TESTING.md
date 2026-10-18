@@ -173,3 +173,10 @@ cursor visibility and absence of a partial lockfile. Redirected-stream checks
 remain separate so ConPTY's own terminal protocol cannot mask ANSI leakage.
 `tests/platform/packaged_lifecycle.py` uses the release archiver, extracts the
 native binary, and runs the shared public-command fixture from that archive.
+
+Tagged releases additionally stage the **actual candidate archives** as private
+workflow artifacts. Windows x64, both macOS architectures, and Linux x64
+GNU/musl runners verify each archive's SHA-256 and version/build label, extract
+it, and execute the shared lifecycle scenario. GitHub release publication,
+Homebrew updates and Docker publication wait for these archive checks. Failed
+certification leaves the public release untouched.
