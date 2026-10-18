@@ -116,7 +116,8 @@ priority = 1
             release.set(); server.shutdown(); server.server_close()
         text = transcript.decode('utf-8', errors='replace')
         assert not any('\u2800' <= char <= '\u28ff' for char in text), text
-        assert '\x1b[?25h' in text, 'Cursor was not restored after cancellation'
+        assert '\x1b[?25l' in text, ('Progress never entered interactive console mode', text)
+        assert '\x1b[?25h' in text, ('Cursor was not restored after cancellation', text)
         assert not (root / 'moonstone.lock').exists()
         print('ConPTY ASCII, resize and cancellation passed')
 
