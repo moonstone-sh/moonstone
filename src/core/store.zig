@@ -552,14 +552,18 @@ pub fn commit_to_store_with_sources(
 
     const staging_manifest_path = try std.fs.path.join(allocator, &.{ staging_art_path, "manifest.toml" });
     defer allocator.free(staging_manifest_path);
-    const manifest_file = try std.Io.Dir.cwd().createFile(io, staging_manifest_path, .{});
-    defer manifest_file.close(io);
+    {
+        // Close the completed manifest before publishing its parent directory.
+        // Windows denies directory renames while a child file is still open.
+        const manifest_file = try std.Io.Dir.cwd().createFile(io, staging_manifest_path, .{});
+        defer manifest_file.close(io);
 
-    var aw = std.Io.Writer.Allocating.init(allocator);
-    defer aw.deinit();
-    try sm.serialize(allocator, &aw.writer);
-    try aw.writer.flush();
-    try manifest_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+        var aw = std.Io.Writer.Allocating.init(allocator);
+        defer aw.deinit();
+        try sm.serialize(allocator, &aw.writer);
+        try aw.writer.flush();
+        try manifest_file.writeStreamingAll(io, aw.writer.buffer[0..aw.writer.end]);
+    }
 
     // An incomplete directory can only be a prior interrupted publication.
     // Delete it immediately before publishing the complete staging directory.
