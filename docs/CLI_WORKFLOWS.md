@@ -150,7 +150,7 @@ warnings. `--links` lists registrations using the same event envelope.
 
 ```sh
 moon self update                       # preview latest-release installer
-moon self update --apply               # run installer (POSIX)
+moon self update --apply               # run installer; scheduled on Windows
 moon self install --version 0.7.0       # preview exact-release installer
 moon self uninstall --dry-run --json
 moon self uninstall --yes              # executable and shims only
@@ -159,10 +159,40 @@ moon self uninstall --yes --purge-data # also remove listed managed data
 
 Self-managed builds retain their configured installer channel. Externally
 managed builds direct users to their package manager instead of overwriting its
-files. Windows previews its installer command; `--apply` is currently POSIX-only.
+files. Windows previews a PowerShell installer command. With `--apply`, it
+downloads the installer and schedules it after the CLI exits so its executable
+can be replaced. The result is `scheduled`, not a completed installation; the
+reported log records completion or failure. The current installation directory
+and PATH are preserved.
 Uninstall removes the running executable on POSIX; Windows schedules removal
 after the process exits. Store, caches, configuration, and project tracking
 survive by default. `--purge-data` previews and deletes specific managed paths,
 not their parent directories, and refuses home/root/current-project ancestors.
 Project sources and unrelated files are preserved. Deletion is irreversible;
 there is no rollback if a later filesystem operation fails.
+
+
+## Windows shell integration
+
+`moon env --shell powershell` emits literal environment assignments for the
+current project. Consume them in your current PowerShell session when desired:
+
+```powershell
+moon env --shell powershell | Out-String | Invoke-Expression
+```
+
+`moon env --shell cmd` produces a batch-file fragment, not interactive CMD
+syntax. Save it as UTF-8 without a BOM and call it with delayed expansion off
+and code page 65001 when paths contain Unicode. Do not save native output using
+Windows PowerShell 5.1's default UTF-16 redirection. `moon exec -- <command>`
+avoids shell export/encoding concerns by applying the environment to a child.
+
+`moon setup` creates `lua.cmd` and `luac.cmd` on Windows, and executable POSIX
+shims elsewhere. Add the reported shim directory to PATH yourself; Moonstone
+does not modify your shell profile. Both shims delegate to `moon exec`, so the
+current project chooses the runtime.
+
+Windows progress defaults to ASCII. Unicode decorations are opt-in through
+`MOONSTONE_PROGRESS_GLYPHS=unicode`; filenames remain Unicode in either mode.
+See [native certification](../TESTING.md#native-lifecycle-release-gates) for the
+platform checks that block publication and targets without native runners.
