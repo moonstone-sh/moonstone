@@ -1,6 +1,7 @@
 """Run public-command scenarios from a release-format archive, not the build tree."""
 import importlib.util
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -22,6 +23,11 @@ with tempfile.TemporaryDirectory(prefix='moon-packaged-lifecycle-') as tmp:
         assert tar.getnames() == [name]
         tar.extractall(root / 'extracted', filter='data')
     moon = root / 'extracted' / name
+    # Debug Windows builds keep symbols beside the executable, outside the
+    # public archive. Preserve them for actionable unexpected-failure traces.
+    if os.name == 'nt':
+        for symbols in (ROOT / 'zig-out/bin').glob('moon*.pdb'):
+            shutil.copy2(symbols, moon.parent / symbols.name)
     subprocess.run([str(moon), 'version'], check=True)
     subprocess.run([sys.executable, str(ROOT / 'tests/platform/lifecycle.py')],
                    env=dict(os.environ, MOON_BIN=str(moon)), check=True)
