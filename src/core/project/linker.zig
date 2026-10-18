@@ -214,7 +214,7 @@ fn writeLiveLinkScope(
     const env_init_path = try std.fmt.allocPrint(allocator, ".moonstone/env/share/lua/{s}/?/init.lua", .{lua_ver_dot});
     defer allocator.free(env_init_path);
 
-    try aw.writer.print("lua_path = [\"{s}\", \"{s}\", \"{s}\", \"{s}\"]\n", .{ src_lua_path, src_init_path, env_lua_path, env_init_path });
+    try writeTomlPathList(&aw.writer, "lua_path", &.{ src_lua_path, src_init_path, env_lua_path, env_init_path });
     try aw.writer.flush();
 
     const file = try scope_dir.createFile(io, "env.toml", .{});
@@ -481,7 +481,7 @@ fn writeScopedPathPrepend(writer: *std.Io.Writer, paths: []const []const u8) !vo
     while (index > 0) {
         index -= 1;
         if (index != paths.len - 1) try writer.print(", ", .{});
-        try writer.print("\"{s}\"", .{paths[index]});
+        try writeTomlString(writer, paths[index]);
     }
     try writer.print("]\n", .{});
 }
@@ -490,7 +490,7 @@ fn writeTomlPathList(writer: *std.Io.Writer, key: []const u8, paths: []const []c
     try writer.print("{s} = [", .{key});
     for (paths, 0..) |path, path_index| {
         if (path_index > 0) try writer.print(", ", .{});
-        try writer.print("\"{s}\"", .{path});
+        try writeTomlString(writer, path);
     }
     try writer.print("]\n", .{});
 }
@@ -2934,4 +2934,21 @@ test "native module projection ignores source-library suffixes" {
     try std.testing.expectEqualStrings("synthetic_make_module", luaCmoduleLogicalName("synthetic_make_module.so"));
     try std.testing.expectEqualStrings("platform.core", luaCmoduleLogicalName("platform.core.dylib"));
     try std.testing.expectEqualStrings("platform.core", luaCmoduleLogicalName("platform.core.dll"));
+}
+
+test "binary scope path lists round trip Windows paths through TOML" {
+    const toml = @import("toml");
+    const paths = [_][]const u8{ "C:\\Users\\Lua ü\\bin", "C:\\source\\\"quoted\"" };
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    try writeScopedPathPrepend(&output.writer, &paths);
+    try writeTomlPathList(&output.writer, "lua_path", &paths);
+    var parser = toml.Parser(toml.Table).init(std.testing.allocator);
+    defer parser.deinit();
+    var parsed = try parser.parseString(output.writer.buffered());
+    defer parsed.deinit();
+    for (paths, 0..) |path, i| {
+        try std.testing.expectEqualStrings(path, parsed.value.get("lua_path").?.array.items[i].string);
+        try std.testing.expectEqualStrings(path, parsed.value.get("path_prepend").?.array.items[paths.len - 1 - i].string);
+    }
 }
