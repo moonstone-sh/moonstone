@@ -1665,7 +1665,7 @@ pub const ProgressUi = struct {
         }
         if (overflow > 0) {
             written += 1;
-            self.renderTaskLine(written == lines, "... {d} more tasks queued", .{overflow});
+            self.renderTaskLine(written == lines, "{s} {d} more tasks queued", .{ if (self.glyph_mode == .ascii) "..." else "…", overflow });
         }
         if (self.completed_tasks > 0) {
             written += 1;
@@ -1923,7 +1923,7 @@ pub const ProgressUi = struct {
         }
         if (overflow > 0) {
             written += 1;
-            self.renderTaskLine(written == lines, "... {d} more packages", .{overflow});
+            self.renderTaskLine(written == lines, "{s} {d} more packages", .{ if (self.glyph_mode == .ascii) "..." else "…", overflow });
         }
         if (summary_lines > 0) {
             written += 1;

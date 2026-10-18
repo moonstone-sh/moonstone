@@ -165,3 +165,11 @@ Windows `moon self update --apply` and `moon self install --version VERSION
 Their terminal JSON status is `scheduled`, with a log path; inspect that log for
 completion or failure. They preserve the executable's installation directory
 and do not change PATH. A scheduled result is not a completed update.
+
+The native Windows gate also runs `tests/windows/terminal.py` in ConPTY. It
+resizes a live fancy-progress console, sends keyboard Ctrl-C during a stalled
+registry request, and checks bounded cancellation, ASCII decorations, restored
+cursor visibility and absence of a partial lockfile. Redirected-stream checks
+remain separate so ConPTY's own terminal protocol cannot mask ANSI leakage.
+`tests/platform/packaged_lifecycle.py` uses the release archiver, extracts the
+native binary, and runs the shared public-command fixture from that archive.
