@@ -51,10 +51,23 @@ pub const EnvCommand = struct {
         key: []const u8,
         value: []const u8,
     ) !void {
-        switch (syntax) {
-            .posix => try writer.print("export {s}=\"{s}\"\n", .{ key, value }),
-            .fish => try writer.print("set -gx {s} \"{s}\"\n", .{ key, value }),
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.UnrepresentableShellValue;
+        if (syntax == .posix) try writer.print("export {s}=", .{key}) else try writer.print("set -gx {s} ", .{key});
+        try writeLiteral(writer, syntax, value);
+        try writer.writeByte('\n');
+    }
+
+    fn writeLiteral(writer: *std.Io.Writer, syntax: ShellSyntax, value: []const u8) !void {
+        try writer.writeByte(39);
+        for (value) |c| {
+            if (c == 39) {
+                try writer.writeAll(if (syntax == .posix) "'\\''" else "\\'");
+            } else {
+                if (syntax == .fish and c == '\\') try writer.writeByte('\\');
+                try writer.writeByte(c);
+            }
         }
+        try writer.writeByte(39);
     }
 
     /// CMD output is a batch-file fragment. Delayed expansion must be disabled
@@ -88,52 +101,25 @@ pub const EnvCommand = struct {
         project_root: []const u8,
         syntax: ShellSyntax,
     ) ![]const u8 {
-        var result = try allocator.dupe(u8, template);
-        errdefer allocator.free(result);
-
-        var native_library_export = std.Io.Writer.Allocating.init(allocator);
-        defer native_library_export.deinit();
-        if (run_env.native_lib_path) |native_lib_path| {
+        _ = template;
+        var output = std.Io.Writer.Allocating.init(allocator);
+        defer output.deinit();
+        const writer = &output.writer;
+        try writer.writeAll(if (syntax == .posix) "export PATH=" else "set -gx PATH ");
+        try writeLiteral(writer, syntax, run_env.bin_path);
+        try writer.writeAll(if (syntax == .posix) ":\"$PATH\"\n" else " $PATH\n");
+        try writeShellAssignment(writer, syntax, "LUA_PATH", run_env.lua_path);
+        try writeShellAssignment(writer, syntax, "LUA_CPATH", run_env.lua_cpath);
+        if (run_env.native_lib_path) |path| {
             if (moonstone.project.environment.nativeLibraryEnvironmentVariable()) |key| {
-                switch (syntax) {
-                    .posix => try native_library_export.writer.print(
-                        "export {s}=\"{s}:${{{s}:-}}\"\n",
-                        .{ key, native_lib_path, key },
-                    ),
-                    .fish => try native_library_export.writer.print(
-                        "set -gx {s} \"{s}\" ${s}\n",
-                        .{ key, native_lib_path, key },
-                    ),
-                }
+                if (syntax == .posix) try writer.print("export {s}=", .{key}) else try writer.print("set -gx {s} ", .{key});
+                try writeLiteral(writer, syntax, path);
+                if (syntax == .posix) try writer.print(":\"${{{s}:-}}\"\n", .{key}) else try writer.print(" ${s}\n", .{key});
             }
         }
-        try native_library_export.writer.flush();
-
-        var package_root_exports = std.Io.Writer.Allocating.init(allocator);
-        defer package_root_exports.deinit();
-        for (run_env.package_roots) |entry| {
-            try writeShellAssignment(&package_root_exports.writer, syntax, entry.key, entry.root);
-        }
-        try package_root_exports.writer.flush();
-
-        const replacements = [_]struct { key: []const u8, value: []const u8 }{
-            .{ .key = "{{bin_path}}", .value = run_env.bin_path },
-            .{ .key = "{{lua_path}}", .value = run_env.lua_path },
-            .{ .key = "{{lua_cpath}}", .value = run_env.lua_cpath },
-            .{ .key = "{{native_library_export}}", .value = native_library_export.writer.buffer[0..native_library_export.writer.end] },
-            .{ .key = "{{package_root_exports}}", .value = package_root_exports.writer.buffer[0..package_root_exports.writer.end] },
-            .{ .key = "{{project_root}}", .value = project_root },
-        };
-
-        for (replacements) |rep| {
-            while (std.mem.indexOf(u8, result, rep.key)) |pos| {
-                const new_res = try std.mem.concat(allocator, u8, &.{ result[0..pos], rep.value, result[pos + rep.key.len ..] });
-                allocator.free(result);
-                result = new_res;
-            }
-        }
-
-        return result;
+        for (run_env.package_roots) |entry| try writeShellAssignment(writer, syntax, entry.key, entry.root);
+        try writeShellAssignment(writer, syntax, "MOONSTONE_ENV_ACTIVE", project_root);
+        return allocator.dupe(u8, writer.buffered());
     }
 
     pub fn run(self: EnvCommand, ctx: *router.Context) !void {

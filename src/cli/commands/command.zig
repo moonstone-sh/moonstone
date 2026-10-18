@@ -363,7 +363,6 @@ pub fn reportError(
             }
         }
     } else {
-        try stdout.print("\x1b[2K\r", .{});
         if (detail) |d| {
             switch (d) {
                 .hash_mismatch => |hm| try stdout.print("Error: hash mismatch for {s}. Expected {s}, got {s}\n", .{ about, hm.expected, hm.got }),

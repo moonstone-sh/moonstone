@@ -180,7 +180,7 @@ pub const GlyphMode = enum { unicode, ascii };
 
 pub fn glyphModeFromSetting(value: ?[]const u8) GlyphMode {
     const setting = value orelse return if (builtin.os.tag == .windows) .ascii else .unicode;
-    return if (std.ascii.eqlIgnoreCase(setting, "ascii")) .ascii else .unicode;
+    return if (std.ascii.eqlIgnoreCase(setting, "unicode")) .unicode else if (std.ascii.eqlIgnoreCase(setting, "ascii")) .ascii else glyphModeFromSetting(null);
 }
 
 const package_units = [_][]const u8{ "  B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
@@ -1955,7 +1955,7 @@ pub const ProgressUi = struct {
                 0
             else
                 current_state - i * 8;
-            writer.print("{s}", .{fill_levels[char_state]}) catch {};
+            writer.writeAll(if (self.glyph_mode == .ascii) (if (char_state == 8) "#" else if (char_state == 0) " " else "=") else fill_levels[char_state]) catch {};
         }
         if (width > 0) writer.writeByte(']') catch {};
         writer.writeByte(' ') catch {};

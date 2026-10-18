@@ -54,7 +54,8 @@ def main():
                 log = Path(log_path)
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    text = log.read_text(encoding="utf-16", errors="replace") if log.exists() else ""
+                    raw = log.read_bytes() if log.exists() else b""
+                    text = raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig", errors="replace")
                     if expected in text: break
                     time.sleep(0.1)
                 else:

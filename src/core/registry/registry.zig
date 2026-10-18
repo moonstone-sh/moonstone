@@ -386,14 +386,8 @@ pub const RegistryClient = struct {
         const is_relative_to_desc = std.mem.startsWith(u8, blob_rel_url, "../") or std.mem.startsWith(u8, blob_rel_url, "./");
 
         if (!self.is_remote and is_relative_to_desc) {
-            const clean_root = if (std.mem.startsWith(u8, self.registry_root, "file:"))
-                self.registry_root[5..]
-            else
-                self.registry_root;
-            const final_root = if (std.mem.startsWith(u8, clean_root, "//"))
-                clean_root[2..]
-            else
-                clean_root;
+            const final_root = try localRegistryPath(self.allocator, self.registry_root);
+            defer self.allocator.free(final_root);
 
             const descriptor_abs = try std.fs.path.resolve(self.allocator, &.{ final_root, descriptor_path });
             defer self.allocator.free(descriptor_abs);
@@ -435,16 +429,8 @@ pub const RegistryClient = struct {
             profiler.span("registry.payload.fetch", span);
             return content;
         } else {
-            const clean_root = if (std.mem.startsWith(u8, self.registry_root, "file:"))
-                self.registry_root[5..]
-            else
-                self.registry_root;
-
-            // Handle file:/// (triple slash)
-            const final_root = if (std.mem.startsWith(u8, clean_root, "//"))
-                clean_root[2..]
-            else
-                clean_root;
+            const final_root = try localRegistryPath(self.allocator, self.registry_root);
+            defer self.allocator.free(final_root);
 
             // Resolve the path to clean up any '..' components, RELATIVE to registry root
             var path_parts = [_][]const u8{ final_root, sub_path };
@@ -687,4 +673,24 @@ test "parallel materialization workers safely share registry payload cache" {
     for (threads) |thread| thread.join();
 
     try std.testing.expect(!failed.load(.acquire));
+}
+
+/// Decode URI paths once at the transport boundary. Plain local paths retain
+/// literal percent characters; Windows file:///C:/ paths lose the URI slash.
+fn localRegistryPath(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
+    if (!std.mem.startsWith(u8, root, "file:")) return allocator.dupe(u8, root);
+    var path = root[5..];
+    if (std.mem.startsWith(u8, path, "//")) path = path[2..];
+    if (@import("builtin").os.tag == .windows and path.len >= 3 and path[0] == '/' and path[2] == ':') path = path[1..];
+    const component: std.Uri.Component = .{ .percent_encoded = path };
+    return std.fmt.allocPrint(allocator, "{f}", .{std.fmt.alt(component, .formatRaw)});
+}
+
+test "file registry URI paths decode spaces and Unicode" {
+    const path = try localRegistryPath(std.testing.allocator, "file:///tmp/Lua%20%C3%BC");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("/tmp/Lua ü", path);
+    const plain = try localRegistryPath(std.testing.allocator, "/tmp/100%20literal");
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("/tmp/100%20literal", plain);
 }
