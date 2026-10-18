@@ -1074,18 +1074,7 @@ fn resolveModuleVariants(
 }
 
 fn writeTomlString(writer: anytype, value: []const u8) !void {
-    try writer.writeByte('"');
-    for (value) |ch| {
-        switch (ch) {
-            '\\' => try writer.writeAll("\\\\"),
-            '"' => try writer.writeAll("\\\""),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => try writer.writeByte(ch),
-        }
-    }
-    try writer.writeByte('"');
+    return @import("../domain/toml_string.zig").write(writer, value);
 }
 
 fn liveLinkScriptCommand(
