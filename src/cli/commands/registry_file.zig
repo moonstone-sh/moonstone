@@ -226,151 +226,158 @@ fn syncRegistry(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer
     const sqlite_path_z = try allocator.dupeZ(u8, sqlite_path);
     defer allocator.free(sqlite_path_z);
 
-    var db: *sqlite_driver.c.sqlite3 = undefined;
-    const rc = sqlite_driver.c.sqlite3_open_v2(sqlite_path_z, @ptrCast(&db), sqlite_driver.c.SQLITE_OPEN_READWRITE | sqlite_driver.c.SQLITE_OPEN_CREATE, null);
-    if (rc != sqlite_driver.c.SQLITE_OK) return error.SqliteOpenFailed;
+    {
+        // Finalize statements before closing SQLite and deleting its file. POSIX
+        // permits unlinking an open database; Windows correctly rejects it.
+        var db: *sqlite_driver.c.sqlite3 = undefined;
+        const rc = sqlite_driver.c.sqlite3_open_v2(sqlite_path_z, @ptrCast(&db), sqlite_driver.c.SQLITE_OPEN_READWRITE | sqlite_driver.c.SQLITE_OPEN_CREATE, null);
+        if (rc != sqlite_driver.c.SQLITE_OK) {
+            _ = sqlite_driver.c.sqlite3_close(db);
+            return error.SqliteOpenFailed;
+        }
+        defer _ = sqlite_driver.c.sqlite3_close(db);
 
-    const schema =
-        \\CREATE TABLE packages (name TEXT NOT NULL, version TEXT NOT NULL, kind TEXT NOT NULL, descriptor TEXT NOT NULL, descriptor_hash TEXT NOT NULL, yanked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (name, version));
-        \\CREATE TABLE artifacts (name TEXT NOT NULL, version TEXT NOT NULL, artifact_hash TEXT NOT NULL, target TEXT, lua_abi TEXT, url TEXT NOT NULL, bytes INTEGER, format TEXT NOT NULL, PRIMARY KEY (name, version, artifact_hash));
-        \\CREATE TABLE provides_lua (artifact_hash TEXT NOT NULL, module TEXT NOT NULL, path TEXT NOT NULL, lua_abi TEXT, PRIMARY KEY (artifact_hash, module));
-    ;
-    if (sqlite_driver.c.sqlite3_exec(db, schema, null, null, null) != sqlite_driver.c.SQLITE_OK) return error.SqliteSchemaFailed;
-    _ = sqlite_driver.c.sqlite3_exec(db, "BEGIN TRANSACTION;", null, null, null);
+        const schema =
+            \\CREATE TABLE packages (name TEXT NOT NULL, version TEXT NOT NULL, kind TEXT NOT NULL, descriptor TEXT NOT NULL, descriptor_hash TEXT NOT NULL, yanked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (name, version));
+            \\CREATE TABLE artifacts (name TEXT NOT NULL, version TEXT NOT NULL, artifact_hash TEXT NOT NULL, target TEXT, lua_abi TEXT, url TEXT NOT NULL, bytes INTEGER, format TEXT NOT NULL, PRIMARY KEY (name, version, artifact_hash));
+            \\CREATE TABLE provides_lua (artifact_hash TEXT NOT NULL, module TEXT NOT NULL, path TEXT NOT NULL, lua_abi TEXT, PRIMARY KEY (artifact_hash, module));
+        ;
+        if (sqlite_driver.c.sqlite3_exec(db, schema, null, null, null) != sqlite_driver.c.SQLITE_OK) return error.SqliteSchemaFailed;
+        _ = sqlite_driver.c.sqlite3_exec(db, "BEGIN TRANSACTION;", null, null, null);
 
-    var stmt_pkg: *sqlite_driver.c.sqlite3_stmt = undefined;
-    if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO packages (name, version, kind, descriptor, descriptor_hash) VALUES (?, ?, ?, ?, ?);", -1, @ptrCast(&stmt_pkg), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
-    defer _ = sqlite_driver.c.sqlite3_finalize(stmt_pkg);
+        var stmt_pkg: *sqlite_driver.c.sqlite3_stmt = undefined;
+        if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO packages (name, version, kind, descriptor, descriptor_hash) VALUES (?, ?, ?, ?, ?);", -1, @ptrCast(&stmt_pkg), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
+        defer _ = sqlite_driver.c.sqlite3_finalize(stmt_pkg);
 
-    var stmt_art: *sqlite_driver.c.sqlite3_stmt = undefined;
-    if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO artifacts (name, version, artifact_hash, target, lua_abi, url, bytes, format) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", -1, @ptrCast(&stmt_art), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
-    defer _ = sqlite_driver.c.sqlite3_finalize(stmt_art);
+        var stmt_art: *sqlite_driver.c.sqlite3_stmt = undefined;
+        if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO artifacts (name, version, artifact_hash, target, lua_abi, url, bytes, format) VALUES (?, ?, ?, ?, ?, ?, ?, ?);", -1, @ptrCast(&stmt_art), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
+        defer _ = sqlite_driver.c.sqlite3_finalize(stmt_art);
 
-    var stmt_prov: *sqlite_driver.c.sqlite3_stmt = undefined;
-    if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO provides_lua (artifact_hash, module, path, lua_abi) VALUES (?, ?, ?, ?);", -1, @ptrCast(&stmt_prov), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
-    defer _ = sqlite_driver.c.sqlite3_finalize(stmt_prov);
+        var stmt_prov: *sqlite_driver.c.sqlite3_stmt = undefined;
+        if (sqlite_driver.c.sqlite3_prepare_v2(db, "INSERT INTO provides_lua (artifact_hash, module, path, lua_abi) VALUES (?, ?, ?, ?);", -1, @ptrCast(&stmt_prov), null) != sqlite_driver.c.SQLITE_OK) return error.SqlitePrepareFailed;
+        defer _ = sqlite_driver.c.sqlite3_finalize(stmt_prov);
 
-    const transient = sqlite_driver.moonstone_sqlite_transient_ptr;
-    var pkg_it_sql = try std.Io.Dir.cwd().openDir(io, packages_root, .{ .iterate = true });
-    defer pkg_it_sql.close(io);
-    var pkg_it_s = pkg_it_sql.iterate();
-    while (try pkg_it_s.next(io)) |pkg_entry| {
-        if (pkg_entry.kind != .directory) continue;
-        const pkg_root = try std.fs.path.join(allocator, &.{ packages_root, pkg_entry.name });
-        defer allocator.free(pkg_root);
-        var ns_dir = try std.Io.Dir.cwd().openDir(io, pkg_root, .{ .iterate = true });
-        defer ns_dir.close(io);
-        var ns_it = ns_dir.iterate();
-        while (try ns_it.next(io)) |name_entry| {
-            if (name_entry.kind != .directory) continue;
-            const direct_desc_abs = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name, "package.toml" });
-            defer allocator.free(direct_desc_abs);
-            const direct_desc = readFile(allocator, io, direct_desc_abs) catch |err| switch (err) {
-                error.FileNotFound => null,
-                else => return err,
-            };
-            if (direct_desc) |desc| {
-                defer allocator.free(desc);
-                var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
-                defer parsed.deinit(allocator);
-                const desc_hash = try hashHexAlloc(allocator, desc);
-                defer allocator.free(desc_hash);
-                const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
-                defer allocator.free(rel);
+        const transient = sqlite_driver.moonstone_sqlite_transient_ptr;
+        var pkg_it_sql = try std.Io.Dir.cwd().openDir(io, packages_root, .{ .iterate = true });
+        defer pkg_it_sql.close(io);
+        var pkg_it_s = pkg_it_sql.iterate();
+        while (try pkg_it_s.next(io)) |pkg_entry| {
+            if (pkg_entry.kind != .directory) continue;
+            const pkg_root = try std.fs.path.join(allocator, &.{ packages_root, pkg_entry.name });
+            defer allocator.free(pkg_root);
+            var ns_dir = try std.Io.Dir.cwd().openDir(io, pkg_root, .{ .iterate = true });
+            defer ns_dir.close(io);
+            var ns_it = ns_dir.iterate();
+            while (try ns_it.next(io)) |name_entry| {
+                if (name_entry.kind != .directory) continue;
+                const direct_desc_abs = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name, "package.toml" });
+                defer allocator.free(direct_desc_abs);
+                const direct_desc = readFile(allocator, io, direct_desc_abs) catch |err| switch (err) {
+                    error.FileNotFound => null,
+                    else => return err,
+                };
+                if (direct_desc) |desc| {
+                    defer allocator.free(desc);
+                    var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
+                    defer parsed.deinit(allocator);
+                    const desc_hash = try hashHexAlloc(allocator, desc);
+                    defer allocator.free(desc_hash);
+                    const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
+                    defer allocator.free(rel);
 
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
-                const kind_str = packageKindString(parsed.package.kind);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 3, kind_str.ptr, @intCast(kind_str.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 4, rel.ptr, @intCast(rel.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 5, desc_hash.ptr, @intCast(desc_hash.len), transient);
-                _ = sqlite_driver.c.sqlite3_step(stmt_pkg);
-                _ = sqlite_driver.c.sqlite3_reset(stmt_pkg);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                    const kind_str = packageKindString(parsed.package.kind);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 3, kind_str.ptr, @intCast(kind_str.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 4, rel.ptr, @intCast(rel.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 5, desc_hash.ptr, @intCast(desc_hash.len), transient);
+                    _ = sqlite_driver.c.sqlite3_step(stmt_pkg);
+                    _ = sqlite_driver.c.sqlite3_reset(stmt_pkg);
 
-                for (parsed.artifact) |art| {
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 3, art.hash.ptr, @intCast(art.hash.len), transient);
-                    if (art.target.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 4, art.target.ptr, @intCast(art.target.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 4);
-                    if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 5, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 5);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 6, art.url.ptr, @intCast(art.url.len), transient);
-                    if (art.bytes) |b| _ = sqlite_driver.c.sqlite3_bind_int64(stmt_art, 7, @intCast(b)) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 7);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 8, art.format.ptr, @intCast(art.format.len), transient);
-                    _ = sqlite_driver.c.sqlite3_step(stmt_art);
-                    _ = sqlite_driver.c.sqlite3_reset(stmt_art);
+                    for (parsed.artifact) |art| {
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 3, art.hash.ptr, @intCast(art.hash.len), transient);
+                        if (art.target.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 4, art.target.ptr, @intCast(art.target.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 4);
+                        if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 5, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 5);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 6, art.url.ptr, @intCast(art.url.len), transient);
+                        if (art.bytes) |b| _ = sqlite_driver.c.sqlite3_bind_int64(stmt_art, 7, @intCast(b)) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 7);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 8, art.format.ptr, @intCast(art.format.len), transient);
+                        _ = sqlite_driver.c.sqlite3_step(stmt_art);
+                        _ = sqlite_driver.c.sqlite3_reset(stmt_art);
 
-                    const all_provs = [_][]const moonstone.domain.manifest.FeatureProvision{ art.provides.lua_module, art.provides.lua_cmodule };
-                    for (all_provs) |provs| {
-                        for (provs) |prov| {
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 1, art.hash.ptr, @intCast(art.hash.len), transient);
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 2, prov.name.ptr, @intCast(prov.name.len), transient);
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 3, prov.path.ptr, @intCast(prov.path.len), transient);
-                            if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 4, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_prov, 4);
-                            _ = sqlite_driver.c.sqlite3_step(stmt_prov);
-                            _ = sqlite_driver.c.sqlite3_reset(stmt_prov);
+                        const all_provs = [_][]const moonstone.domain.manifest.FeatureProvision{ art.provides.lua_module, art.provides.lua_cmodule };
+                        for (all_provs) |provs| {
+                            for (provs) |prov| {
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 1, art.hash.ptr, @intCast(art.hash.len), transient);
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 2, prov.name.ptr, @intCast(prov.name.len), transient);
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 3, prov.path.ptr, @intCast(prov.path.len), transient);
+                                if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 4, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_prov, 4);
+                                _ = sqlite_driver.c.sqlite3_step(stmt_prov);
+                                _ = sqlite_driver.c.sqlite3_reset(stmt_prov);
+                            }
                         }
                     }
+                    continue;
                 }
-                continue;
-            }
-            const full_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_entry.name, name_entry.name });
-            defer allocator.free(full_name);
-            const full_name_root = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name });
-            defer allocator.free(full_name_root);
-            var versions_dir = try std.Io.Dir.cwd().openDir(io, full_name_root, .{ .iterate = true });
-            defer versions_dir.close(io);
-            var ver_it = versions_dir.iterate();
-            while (try ver_it.next(io)) |ver_entry| {
-                if (ver_entry.kind != .directory) continue;
-                const desc_abs = try descriptorPath(allocator, registry, full_name, ver_entry.name);
-                defer allocator.free(desc_abs);
-                const desc = readFile(allocator, io, desc_abs) catch continue;
-                defer allocator.free(desc);
-                var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
-                defer parsed.deinit(allocator);
-                const desc_hash = try hashHexAlloc(allocator, desc);
-                defer allocator.free(desc_hash);
-                const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
-                defer allocator.free(rel);
+                const full_name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pkg_entry.name, name_entry.name });
+                defer allocator.free(full_name);
+                const full_name_root = try std.fs.path.join(allocator, &.{ pkg_root, name_entry.name });
+                defer allocator.free(full_name_root);
+                var versions_dir = try std.Io.Dir.cwd().openDir(io, full_name_root, .{ .iterate = true });
+                defer versions_dir.close(io);
+                var ver_it = versions_dir.iterate();
+                while (try ver_it.next(io)) |ver_entry| {
+                    if (ver_entry.kind != .directory) continue;
+                    const desc_abs = try descriptorPath(allocator, registry, full_name, ver_entry.name);
+                    defer allocator.free(desc_abs);
+                    const desc = readFile(allocator, io, desc_abs) catch continue;
+                    defer allocator.free(desc);
+                    var parsed = moonstone.domain.manifest.RemotePackageDescriptor.parse(allocator, desc) catch continue;
+                    defer parsed.deinit(allocator);
+                    const desc_hash = try hashHexAlloc(allocator, desc);
+                    defer allocator.free(desc_hash);
+                    const rel = try descriptorRelPath(allocator, parsed.package.name, parsed.package.version);
+                    defer allocator.free(rel);
 
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
-                const kind_str = packageKindString(parsed.package.kind);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 3, kind_str.ptr, @intCast(kind_str.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 4, rel.ptr, @intCast(rel.len), transient);
-                _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 5, desc_hash.ptr, @intCast(desc_hash.len), transient);
-                _ = sqlite_driver.c.sqlite3_step(stmt_pkg);
-                _ = sqlite_driver.c.sqlite3_reset(stmt_pkg);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                    const kind_str = packageKindString(parsed.package.kind);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 3, kind_str.ptr, @intCast(kind_str.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 4, rel.ptr, @intCast(rel.len), transient);
+                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_pkg, 5, desc_hash.ptr, @intCast(desc_hash.len), transient);
+                    _ = sqlite_driver.c.sqlite3_step(stmt_pkg);
+                    _ = sqlite_driver.c.sqlite3_reset(stmt_pkg);
 
-                for (parsed.artifact) |art| {
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 3, art.hash.ptr, @intCast(art.hash.len), transient);
-                    if (art.target.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 4, art.target.ptr, @intCast(art.target.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 4);
-                    if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 5, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 5);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 6, art.url.ptr, @intCast(art.url.len), transient);
-                    if (art.bytes) |b| _ = sqlite_driver.c.sqlite3_bind_int64(stmt_art, 7, @intCast(b)) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 7);
-                    _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 8, art.format.ptr, @intCast(art.format.len), transient);
-                    _ = sqlite_driver.c.sqlite3_step(stmt_art);
-                    _ = sqlite_driver.c.sqlite3_reset(stmt_art);
+                    for (parsed.artifact) |art| {
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 1, parsed.package.name.ptr, @intCast(parsed.package.name.len), transient);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 2, parsed.package.version.ptr, @intCast(parsed.package.version.len), transient);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 3, art.hash.ptr, @intCast(art.hash.len), transient);
+                        if (art.target.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 4, art.target.ptr, @intCast(art.target.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 4);
+                        if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 5, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 5);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 6, art.url.ptr, @intCast(art.url.len), transient);
+                        if (art.bytes) |b| _ = sqlite_driver.c.sqlite3_bind_int64(stmt_art, 7, @intCast(b)) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_art, 7);
+                        _ = sqlite_driver.c.sqlite3_bind_text(stmt_art, 8, art.format.ptr, @intCast(art.format.len), transient);
+                        _ = sqlite_driver.c.sqlite3_step(stmt_art);
+                        _ = sqlite_driver.c.sqlite3_reset(stmt_art);
 
-                    const all_provs = [_][]const moonstone.domain.manifest.FeatureProvision{ art.provides.lua_module, art.provides.lua_cmodule };
-                    for (all_provs) |provs| {
-                        for (provs) |prov| {
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 1, art.hash.ptr, @intCast(art.hash.len), transient);
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 2, prov.name.ptr, @intCast(prov.name.len), transient);
-                            _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 3, prov.path.ptr, @intCast(prov.path.len), transient);
-                            if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 4, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_prov, 4);
-                            _ = sqlite_driver.c.sqlite3_step(stmt_prov);
-                            _ = sqlite_driver.c.sqlite3_reset(stmt_prov);
+                        const all_provs = [_][]const moonstone.domain.manifest.FeatureProvision{ art.provides.lua_module, art.provides.lua_cmodule };
+                        for (all_provs) |provs| {
+                            for (provs) |prov| {
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 1, art.hash.ptr, @intCast(art.hash.len), transient);
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 2, prov.name.ptr, @intCast(prov.name.len), transient);
+                                _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 3, prov.path.ptr, @intCast(prov.path.len), transient);
+                                if (art.lua_abi.len > 0) _ = sqlite_driver.c.sqlite3_bind_text(stmt_prov, 4, art.lua_abi.ptr, @intCast(art.lua_abi.len), transient) else _ = sqlite_driver.c.sqlite3_bind_null(stmt_prov, 4);
+                                _ = sqlite_driver.c.sqlite3_step(stmt_prov);
+                                _ = sqlite_driver.c.sqlite3_reset(stmt_prov);
+                            }
                         }
                     }
                 }
             }
         }
+        _ = sqlite_driver.c.sqlite3_exec(db, "COMMIT;", null, null, null);
     }
-    _ = sqlite_driver.c.sqlite3_exec(db, "COMMIT;", null, null, null);
-    _ = sqlite_driver.c.sqlite3_close(db);
 
     const sqlite_bytes = try readFile(allocator, io, sqlite_path);
     defer allocator.free(sqlite_bytes);
