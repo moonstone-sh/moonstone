@@ -36,7 +36,7 @@ fn targetForName(ctx: *router.Context, name: []const u8) !Target {
     for (registries) |registry| {
         if (!std.mem.eql(u8, registry.name, name)) continue;
         if (!std.mem.startsWith(u8, registry.url, "file://")) return error.UnsupportedRegistryTransport;
-        return .{ .path = try ctx.allocator.dupe(u8, registry.url["file://".len..]) };
+        return .{ .path = try moonstone.registry.core.localRegistryPath(ctx.allocator, registry.url) };
     }
     return error.RegistryNotFound;
 }

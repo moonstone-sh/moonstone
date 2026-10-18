@@ -29,7 +29,7 @@ def main():
         thread.start()
         try:
             url = f"http://127.0.0.1:{server.server_port}/install.ps1"
-            subprocess.run(["zig", "build", "-Doptimize=ReleaseSafe", f"-Ddefault-windows-installer-url={url}"], check=True)
+            subprocess.run(["zig", "build", f"-Ddefault-windows-installer-url={url}"], check=True)
             moon = root / "moon.exe"
             shutil.copy2("zig-out/bin/moon.exe", moon)
             env = dict(os.environ, MOONSTONE_HOME=str(root / "home"))

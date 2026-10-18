@@ -677,7 +677,7 @@ test "parallel materialization workers safely share registry payload cache" {
 
 /// Decode URI paths once at the transport boundary. Plain local paths retain
 /// literal percent characters; Windows file:///C:/ paths lose the URI slash.
-fn localRegistryPath(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
+pub fn localRegistryPath(allocator: std.mem.Allocator, root: []const u8) ![]u8 {
     if (!std.mem.startsWith(u8, root, "file:")) return allocator.dupe(u8, root);
     var path = root[5..];
     if (std.mem.startsWith(u8, path, "//")) path = path[2..];

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tarfile
 import tempfile
 
@@ -62,9 +63,19 @@ path = "bin/''' + binary.name + '"\n')
         assert rows[-1]['terminator'] and rows[-1]['kind'] == 'RESULT'
         project = work / 'project ü'
         moon('init', str(project), '--name', 'native-lifecycle', '--interpreter', 'lua@5.4.123', '--no-sync', '--no-git')
+        moon('registry', 'add', '--name', 'fixture', '--url', registry.as_uri(), cwd=project)
+        moon('registry', 'fixture:', 'doctor', cwd=project)
+        moon('registry', 'fixture:', 'sync', cwd=project)
+        moon('registry', 'fixture:', 'fetch', '--descriptor', 'moonstone/lua@5.4.123', '--output', str(work / 'fetched.toml'), cwd=project)
+        assert (work / 'fetched.toml').exists()
         moon('set', 'lua@5.4.123', '--no-sync', cwd=project)
         moon('sync', '--offline', cwd=project)
         assert 'fixture runtime' in moon('exec', '--', 'lua', cwd=project)
+        setup = [json.loads(line) for line in moon('setup', '--force', '--json', cwd=project).splitlines()][-1]
+        shim = Path(setup['data']['shim_dir']) / ('lua.cmd' if WINDOWS else 'lua')
+        argv = [env.get('COMSPEC', 'cmd.exe'), '/d', '/v:off', '/c', str(shim)] if WINDOWS else [str(shim)]
+        probe = subprocess.run(argv, cwd=project, env=env, capture_output=True, check=True)
+        assert b'fixture runtime' in probe.stdout, probe.stdout
         projected = json.loads(moon('env', '--json', cwd=project))
         assert str(project) in projected['path'], projected
         moon('init', 'child', '--name', 'native-child', '--interpreter', 'lua@5.4.123', '--no-sync', '--no-git', cwd=project)
@@ -78,6 +89,11 @@ path = "bin/''' + binary.name + '"\n')
         moon('store', 'prune', '--compact', '--dry-run')
         moon('interpreter', 'list', failure=True)
         moon('store', 'query', 'lua', failure=True)
+        moon('registry', 'fixture:', 'remove', 'moonstone/lua@5.4.123', cwd=project)
+        moon('registry', 'remove', 'fixture', cwd=project)
+        shutil.rmtree(project)
+        moon('remove', '--global', 'lua@5.4.123')
+        moon('store', 'prune', '--compact')
         print('Native public-command lifecycle passed')
 
 

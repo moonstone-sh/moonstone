@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: zig build -Doptimize=ReleaseSafe
+      - run: zig build
       - run: python -m pip install blake3
       - run: python tests/platform/packaged_lifecycle.py
       - run: ./tests/windows/core.ps1
@@ -25,9 +25,6 @@ jobs:
         shell: pwsh
       - run: ./tests/windows/installer.ps1
         shell: powershell
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - run: python tests/windows/terminal.py
       - run: python tests/windows/update.py
   posix:
@@ -53,7 +50,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+      - run: zig build -Dtarget=${{ matrix.target }}
       - run: python -m pip install blake3
       - run: python tests/platform/packaged_lifecycle.py
       - run: bash tests/e2e/commands/runtime_commands.sh
