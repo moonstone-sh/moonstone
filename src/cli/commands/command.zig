@@ -566,7 +566,7 @@ fn renderVolatileText(context: *ResolveCallbackContext, text: []const u8, column
     var frame = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     defer frame.deinit();
     try frame.writer.writeAll("\x1b[2K\r");
-    try progress_runtime.appendBounded(&frame.writer, text, columns);
+    try progress_runtime.appendBoundedWithGlyphMode(&frame.writer, text, columns, progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")));
     try context.stdout.writeAll(frame.writer.buffered());
     try context.stdout.flush();
 }
@@ -731,4 +731,18 @@ pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.so
 
 pub fn moonstone_sqlite_transient() @import("moonstone").store.driver.c.sqlite3_destructor_type {
     return @import("moonstone").store.driver.moonstone_sqlite_transient_ptr;
+}
+
+test "direct callback ASCII policy includes clipping and completion" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("MOONSTONE_PROGRESS_GLYPHS", "ascii");
+    try env_map.put("COLUMNS", "12");
+    var context = ResolveCallbackContext{ .io = std.testing.io, .stdout = &writer, .env = &env_map, .is_tty = true, .use_stderr = false };
+    try renderSpinner(&context, "a sufficiently long package name", .{});
+    try renderDone(&context, "done", .{});
+    for (writer.buffered()) |byte| try std.testing.expect(byte < 128);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "+ done") != null);
 }

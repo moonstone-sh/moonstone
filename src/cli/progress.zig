@@ -96,7 +96,7 @@ pub fn appendBounded(writer: *std.Io.Writer, text: []const u8, columns: usize) !
     return appendBoundedWithGlyphMode(writer, text, columns, .ascii);
 }
 
-fn appendBoundedWithGlyphMode(writer: *std.Io.Writer, text: []const u8, columns: usize, glyph_mode: GlyphMode) !void {
+pub fn appendBoundedWithGlyphMode(writer: *std.Io.Writer, text: []const u8, columns: usize, glyph_mode: GlyphMode) !void {
     const limit = columns -| 1;
     if (limit == 0) return;
     var cells: usize = 0;

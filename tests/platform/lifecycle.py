@@ -22,7 +22,9 @@ def main():
         env = dict(os.environ, MOONSTONE_HOME=str(work / 'home'), MOONSTONE_NO_PROGRESS='1')
         def moon(*args, cwd=work, failure=False):
             result = subprocess.run([str(MOON), *args], cwd=cwd, env=env, capture_output=True)
-            assert (result.returncode != 0) == failure, (args, result.returncode, result.stdout, result.stderr)
+            if (result.returncode != 0) != failure:
+                trace = subprocess.run([str(MOON), *args], cwd=cwd, env=dict(env, MOONSTONE_TRACE_ERRORS='1'), capture_output=True)
+                raise AssertionError((args, result.returncode, result.stdout, result.stderr, trace.stderr.decode('utf-8', errors='replace')))
             assert b'\x1b[' not in result.stdout + result.stderr, (args, result.stdout, result.stderr)
             return result.stdout.decode('utf-8')
         source = work / 'runtime.c'
