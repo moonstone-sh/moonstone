@@ -17,16 +17,22 @@ jobs:
         with:
           python-version: '3.12'
       - run: zig build
+        id: build
       - run: python -m pip install blake3
       - run: python tests/platform/packaged_lifecycle.py
       - run: ./tests/windows/core.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
       - run: ./tests/windows/installer.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: pwsh
       - run: ./tests/windows/installer.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         shell: powershell
       - run: python tests/windows/terminal.py
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       - run: python tests/windows/update.py
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
   posix:
     strategy:
       fail-fast: false

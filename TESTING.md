@@ -180,3 +180,9 @@ GNU/musl runners verify each archive's SHA-256 and version/build label, extract
 it, and execute the shared lifecycle scenario. GitHub release publication,
 Homebrew updates and Docker publication wait for these archive checks. Failed
 certification leaves the public release untouched.
+
+For an unexpected CLI error in a debug build, `MOONSTONE_TRACE_ERRORS=1` adds
+Zig's error return trace to stderr. Normal output remains unchanged; leave the
+setting unset when checking the plain/JSON output contract. The native fixture
+retries an unexpected failure with this diagnostic enabled to identify the
+failing filesystem operation in CI.
