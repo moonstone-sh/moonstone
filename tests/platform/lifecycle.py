@@ -86,6 +86,12 @@ path = "bin/''' + binary.name + '"\n')
         assert sum(row['terminator'] for row in rows) == 1
         assert rows[-1]['value'] == 'workspace.complete'
         assert 'fixture runtime' in moon('--orbit', 'child', 'exec', '--', 'lua', cwd=project)
+        moon('-C', str(project / 'child'), 'link')
+        moon('add', 'link:native-child', '--no-sync', cwd=project)
+        moon('remove', 'native-child', '--no-sync', cwd=project)
+        moon('store', 'list', '--links', '--json')
+        moon('remove', '--global', 'link:native-child', cwd=project)
+        assert (project / 'child' / 'moonstone.toml').exists()
         moon('remove', '--global', 'lua@5.4.123', cwd=project, failure=True)
         moon('store', 'list', '--query', 'lua', '--json')
         moon('store', 'prune', '--compact', '--dry-run')
