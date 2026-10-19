@@ -188,9 +188,6 @@ jobs:
   windows-core:
     name: Windows Core CLI and Environment
     runs-on: windows-latest
-    # Native coverage complements the Windows-GNU compile gate. Keep it
-    # non-blocking while Windows runtime coverage gains wider fixture support.
-    continue-on-error: true
 
     steps:
       - name: Checkout code

@@ -132,3 +132,57 @@ certify Windows runtime behavior.
 
 For compilation without execution, use
 `zig build check-cancellation -Dtarget=x86_64-windows-gnu`.
+
+### Native lifecycle release gates
+
+`.github/workflows/native-lifecycle.yml` is reusable by the release workflow.
+Windows core environment/projection checks and the installer contracts on
+PowerShell 7 and Windows PowerShell 5.1 are blocking. The deferred-update test
+serves a fixture installer over loopback HTTP and checks both successful and
+failed execution without changing the developer's installed CLI.
+
+Linux and native Apple Silicon/Intel macOS run the same file-registry runtime,
+project/orbit, link/store and disposable self-uninstall scenarios. These gates
+supplement Windows cancellation/process-tree certification; Wine remains an
+additional compatibility signal. Cross-compiled FreeBSD, RISC-V and Windows ARM
+artifacts do not acquire native certification merely by compiling.
+
+Windows progress uses ASCII decorations by default. Set
+`MOONSTONE_PROGRESS_GLYPHS=unicode` to opt into Unicode decorations with a suitable
+terminal/font. The setting does not transliterate filenames. ANSI repainting
+requires a console that accepts virtual-terminal processing; redirected output
+and `TERM=dumb` stay line-oriented. Windows console geometry is read from the
+visible window on each repaint, with environment/default sizes as fallback.
+
+`moon env --shell powershell` emits literal PowerShell assignments. CMD output
+is a **batch-file fragment**: save `moon env --shell cmd` to a `.cmd` file and
+call it with delayed expansion disabled. A double quote or line break in a value
+is rejected rather than emitted as executable CMD syntax. `moon setup` creates
+`.cmd` shims on Windows and POSIX shims elsewhere, without changing profiles.
+
+Windows `moon self update --apply` and `moon self install --version VERSION
+--apply` schedule the downloaded installer after the current process exits.
+Their terminal JSON status is `scheduled`, with a log path; inspect that log for
+completion or failure. They preserve the executable's installation directory
+and do not change PATH. A scheduled result is not a completed update.
+
+The native Windows gate also runs `tests/windows/terminal.py` in ConPTY. It
+resizes a live fancy-progress console, sends keyboard Ctrl-C during a stalled
+registry request, and checks bounded cancellation, ASCII decorations, restored
+cursor visibility and absence of a partial lockfile. Redirected-stream checks
+remain separate so ConPTY's own terminal protocol cannot mask ANSI leakage.
+`tests/platform/packaged_lifecycle.py` uses the release archiver, extracts the
+native binary, and runs the shared public-command fixture from that archive.
+
+Tagged releases additionally stage the **actual candidate archives** as temporary
+workflow artifacts. Windows x64, both macOS architectures, and Linux x64
+GNU/musl runners verify each archive's SHA-256 and version/build label, extract
+it, and execute the shared lifecycle scenario. GitHub release publication,
+Homebrew updates and Docker publication wait for these archive checks. Failed
+certification leaves the public release untouched.
+
+For an unexpected CLI error in a debug build, `MOONSTONE_TRACE_ERRORS=1` adds
+Zig's error return trace to stderr. Normal output remains unchanged; leave the
+setting unset when checking the plain/JSON output contract. The native fixture
+retries an unexpected failure with this diagnostic enabled to identify the
+failing filesystem operation in CI.

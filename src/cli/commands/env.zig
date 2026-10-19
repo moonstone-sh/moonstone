@@ -24,7 +24,7 @@ pub const EnvCommand = struct {
             \\Flags:
             \\  --json                Output as JSON
             \\  --paths               Output only PATH additions
-            \\  --shell <s>           Output export commands for shell: bash, zsh, fish
+            \\  --shell <s>           Output export commands for shell: bash, zsh, fish, powershell, cmd
             \\  --prod                Exclude development dependencies
             \\  --global              Show the global tools environment instead of the current project
             \\  --bin-runtime-names   List bin-runtime-scoped tool names (one per line), each usable with `moon exec`
@@ -51,9 +51,46 @@ pub const EnvCommand = struct {
         key: []const u8,
         value: []const u8,
     ) !void {
-        switch (syntax) {
-            .posix => try writer.print("export {s}=\"{s}\"\n", .{ key, value }),
-            .fish => try writer.print("set -gx {s} \"{s}\"\n", .{ key, value }),
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.UnrepresentableShellValue;
+        if (syntax == .posix) try writer.print("export {s}=", .{key}) else try writer.print("set -gx {s} ", .{key});
+        try writeLiteral(writer, syntax, value);
+        try writer.writeByte('\n');
+    }
+
+    fn writeLiteral(writer: *std.Io.Writer, syntax: ShellSyntax, value: []const u8) !void {
+        try writer.writeByte(39);
+        for (value) |c| {
+            if (c == 39) {
+                try writer.writeAll(if (syntax == .posix) "'\\''" else "\\'");
+            } else {
+                if (syntax == .fish and c == '\\') try writer.writeByte('\\');
+                try writer.writeByte(c);
+            }
+        }
+        try writer.writeByte(39);
+    }
+
+    /// CMD output is a batch-file fragment. Delayed expansion must be disabled
+    /// by the caller so literal exclamation marks in project paths survive.
+    fn writeWindowsAssignment(writer: *std.Io.Writer, powershell: bool, key: []const u8, value: []const u8, prepend: bool) !void {
+        // Environment values cannot safely span commands in either shell.
+        if (std.mem.indexOfAny(u8, value, "\r\n") != null) return error.UnrepresentableShellValue;
+        if (powershell) {
+            try writer.print("$env:{s} = '", .{key});
+            for (value) |c| {
+                try writer.writeByte(c);
+                if (c == 39) try writer.writeByte(c);
+            }
+            try writer.writeAll(if (prepend) ";' + $env:PATH\n" else "'\n");
+        } else {
+            if (std.mem.indexOfScalar(u8, value, '"') != null) return error.UnrepresentableShellValue;
+            try writer.print("set \"{s}=", .{key});
+            for (value) |c| {
+                try writer.writeByte(c);
+                if (c == '%') try writer.writeByte(c);
+            }
+            if (prepend) try writer.writeAll(";%PATH%");
+            try writer.writeAll("\"\r\n");
         }
     }
 
@@ -64,58 +101,31 @@ pub const EnvCommand = struct {
         project_root: []const u8,
         syntax: ShellSyntax,
     ) ![]const u8 {
-        var result = try allocator.dupe(u8, template);
-        errdefer allocator.free(result);
-
-        var native_library_export = std.Io.Writer.Allocating.init(allocator);
-        defer native_library_export.deinit();
-        if (run_env.native_lib_path) |native_lib_path| {
+        _ = template;
+        var output = std.Io.Writer.Allocating.init(allocator);
+        defer output.deinit();
+        const writer = &output.writer;
+        try writer.writeAll(if (syntax == .posix) "export PATH=" else "set -gx PATH ");
+        try writeLiteral(writer, syntax, run_env.bin_path);
+        try writer.writeAll(if (syntax == .posix) ":\"$PATH\"\n" else " $PATH\n");
+        try writeShellAssignment(writer, syntax, "LUA_PATH", run_env.lua_path);
+        try writeShellAssignment(writer, syntax, "LUA_CPATH", run_env.lua_cpath);
+        if (run_env.native_lib_path) |path| {
             if (moonstone.project.environment.nativeLibraryEnvironmentVariable()) |key| {
-                switch (syntax) {
-                    .posix => try native_library_export.writer.print(
-                        "export {s}=\"{s}:${{{s}:-}}\"\n",
-                        .{ key, native_lib_path, key },
-                    ),
-                    .fish => try native_library_export.writer.print(
-                        "set -gx {s} \"{s}\" ${s}\n",
-                        .{ key, native_lib_path, key },
-                    ),
-                }
+                if (syntax == .posix) try writer.print("export {s}=", .{key}) else try writer.print("set -gx {s} ", .{key});
+                try writeLiteral(writer, syntax, path);
+                if (syntax == .posix) try writer.print(":\"${{{s}:-}}\"\n", .{key}) else try writer.print(" ${s}\n", .{key});
             }
         }
-        try native_library_export.writer.flush();
-
-        var package_root_exports = std.Io.Writer.Allocating.init(allocator);
-        defer package_root_exports.deinit();
-        for (run_env.package_roots) |entry| {
-            try writeShellAssignment(&package_root_exports.writer, syntax, entry.key, entry.root);
-        }
-        try package_root_exports.writer.flush();
-
-        const replacements = [_]struct { key: []const u8, value: []const u8 }{
-            .{ .key = "{{bin_path}}", .value = run_env.bin_path },
-            .{ .key = "{{lua_path}}", .value = run_env.lua_path },
-            .{ .key = "{{lua_cpath}}", .value = run_env.lua_cpath },
-            .{ .key = "{{native_library_export}}", .value = native_library_export.writer.buffer[0..native_library_export.writer.end] },
-            .{ .key = "{{package_root_exports}}", .value = package_root_exports.writer.buffer[0..package_root_exports.writer.end] },
-            .{ .key = "{{project_root}}", .value = project_root },
-        };
-
-        for (replacements) |rep| {
-            while (std.mem.indexOf(u8, result, rep.key)) |pos| {
-                const new_res = try std.mem.concat(allocator, u8, &.{ result[0..pos], rep.value, result[pos + rep.key.len ..] });
-                allocator.free(result);
-                result = new_res;
-            }
-        }
-
-        return result;
+        for (run_env.package_roots) |entry| try writeShellAssignment(writer, syntax, entry.key, entry.root);
+        try writeShellAssignment(writer, syntax, "MOONSTONE_ENV_ACTIVE", project_root);
+        return allocator.dupe(u8, writer.buffered());
     }
 
     pub fn run(self: EnvCommand, ctx: *router.Context) !void {
         if (self.shell) |shell| {
-            if (!std.mem.eql(u8, shell, "bash") and !std.mem.eql(u8, shell, "zsh") and !std.mem.eql(u8, shell, "fish")) {
-                ctx.error_detail = .{ .message = .{ .msg = "Environment export supports bash, zsh, and fish. Choose one with --shell." } };
+            if (!std.mem.eql(u8, shell, "bash") and !std.mem.eql(u8, shell, "zsh") and !std.mem.eql(u8, shell, "fish") and !std.mem.eql(u8, shell, "powershell") and !std.mem.eql(u8, shell, "cmd")) {
+                ctx.error_detail = .{ .message = .{ .msg = "Environment export supports bash, zsh, fish, powershell, and cmd. Choose one with --shell." } };
                 return error.UnsupportedShell;
             }
         }
@@ -196,6 +206,13 @@ pub const EnvCommand = struct {
                 const content = try renderShellTemplate(allocator, moonstone.assets.raw.shells.fish, run_env, project_root, .fish);
                 defer allocator.free(content);
                 try stdout.writeAll(content);
+            } else if (std.mem.eql(u8, s, "powershell") or std.mem.eql(u8, s, "cmd")) {
+                const powershell = std.mem.eql(u8, s, "powershell");
+                try writeWindowsAssignment(stdout, powershell, "PATH", run_env.bin_path, true);
+                try writeWindowsAssignment(stdout, powershell, "LUA_PATH", run_env.lua_path, false);
+                try writeWindowsAssignment(stdout, powershell, "LUA_CPATH", run_env.lua_cpath, false);
+                for (run_env.package_roots) |entry| try writeWindowsAssignment(stdout, powershell, entry.key, entry.root, false);
+                try writeWindowsAssignment(stdout, powershell, "MOONSTONE_ENV_ACTIVE", project_root, false);
             } else {
                 unreachable; // Shell names are validated before environment discovery.
             }
@@ -227,7 +244,19 @@ test "unsupported shell fails before project or global environment discovery" {
         .stderr = &writer,
         .env = &env,
     };
-    try std.testing.expectError(error.UnsupportedShell, (EnvCommand{ .shell = "powershell", .global = true }).run(&ctx));
+    try std.testing.expectError(error.UnsupportedShell, (EnvCommand{ .shell = "unsupported", .global = true }).run(&ctx));
     try std.testing.expect(ctx.error_detail != null);
     try std.testing.expectEqual(@as(usize, 0), writer.end);
+}
+
+test "Windows environment exports quote literals and reject command injection" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try EnvCommand.writeWindowsAssignment(&writer, true, "PATH", "C:\\Lua's $tools", true);
+    try std.testing.expectEqualStrings("$env:PATH = 'C:\\Lua''s $tools;' + $env:PATH\n", writer.buffered());
+    writer.end = 0;
+    try EnvCommand.writeWindowsAssignment(&writer, false, "ROOT", "C:\\100% & tools", false);
+    try std.testing.expectEqualStrings("set \"ROOT=C:\\100%% & tools\"\r\n", writer.buffered());
+    try std.testing.expectError(error.UnrepresentableShellValue, EnvCommand.writeWindowsAssignment(&writer, true, "ROOT", "x\ny", false));
+    try std.testing.expectError(error.UnrepresentableShellValue, EnvCommand.writeWindowsAssignment(&writer, false, "ROOT", "x\" & echo bad", false));
 }

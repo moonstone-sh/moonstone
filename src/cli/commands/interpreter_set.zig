@@ -216,7 +216,7 @@ pub const InterpreterSetCommand = struct {
             .io = io,
             .stdout = stdout,
             .emitter = emitter,
-            .is_tty = std.Io.File.stdout().isTty(io) catch false,
+            .is_tty = @import("../progress.zig").supportsInteractive(io, env, false),
             .env = env,
             .use_stderr = false,
         };

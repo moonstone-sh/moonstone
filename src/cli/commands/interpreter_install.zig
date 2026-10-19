@@ -78,7 +78,7 @@ pub const InterpreterInstallCommand = struct {
             .io = io,
             .stdout = stdout,
             .emitter = emitter,
-            .is_tty = !self.json and (std.Io.File.stdout().isTty(io) catch false),
+            .is_tty = !self.json and @import("../progress.zig").supportsInteractive(io, env, false),
             .env = env,
             .use_stderr = false,
         };

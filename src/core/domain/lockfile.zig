@@ -1,5 +1,7 @@
 const std = @import("std");
 const toml = @import("toml");
+const writeTomlString = @import("toml_string.zig").write;
+const writeTomlField = @import("toml_string.zig").field;
 const manifest = @import("manifest.zig");
 const Kind = manifest.Kind;
 const replay_mod = @import("replay_contract.zig");
@@ -240,39 +242,39 @@ pub const LockFile = struct {
                 defer if (computed_hash) |hash| allocator.free(hash);
                 const realization_hash = computed_hash orelse entry.realization_hash;
                 try writer.print("[[realization]]\n", .{});
-                try writer.print("realization_hash = \"{s}\"\n", .{realization_hash});
+                try writeTomlField(writer, "realization_hash", realization_hash);
             } else {
                 try writer.print("[[package]]\n", .{});
             }
-            try writer.print("name = \"{s}\"\n", .{entry.name});
-            try writer.print("version = \"{s}\"\n", .{entry.version});
-            try writer.print("kind = \"{s}\"\n", .{@tagName(entry.kind)});
-            if (entry.source_hash.len > 0) try writer.print("source_hash = \"{s}\"\n", .{entry.source_hash});
-            try writer.print("recipe_hash = \"{s}\"\n", .{entry.recipe_hash});
-            if (entry.plan_schema.len > 0) try writer.print("plan_schema = \"{s}\"\n", .{entry.plan_schema});
-            if (entry.plan_hash.len > 0) try writer.print("plan_hash = \"{s}\"\n", .{entry.plan_hash});
-            try writer.print("artifact_hash = \"{s}\"\n", .{entry.artifact_hash});
-            try writer.print("replay_mode = \"{s}\"\n", .{entry.replay_mode.toString()});
-            try writer.print("runtime = \"{s}\"\n", .{entry.runtime});
-            try writer.print("lua_abi = \"{s}\"\n", .{entry.lua_abi});
-            try writer.print("target = \"{s}\"\n", .{entry.target});
-            try writer.print("constellation = \"{s}\"\n", .{entry.constellation});
-            if (entry.source.len > 0) try writer.print("source = \"{s}\"\n", .{entry.source});
-            if (entry.source_kind.len > 0) try writer.print("source_kind = \"{s}\"\n", .{entry.source_kind});
-            if (entry.source_payload.len > 0) try writer.print("source_payload = \"{s}\"\n", .{entry.source_payload});
-            if (entry.source_url.len > 0) try writer.print("source_url = \"{s}\"\n", .{entry.source_url});
-            if (entry.rockspec.len > 0) try writer.print("rockspec = \"{s}\"\n", .{entry.rockspec});
-            if (entry.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{entry.rockspec_hash});
-            if (entry.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{entry.rockspec_payload});
-            if (entry.resolver.len > 0) try writer.print("resolver = \"{s}\"\n", .{entry.resolver});
-            if (entry.registry.len > 0) try writer.print("registry = \"{s}\"\n", .{entry.registry});
-            if (entry.link_mode.len > 0) try writer.print("link_mode = \"{s}\"\n", .{entry.link_mode});
+            try writeTomlField(writer, "name", entry.name);
+            try writeTomlField(writer, "version", entry.version);
+            try writeTomlField(writer, "kind", @tagName(entry.kind));
+            if (entry.source_hash.len > 0) try writeTomlField(writer, "source_hash", entry.source_hash);
+            try writeTomlField(writer, "recipe_hash", entry.recipe_hash);
+            if (entry.plan_schema.len > 0) try writeTomlField(writer, "plan_schema", entry.plan_schema);
+            if (entry.plan_hash.len > 0) try writeTomlField(writer, "plan_hash", entry.plan_hash);
+            try writeTomlField(writer, "artifact_hash", entry.artifact_hash);
+            try writeTomlField(writer, "replay_mode", entry.replay_mode.toString());
+            try writeTomlField(writer, "runtime", entry.runtime);
+            try writeTomlField(writer, "lua_abi", entry.lua_abi);
+            try writeTomlField(writer, "target", entry.target);
+            try writeTomlField(writer, "constellation", entry.constellation);
+            if (entry.source.len > 0) try writeTomlField(writer, "source", entry.source);
+            if (entry.source_kind.len > 0) try writeTomlField(writer, "source_kind", entry.source_kind);
+            if (entry.source_payload.len > 0) try writeTomlField(writer, "source_payload", entry.source_payload);
+            if (entry.source_url.len > 0) try writeTomlField(writer, "source_url", entry.source_url);
+            if (entry.rockspec.len > 0) try writeTomlField(writer, "rockspec", entry.rockspec);
+            if (entry.rockspec_hash.len > 0) try writeTomlField(writer, "rockspec_hash", entry.rockspec_hash);
+            if (entry.rockspec_payload.len > 0) try writeTomlField(writer, "rockspec_payload", entry.rockspec_payload);
+            if (entry.resolver.len > 0) try writeTomlField(writer, "resolver", entry.resolver);
+            if (entry.registry.len > 0) try writeTomlField(writer, "registry", entry.registry);
+            if (entry.link_mode.len > 0) try writeTomlField(writer, "link_mode", entry.link_mode);
             if (!entry.reproducible) try writer.print("reproducible = false\n", .{});
             if (entry.roles.len > 0) {
                 try writer.print("roles = [", .{});
                 for (entry.roles, 0..) |role, j| {
                     if (j > 0) try writer.print(", ", .{});
-                    try writer.print("\"{s}\"", .{role});
+                    try writeTomlString(writer, role);
                 }
                 try writer.print("]\n", .{});
             }
@@ -280,23 +282,38 @@ pub const LockFile = struct {
                 try writer.print("build_dependencies = [", .{});
                 for (entry.build_dependencies, 0..) |dependency, j| {
                     if (j > 0) try writer.print(", ", .{});
-                    try writer.print("\"{s}\"", .{dependency});
+                    try writeTomlString(writer, dependency);
                 }
                 try writer.print("]\n", .{});
             }
         }
         for (self.profiles.items) |profile| {
-            try writer.print("\n[[profile]]\nid = \"{s}\"\ntarget = \"{s}\"\nruntime = \"{s}\"\n", .{ profile.id, profile.target, profile.runtime });
-            if (profile.lua_abi) |abi| try writer.print("lua_abi = \"{s}\"\n", .{abi});
+            try writer.writeAll("\n[[profile]]\n");
+            try writeTomlField(writer, "id", profile.id);
+            try writeTomlField(writer, "target", profile.target);
+            try writeTomlField(writer, "runtime", profile.runtime);
+            if (profile.lua_abi) |abi| try writeTomlField(writer, "lua_abi", abi);
             try writer.print("packages = [", .{});
             for (profile.packages, 0..) |package, index| {
                 if (index > 0) try writer.print(", ", .{});
-                try writer.print("{{ name = \"{s}\", version = \"{s}\", realization_hash = \"{s}\" }}", .{ package.package_name, package.package_version, package.realization_hash });
+                try writer.writeAll("{ name = ");
+                try writeTomlString(writer, package.package_name);
+                try writer.writeAll(", version = ");
+                try writeTomlString(writer, package.package_version);
+                try writer.writeAll(", realization_hash = ");
+                try writeTomlString(writer, package.realization_hash);
+                try writer.writeAll(" }");
             }
             try writer.print("]\nedges = [", .{});
             for (profile.edges, 0..) |edge, index| {
                 if (index > 0) try writer.print(", ", .{});
-                try writer.print("{{ from = \"{s}\", to = \"{s}\", constraint = \"{s}\" }}", .{ edge.from_package, edge.to_package, edge.constraint });
+                try writer.writeAll("{ from = ");
+                try writeTomlString(writer, edge.from_package);
+                try writer.writeAll(", to = ");
+                try writeTomlString(writer, edge.to_package);
+                try writer.writeAll(", constraint = ");
+                try writeTomlString(writer, edge.constraint);
+                try writer.writeAll(" }");
             }
             try writer.print("]\n", .{});
         }
@@ -742,4 +759,16 @@ test "lockfile source_url round-trips through serialize and parse" {
     // Assert: no absolute filesystem paths in serialized lockfile
     try std.testing.expect(std.mem.indexOf(u8, serialized, "/Users/") == null);
     try std.testing.expect(std.mem.indexOf(u8, serialized, "/home/") == null);
+}
+
+test "lockfile Windows link sources round trip escaped paths" {
+    const input = "[[package]]\nname = \"linked\"\nversion = \"0.1.0\"\nkind = \"script\"\nrecipe_hash = \"b3:recipe\"\nartifact_hash = \"b3:artifact\"\nruntime = \"\"\nlua_abi = \"\"\ntarget = \"native\"\nsource = 'C:\\Users\\Lua ü\\source \"quoted\"'\n";
+    var lock = try LockFile.parse(std.testing.allocator, input);
+    defer lock.deinit();
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    try lock.serialize(std.testing.allocator, &output.writer);
+    var reparsed = try LockFile.parse(std.testing.allocator, output.writer.buffered());
+    defer reparsed.deinit();
+    try std.testing.expectEqualStrings(lock.packages.items[0].source, reparsed.packages.items[0].source);
 }

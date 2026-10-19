@@ -48,10 +48,10 @@ const Installer = struct {
         try ensureSelfManaged(ctx, self.json);
 
         if (!self.apply) {
-            return printInstallerCommand(ctx, build_options.default_installer_url, selection, self.json);
+            return printInstallerCommand(ctx, (if (@import("builtin").os.tag == .windows) build_options.default_windows_installer_url else build_options.default_installer_url), selection, self.json);
         }
 
-        return applyInstaller(ctx, build_options.default_installer_url, selection, self.json);
+        return applyInstaller(ctx, (if (@import("builtin").os.tag == .windows) build_options.default_windows_installer_url else build_options.default_installer_url), selection, self.json);
     }
 };
 
@@ -112,26 +112,20 @@ pub fn ensureSelfManaged(ctx: *router.Context, is_json: bool) !void {
 }
 
 fn printInstallerCommand(ctx: *router.Context, installer_url: []const u8, selection: ReleaseSelection, is_json: bool) !void {
+    const windows = @import("builtin").os.tag == .windows;
+    const command_str = if (windows) switch (selection) {
+        .latest => try std.fmt.allocPrint(ctx.allocator, "$installer = Join-Path $env:TEMP 'moon-install.ps1'; Invoke-WebRequest -UseBasicParsing '{s}' -OutFile $installer; & $installer -Latest", .{installer_url}),
+        .exact => |v| try std.fmt.allocPrint(ctx.allocator, "$installer = Join-Path $env:TEMP 'moon-install.ps1'; Invoke-WebRequest -UseBasicParsing '{s}' -OutFile $installer; & $installer -Version {s}", .{ installer_url, v }),
+    } else switch (selection) {
+        .latest => try std.fmt.allocPrint(ctx.allocator, "curl -fsSL {s} | sh -s -- --latest", .{installer_url}),
+        .exact => |v| try std.fmt.allocPrint(ctx.allocator, "curl -fsSL {s} | sh -s -- --version {s}", .{ installer_url, v }),
+    };
+    defer ctx.allocator.free(command_str);
     if (is_json) {
-        const command_str = switch (selection) {
-            .latest => try std.fmt.allocPrint(ctx.allocator, "curl -fsSL {s} | sh -s -- --latest", .{installer_url}),
-            .exact => |v| try std.fmt.allocPrint(ctx.allocator, "curl -fsSL {s} | sh -s -- --version {s}", .{ installer_url, v }),
-        };
-        defer ctx.allocator.free(command_str);
-
         var emitter = ndjson.Emitter.init(ctx.allocator, ctx.stdout, eventName(selection));
-        try emitter.terminate(ctx.io, eventName(selection), "ok", .{
-            .installer_url = installer_url,
-            .bootstrap_command = command_str,
-            .apply = false,
-        });
+        try emitter.terminate(ctx.io, eventName(selection), "ok", .{ .installer_url = installer_url, .bootstrap_command = command_str, .apply = false });
     } else {
-        try ctx.stdout.print("\nRun this command in your terminal:\n\n", .{});
-        switch (selection) {
-            .latest => try ctx.stdout.print("  curl -fsSL {s} | sh -s -- --latest\n\n", .{installer_url}),
-            .exact => |v| try ctx.stdout.print("  curl -fsSL {s} | sh -s -- --version {s}\n\n", .{ installer_url, v }),
-        }
-        try ctx.stdout.print("Or run again with --apply.\n", .{});
+        try ctx.stdout.print("\nRun this command in your terminal:\n\n  {s}\n\nOr run again with --apply.\n", .{command_str});
     }
 }
 
@@ -139,12 +133,62 @@ fn applyInstaller(ctx: *router.Context, installer_url: []const u8, selection: Re
     const builtin = @import("builtin");
     switch (builtin.os.tag) {
         .linux, .macos, .freebsd, .netbsd, .openbsd, .dragonfly => try applyPosixInstaller(ctx, installer_url, selection, is_json),
+        .windows => try scheduleWindowsInstaller(ctx, installer_url, selection, is_json),
         else => {
             if (!is_json) {
                 try ctx.stdout.print("Automatic --apply installer execution is not supported on this platform.\n", .{});
             }
             return error.UnsupportedSelfInstallPlatform;
         },
+    }
+}
+
+/// The helper outlives this CLI so the installer can replace a locked image.
+/// A durable log records completion or failure; scheduling is not success.
+fn scheduleWindowsInstaller(ctx: *router.Context, url: []const u8, selection: ReleaseSelection, is_json: bool) !void {
+    const allocator = ctx.allocator;
+    const io = ctx.io;
+    const directory = ctx.env.get("TEMP") orelse ctx.env.get("TMP") orelse return error.TemporaryDirectoryUnavailable;
+    const pid = std.os.windows.GetCurrentProcessId();
+    const script = try std.fmt.allocPrint(allocator, "{s}\\moonstone-update-{d}.ps1", .{ directory, pid });
+    defer allocator.free(script);
+    const log = try std.fmt.allocPrint(allocator, "{s}.log", .{script});
+    defer allocator.free(log);
+    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{pid});
+    defer allocator.free(pid_text);
+    const executable = try std.process.executablePathAlloc(io, allocator);
+    defer allocator.free(executable);
+    const body = try moonstone.platform.http.fetchGetBody(allocator, io, url, null, 10000);
+    defer allocator.free(body);
+    if (body.len > 2 * 1024 * 1024) return error.InstallerScriptOversized;
+    const installer = try std.fmt.allocPrint(allocator, "{s}.installer.ps1", .{script});
+    defer allocator.free(installer);
+    const installer_file = try std.Io.Dir.cwd().createFile(io, installer, .{ .exclusive = true });
+    errdefer std.Io.Dir.cwd().deleteFile(io, installer) catch {};
+    installer_file.writeStreamingAll(io, body) catch |err| {
+        installer_file.close(io);
+        return err;
+    };
+    installer_file.close(io);
+    const helper = try std.Io.Dir.cwd().createFile(io, script, .{ .exclusive = true });
+    errdefer std.Io.Dir.cwd().deleteFile(io, script) catch {};
+    helper.writeStreamingAll(io, "param([int]$parentId,[string]$installer,[string]$directory,[string]$log,[string]$version)\n" ++
+        "$ErrorActionPreference='Stop'\n" ++
+        "try { Wait-Process -Id $parentId -ErrorAction SilentlyContinue; $installerArgs=@{InstallDir=$directory; NoModifyPath=$true}; if($version){$installerArgs.Version=$version}else{$installerArgs.Latest=$true}; & $installer @installerArgs *> $log; if(-not $?){throw 'Installer failed'}; Add-Content -LiteralPath $log -Value 'Moonstone update completed' } catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 } finally { Remove-Item -LiteralPath $installer,$PSCommandPath -Force -ErrorAction SilentlyContinue }\n") catch |err| {
+        helper.close(io);
+        return err;
+    };
+    helper.close(io);
+    const version = switch (selection) {
+        .latest => "",
+        .exact => |v| v,
+    };
+    _ = try std.process.spawn(io, .{ .argv = &.{ "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, pid_text, installer, std.fs.path.dirname(executable) orelse return error.InvalidExecutablePath, log, version }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    if (is_json) {
+        var emitter = ndjson.Emitter.init(allocator, ctx.stdout, eventName(selection));
+        try emitter.terminate(io, eventName(selection), "scheduled", .{ .installer_url = url, .apply = true, .log = log });
+    } else {
+        try ctx.stdout.print("Update scheduled after Moonstone exits. Check {s} for completion or errors.\n", .{log});
     }
 }
 

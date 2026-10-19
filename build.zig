@@ -55,6 +55,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "default_registry_url", default_registry_url);
     options.addOption([]const u8, "default_homepage_url", default_homepage_url);
     options.addOption([]const u8, "default_installer_url", default_installer_url);
+    options.addOption([]const u8, "default_windows_installer_url", b.option([]const u8, "default-windows-installer-url", "Windows PowerShell installer URL") orelse "https://moonstone.sh/install.ps1");
     options.addOption(InstallationOwnership, "installation_ownership", installation_ownership);
     options.addOption([]const u8, "distribution_label", distribution_label);
     options.addOption(ArchiveBackend, "archive_backend", archive_backend);

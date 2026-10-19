@@ -67,6 +67,11 @@ pub const CommandNode = struct {
                 fn reportAndStop(args: []const []const u8, ctx: *Context, cmd: CmdType, err: anyerror) anyerror!void {
                     if (err == error.Cancelled or err == error.Canceled) return err;
                     if (@hasField(CmdType, "quiet") and cmd.quiet) return error.AlreadyReported;
+                    if (ctx.env.get("MOONSTONE_TRACE_ERRORS")) |setting| {
+                        if (std.mem.eql(u8, setting, "1")) {
+                            if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
+                        }
+                    }
                     const is_json = if (@hasField(CmdType, "json")) cmd.json or argsWantJson(args) else argsWantJson(args);
                     const cmd_name = if (@hasDecl(CmdType, "command_name")) CmdType.command_name else CmdType.name;
                     try command_mod.reportError(ctx.allocator, ctx.io, ctx.stdout, is_json, err, cmd_name, ctx.error_detail);

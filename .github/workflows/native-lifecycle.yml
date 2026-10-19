@@ -1,0 +1,63 @@
+name: Native Lifecycle
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: zig build
+        id: build
+      - run: python -m pip install blake3
+      - run: python tests/platform/packaged_lifecycle.py
+      - run: ./tests/windows/core.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+      - run: ./tests/windows/installer.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: pwsh
+      - run: ./tests/windows/installer.ps1
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: powershell
+      - run: python tests/windows/terminal.py
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      - run: python tests/windows/update.py
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+  posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: native
+          - os: ubuntu-latest
+            target: x86_64-linux-musl
+          - os: macos-15
+            target: native
+          - os: macos-15-intel
+            target: native
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: zig build -Dtarget=${{ matrix.target }}
+      - run: python -m pip install blake3
+      - run: python tests/platform/packaged_lifecycle.py
+      - run: bash tests/e2e/commands/runtime_commands.sh
+      - run: bash tests/e2e/commands/self_lifecycle.sh

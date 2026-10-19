@@ -1265,41 +1265,41 @@ pub const StoreManifest = struct {
         _ = allocator;
         try writer.print("dependencies_complete = {}\n\n", .{self.dependencies_complete});
         try writer.print("[artifact]\n", .{});
-        try writer.print("name = \"{s}\"\n", .{self.artifact.name});
-        try writer.print("version = \"{s}\"\n", .{self.artifact.version});
-        try writer.print("kind = \"{s}\"\n", .{@tagName(self.artifact.kind)});
-        try writer.print("source_hash = \"{s}\"\n", .{self.artifact.source_hash});
-        try writer.print("recipe_hash = \"{s}\"\n", .{self.artifact.recipe_hash});
-        try writer.print("artifact_hash = \"{s}\"\n", .{self.artifact.artifact_hash});
-        try writer.print("target = \"{s}\"\n", .{self.artifact.target});
+        try @import("toml_string.zig").field(writer, "name", self.artifact.name);
+        try @import("toml_string.zig").field(writer, "version", self.artifact.version);
+        try @import("toml_string.zig").field(writer, "kind", @tagName(self.artifact.kind));
+        try @import("toml_string.zig").field(writer, "source_hash", self.artifact.source_hash);
+        try @import("toml_string.zig").field(writer, "recipe_hash", self.artifact.recipe_hash);
+        try @import("toml_string.zig").field(writer, "artifact_hash", self.artifact.artifact_hash);
+        try @import("toml_string.zig").field(writer, "target", self.artifact.target);
 
         try writer.print("\n[origin]\n", .{});
-        try writer.print("resolver = \"{s}\"\n", .{self.origin.resolver});
-        try writer.print("source = \"{s}\"\n", .{self.origin.source});
-        if (self.origin.source_kind.len > 0) try writer.print("source_kind = \"{s}\"\n", .{self.origin.source_kind});
-        if (self.origin.source_payload.len > 0) try writer.print("source_payload = \"{s}\"\n", .{self.origin.source_payload});
-        if (self.origin.source_url.len > 0) try writer.print("source_url = \"{s}\"\n", .{self.origin.source_url});
-        if (self.origin.rockspec.len > 0) try writer.print("rockspec = \"{s}\"\n", .{self.origin.rockspec});
-        if (self.origin.rockspec_hash.len > 0) try writer.print("rockspec_hash = \"{s}\"\n", .{self.origin.rockspec_hash});
-        if (self.origin.rockspec_payload.len > 0) try writer.print("rockspec_payload = \"{s}\"\n", .{self.origin.rockspec_payload});
+        try @import("toml_string.zig").field(writer, "resolver", self.origin.resolver);
+        try @import("toml_string.zig").field(writer, "source", self.origin.source);
+        if (self.origin.source_kind.len > 0) try @import("toml_string.zig").field(writer, "source_kind", self.origin.source_kind);
+        if (self.origin.source_payload.len > 0) try @import("toml_string.zig").field(writer, "source_payload", self.origin.source_payload);
+        if (self.origin.source_url.len > 0) try @import("toml_string.zig").field(writer, "source_url", self.origin.source_url);
+        if (self.origin.rockspec.len > 0) try @import("toml_string.zig").field(writer, "rockspec", self.origin.rockspec);
+        if (self.origin.rockspec_hash.len > 0) try @import("toml_string.zig").field(writer, "rockspec_hash", self.origin.rockspec_hash);
+        if (self.origin.rockspec_payload.len > 0) try @import("toml_string.zig").field(writer, "rockspec_payload", self.origin.rockspec_payload);
 
         try writer.print("\n[compat]\n", .{});
         try writer.print("runtime_bundled = {}\n", .{self.compat.runtime_bundled});
-        try writer.print("runtime_version = \"{s}\"\n", .{self.compat.runtime_version});
-        try writer.print("lua_abi = \"{s}\"\n", .{self.compat.lua_abi});
-        try writer.print("lua_api = \"{s}\"\n", .{self.compat.lua_api});
-        try writer.print("runtime_artifact_hash = \"{s}\"\n", .{self.compat.runtime_artifact_hash});
+        try @import("toml_string.zig").field(writer, "runtime_version", self.compat.runtime_version);
+        try @import("toml_string.zig").field(writer, "lua_abi", self.compat.lua_abi);
+        try @import("toml_string.zig").field(writer, "lua_api", self.compat.lua_api);
+        try @import("toml_string.zig").field(writer, "runtime_artifact_hash", self.compat.runtime_artifact_hash);
 
         try writer.print("\n[provides]\n", .{});
         try self.serializeProvides(self.provides, writer);
 
         for (self.dependencies) |dep| {
             try writer.print("\n[[dependencies]]\n", .{});
-            try writer.print("name = \"{s}\"\n", .{dep.name});
-            try writer.print("constraint = \"{s}\"\n", .{dep.constraint});
-            if (dep.resolver) |r| try writer.print("resolver = \"{s}\"\n", .{r});
-            if (dep.registry) |r| try writer.print("registry = \"{s}\"\n", .{r});
-            try writer.print("role = \"{s}\"\n", .{@tagName(dep.role)});
+            try @import("toml_string.zig").field(writer, "name", dep.name);
+            try @import("toml_string.zig").field(writer, "constraint", dep.constraint);
+            if (dep.resolver) |r| try @import("toml_string.zig").field(writer, "resolver", r);
+            if (dep.registry) |r| try @import("toml_string.zig").field(writer, "registry", r);
+            try @import("toml_string.zig").field(writer, "role", @tagName(dep.role));
             if (dep.optional) try writer.print("optional = true\n", .{});
         }
     }
@@ -1310,7 +1310,13 @@ pub const StoreManifest = struct {
             try writer.print("runtime = [", .{});
             for (provs.runtime, 0..) |rt, i| {
                 if (i > 0) try writer.print(", ", .{});
-                try writer.print("{{ name = \"{s}\", version = \"{s}\", abi = \"{s}\" }}", .{ rt.name, rt.version, rt.abi });
+                try writer.writeAll("{ name = ");
+                try @import("toml_string.zig").write(writer, rt.name);
+                try writer.writeAll(", version = ");
+                try @import("toml_string.zig").write(writer, rt.version);
+                try writer.writeAll(", abi = ");
+                try @import("toml_string.zig").write(writer, rt.abi);
+                try writer.writeAll(" }");
             }
             try writer.print("]\n", .{});
         }
@@ -1320,12 +1326,17 @@ pub const StoreManifest = struct {
                 try writer.print("{s} = [", .{field});
                 for (list, 0..) |p, i| {
                     if (i > 0) try writer.print(", ", .{});
-                    try writer.print("{{ name = \"{s}\", path = \"{s}\"", .{ p.name, p.path });
+                    try writer.writeAll("{ name = ");
+                    try @import("toml_string.zig").write(writer, p.name);
+                    try writer.writeAll(", path = ");
+                    try @import("toml_string.zig").write(writer, p.path);
                     if (p.entry_point) |ep| {
-                        try writer.print(", entry_point = \"{s}\"", .{ep});
+                        try writer.writeAll(", entry_point = ");
+                        try @import("toml_string.zig").write(writer, ep);
                     }
                     if (p.module) |m| {
-                        try writer.print(", module = \"{s}\"", .{m});
+                        try writer.writeAll(", module = ");
+                        try @import("toml_string.zig").write(writer, m);
                     }
                     if (comptime std.mem.eql(u8, field, "native_lib")) {
                         if (p.linkage != .unknown) try writer.print(", linkage = \"{s}\"", .{@tagName(p.linkage)});
@@ -2117,18 +2128,7 @@ pub const MoonstoneToml = struct {
     }
 
     fn writeTomlString(writer: anytype, value: []const u8) !void {
-        try writer.writeByte('"');
-        for (value) |ch| {
-            switch (ch) {
-                '\\' => try writer.writeAll("\\\\"),
-                '"' => try writer.writeAll("\\\""),
-                '\n' => try writer.writeAll("\\n"),
-                '\r' => try writer.writeAll("\\r"),
-                '\t' => try writer.writeAll("\\t"),
-                else => try writer.writeByte(ch),
-            }
-        }
-        try writer.writeByte('"');
+        return @import("toml_string.zig").write(writer, value);
     }
 
     fn writeTomlCommand(writer: anytype, value: []const u8) !void {
@@ -3438,4 +3438,17 @@ test "RemotePackageDescriptor parses typed materialization external paths" {
     try std.testing.expectEqualStrings("SQLITE_LIBDIR", paths[1].variable);
     try std.testing.expectEqual(external_input.PathKind.library, paths[1].kind);
     try std.testing.expectEqualStrings("-L$(SQLITE_LIBDIR)", descriptor.artifact[0].materialize.?.ldflags[0]);
+}
+
+test "StoreManifest Windows source paths round trip through TOML" {
+    const original = StoreManifest{
+        .artifact = .{ .name = "local", .version = "0.1.0", .kind = .script, .source_hash = "b3:source", .recipe_hash = "b3:recipe", .artifact_hash = "b3:artifact", .target = "any" },
+        .origin = .{ .resolver = "path", .source = "C:\\Users\\Lua ü\\source \"quoted\"" },
+    };
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    try original.serialize(std.testing.allocator, &output.writer);
+    var parsed = try StoreManifest.parse(std.testing.allocator, output.writer.buffered());
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(original.origin.source, parsed.origin.source);
 }

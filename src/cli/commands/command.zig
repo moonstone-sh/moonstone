@@ -363,7 +363,6 @@ pub fn reportError(
             }
         }
     } else {
-        try stdout.print("\x1b[2K\r", .{});
         if (detail) |d| {
             switch (d) {
                 .hash_mismatch => |hm| try stdout.print("Error: hash mismatch for {s}. Expected {s}, got {s}\n", .{ about, hm.expected, hm.got }),
@@ -503,11 +502,9 @@ pub fn progress(stdout: *std.Io.Writer, comptime fmt: []const u8, args: anytype)
     try stdout.flush();
 }
 
-const spinner_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-
 pub fn renderSpinner(context: *ResolveCallbackContext, comptime fmt: []const u8, args: anytype) !void {
     if (!context.is_tty) return;
-    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    const frame = progress_runtime.spinnerGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")), context.spinner_frame);
     context.spinner_frame +%= 1;
     try renderVolatile(context, "{s} " ++ fmt, .{frame} ++ args);
 }
@@ -518,7 +515,7 @@ pub fn renderDone(context: *ResolveCallbackContext, comptime fmt: []const u8, ar
         try context.stdout.flush();
         return;
     }
-    try renderVolatile(context, "⠿ " ++ fmt, args);
+    try renderVolatile(context, "{s} " ++ fmt, .{progress_runtime.doneGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")))} ++ args);
     try context.stdout.print("\n", .{});
     try context.stdout.flush();
 }
@@ -527,7 +524,7 @@ const fill_levels = [_][]const u8{ "⠀", "⡀", "⣀", "⣄", "⣤", "⣦", "�
 
 pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: usize, comptime fmt: []const u8, args: anytype) !void {
     if (!context.is_tty) return;
-    const frame = spinner_frames[context.spinner_frame % spinner_frames.len];
+    const frame = progress_runtime.spinnerGlyph(progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")), context.spinner_frame);
     context.spinner_frame +%= 1;
 
     var content = std.Io.Writer.Allocating.init(std.heap.page_allocator);
@@ -548,7 +545,7 @@ pub fn renderProgress(context: *ResolveCallbackContext, fraction: f32, width: us
         else
             current_state - i * 8;
 
-        try content.writer.print("{s}", .{fill_levels[char_state]});
+        try content.writer.writeAll(if (progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")) == .ascii) (if (char_state == 8) "#" else if (char_state == 0) " " else "=") else fill_levels[char_state]);
     }
 
     if (bar_width > 0) try content.writer.writeAll("]");
@@ -569,7 +566,7 @@ fn renderVolatileText(context: *ResolveCallbackContext, text: []const u8, column
     var frame = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     defer frame.deinit();
     try frame.writer.writeAll("\x1b[2K\r");
-    try progress_runtime.appendBounded(&frame.writer, text, columns);
+    try progress_runtime.appendBoundedWithGlyphMode(&frame.writer, text, columns, progress_runtime.glyphModeFromSetting(context.env.get("MOONSTONE_PROGRESS_GLYPHS")));
     try context.stdout.writeAll(frame.writer.buffered());
     try context.stdout.flush();
 }
@@ -734,4 +731,18 @@ pub fn onSolverEvent(ctx: ?*anyopaque, event: @import("moonstone").resolution.so
 
 pub fn moonstone_sqlite_transient() @import("moonstone").store.driver.c.sqlite3_destructor_type {
     return @import("moonstone").store.driver.moonstone_sqlite_transient_ptr;
+}
+
+test "direct callback ASCII policy includes clipping and completion" {
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("MOONSTONE_PROGRESS_GLYPHS", "ascii");
+    try env_map.put("COLUMNS", "12");
+    var context = ResolveCallbackContext{ .io = std.testing.io, .stdout = &writer, .env = &env_map, .is_tty = true, .use_stderr = false };
+    try renderSpinner(&context, "a sufficiently long package name", .{});
+    try renderDone(&context, "done", .{});
+    for (writer.buffered()) |byte| try std.testing.expect(byte < 128);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "+ done") != null);
 }
