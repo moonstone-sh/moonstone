@@ -29,6 +29,22 @@ test "Windows command scripts retain argv for the script-specific serializer" {
     try std.testing.expectEqualSlices([]const u8, &original, prepared.argv);
 }
 
+test "Windows command launcher executes from a path with spaces" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "launcher with spaces.cmd", .data = "@echo off\r\necho [%~1]\r\n" });
+    const script = try tmp.dir.realPathFileAlloc(std.testing.io, "launcher with spaces.cmd", std.testing.allocator);
+    defer std.testing.allocator.free(script);
+    var prepared = try prepareArgv(std.testing.allocator, &.{ script, "hello world" });
+    defer prepared.deinit(std.testing.allocator);
+    const result = try run(std.testing.allocator, std.testing.io, .{ .argv = prepared.argv });
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, result.term);
+    try std.testing.expectEqualStrings("[hello world]", std.mem.trim(u8, result.stdout, "\r\n "));
+}
+
 const windows = struct {
     extern "c" fn moonstone_job_create() ?*anyopaque;
     extern "c" fn moonstone_job_assign(job: *anyopaque, process: *anyopaque) c_int;
