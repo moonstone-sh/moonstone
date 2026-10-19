@@ -73,10 +73,14 @@ path = "bin/''' + binary.name + '"\n')
         # Real copy-only source materialization, unlike the prebuilt runtime.
         # Publication must close hashing handles before renaming its output.
         module = work / 'portable.lua'
-        module.write_text('return { portable = true }\n')
+        module.write_text('return { portable = true }\n' + '-- streaming archive payload\n' * 50000)
         source_archive = work / 'source.tar.gz'
-        with tarfile.open(source_archive, 'w:gz') as tar:
-            tar.add(module, arcname='src/portable.lua')
+        moon('artifact', 'create', '--out', str(source_archive), '--json', '--', 'src/portable.lua', str(module), '0644')
+        repeated_archive = work / 'source-repeat.tar.gz'
+        moon('artifact', 'create', '--out', str(repeated_archive), '--json', '--', 'src/portable.lua', str(module), '0644')
+        assert source_archive.read_bytes() == repeated_archive.read_bytes()
+        with tarfile.open(source_archive) as tar:
+            assert tar.extractfile('src/portable.lua').read() == module.read_bytes()
         source_descriptor = work / 'source-package.toml'
         source_descriptor.write_text('[package]\nname = "fixture/portable"\nversion = "1.0.0"\nkind = "lib"\n[[artifacts]]\nid = "source"\nkind = "source"\ntarget = "source"\nlua_abi = "5.4"\nformat = "tar.gz"\nurl = "placeholder.tar.gz"\nhash = "b3:placeholder"\n[artifacts.materialize]\ntype = "command"\ncommand = "true"\n[artifacts.materialize.collect]\nlua_modules = [{ name = "portable.lua", path = "src/portable.lua" }]\n')
         moon('registry', '--file', str(registry), 'publish', '--descriptor', str(source_descriptor), '--artifact', str(source_archive))
