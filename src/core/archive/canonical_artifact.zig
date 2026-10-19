@@ -99,6 +99,11 @@ pub fn create(
             .follow_symlinks = false,
         });
         errdefer source_file.close(io);
+        // Zig 0.16 opens no-follow Windows handles with ASYNCHRONOUS IO but
+        // reports nonblocking=false. Preserve no-follow safety and correct
+        // the handle metadata so large reads wait for NT completion rather
+        // than treating STATUS_PENDING as unreachable.
+        if (@import("builtin").os.tag == .windows) source_file.flags.nonblocking = true;
         const opened_stat = try source_file.stat(io);
         if (opened_stat.kind != .file) return error.UnsupportedEntryType;
 
@@ -150,7 +155,9 @@ pub fn create(
     try hashed_writer.writer.flush();
     try file_writer.interface.flush();
 
-    const bytes = try staged.file.length(io);
+    // The flushed writer already knows the exact byte count. Windows atomic
+    // files are write-only and cannot be queried for FileAllInformation.
+    const bytes = file_writer.logicalPos();
     var digest: [32]u8 = undefined;
     hashed_writer.hasher.final(&digest);
     const b3 = try hash.blake3Digest(allocator, digest);
