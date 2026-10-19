@@ -10,6 +10,7 @@ pub const ArtifactCreateCommand = struct {
 
     out: ?[]const u8 = null,
     json: bool = false,
+    entries_file: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
@@ -26,6 +27,7 @@ pub const ArtifactCreateCommand = struct {
             \\
             \\Flags:
             \\  --out <path>  Destination file; its parent directory must exist
+            \\  --entries-file <path> JSON moonstone:artifact-entries:v1 document; replaces triples
             \\  --json        Required. Emit the machine-facing result object
             \\
         , .{});
@@ -38,6 +40,23 @@ pub const ArtifactCreateCommand = struct {
 
         var entries = std.ArrayList(moonstone.archive.canonical_artifact.Entry).empty;
         defer entries.deinit(ctx.allocator);
+        const EntryDocument = struct {
+            contract: []const u8,
+            entries: []const struct { virtual_path: []const u8, source_path: []const u8, mode: []const u8 },
+        };
+        const source = if (self.entries_file) |file| try std.Io.Dir.cwd().readFileAlloc(ctx.io, file, ctx.allocator, .limited(16 * 1024 * 1024)) else null;
+        defer if (source) |bytes| ctx.allocator.free(bytes);
+        const document = if (source) |bytes| try std.json.parseFromSlice(EntryDocument, ctx.allocator, bytes, .{}) else null;
+        defer if (document) |parsed| parsed.deinit();
+        if (document) |parsed| {
+            if (self.positionals.len != 0) return error.MixedArtifactEntryArguments;
+            if (!std.mem.eql(u8, parsed.value.contract, "moonstone:artifact-entries:v1")) return error.InvalidArtifactEntriesContract;
+            for (parsed.value.entries) |entry| try entries.append(ctx.allocator, .{
+                .virtual_path = entry.virtual_path,
+                .source_path = entry.source_path,
+                .mode = try moonstone.archive.canonical_artifact.PortableMode.parse(entry.mode),
+            });
+        }
         var index: usize = 0;
         while (index < self.positionals.len) : (index += 3) {
             try entries.append(ctx.allocator, .{

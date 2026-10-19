@@ -79,6 +79,14 @@ path = "bin/''' + binary.name + '"\n')
         repeated_archive = work / 'source-repeat.tar.gz'
         moon('artifact', 'create', '--out', str(repeated_archive), '--json', '--', 'src/portable.lua', str(module), '0644')
         assert source_archive.read_bytes() == repeated_archive.read_bytes()
+        entries_file = work / 'artifact entries.json'
+        entries_file.write_text(json.dumps({'contract': 'moonstone:artifact-entries:v1', 'entries': [
+            {'virtual_path': 'src/portable.lua', 'source_path': str(module), 'mode': '0644'}]}))
+        manifest_archive = work / 'manifest.tar.gz'
+        moon('artifact', 'create', '--out', str(manifest_archive), '--json', '--entries-file', str(entries_file))
+        assert source_archive.read_bytes() == manifest_archive.read_bytes()
+        moon('artifact', 'create', '--out', str(manifest_archive), '--json', '--entries-file', str(entries_file), '--', 'extra', str(module), '0644', failure=True)
+
         with tarfile.open(source_archive) as tar:
             assert tar.extractfile('src/portable.lua').read() == module.read_bytes()
         source_descriptor = work / 'source-package.toml'
