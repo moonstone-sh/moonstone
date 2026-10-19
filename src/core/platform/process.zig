@@ -17,11 +17,18 @@ pub const PreparedArgv = struct {
 /// serializer for .cmd/.bat files, including the outer quote pair required
 /// when the executable path contains spaces. Wrapping them as ordinary cmd.exe
 /// argv loses that script-specific quoting and escaping.
-pub fn prepareArgv(_: std.mem.Allocator, argv: []const []const u8) !PreparedArgv {
+pub fn prepareArgv(allocator: std.mem.Allocator, argv: []const []const u8) !PreparedArgv {
+    if (comptime builtin.os.tag == .windows) {
+        // Wine has no CSRSS command-processor path for Zig's batch serializer.
+        if (windows.moonstone_is_wine() != 0) return prepareWineArgv(allocator, argv);
+    }
     return .{ .argv = argv };
 }
 
 test "Windows command scripts retain argv for the script-specific serializer" {
+    if (comptime builtin.os.tag == .windows) {
+        if (windows.moonstone_is_wine() != 0) return error.SkipZigTest;
+    }
     const original = [_][]const u8{ "C:\\project with spaces\\check.CMD", "first argument", "second" };
     var prepared = try prepareArgv(std.testing.allocator, &original);
     defer prepared.deinit(std.testing.allocator);
@@ -45,7 +52,19 @@ test "Windows command launcher executes from a path with spaces" {
     try std.testing.expectEqualStrings("[hello world]", std.mem.trim(u8, result.stdout, "\r\n "));
 }
 
+fn prepareWineArgv(allocator: std.mem.Allocator, argv: []const []const u8) !PreparedArgv {
+    if (argv.len == 0) return .{ .argv = argv };
+    const extension = std.fs.path.extension(argv[0]);
+    if (!std.ascii.eqlIgnoreCase(extension, ".cmd") and !std.ascii.eqlIgnoreCase(extension, ".bat")) return .{ .argv = argv };
+    const wrapped = try allocator.alloc([]const u8, argv.len + 5);
+    @memcpy(wrapped[0..5], &[_][]const u8{ "cmd.exe", "/d", "/s", "/c", "@" });
+    // A leading @ prevents /s /c from stripping the script path's quote pair.
+    @memcpy(wrapped[5..], argv);
+    return .{ .argv = wrapped, .owned = wrapped };
+}
+
 const windows = struct {
+    extern "c" fn moonstone_is_wine() c_int;
     extern "c" fn moonstone_job_create() ?*anyopaque;
     extern "c" fn moonstone_job_assign(job: *anyopaque, process: *anyopaque) c_int;
     extern "c" fn moonstone_thread_resume(thread: *anyopaque) c_int;

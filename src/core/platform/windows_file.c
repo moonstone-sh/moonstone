@@ -86,3 +86,8 @@ int moonstone_process_alive(uint32_t pid) {
     CloseHandle(process);
     return result == WAIT_TIMEOUT ? 1 : (result == WAIT_OBJECT_0 ? 0 : -1);
 }
+
+int moonstone_is_wine(void) {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll && GetProcAddress(ntdll, "wine_get_version") != NULL;
+}
