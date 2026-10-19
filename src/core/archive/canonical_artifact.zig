@@ -155,7 +155,9 @@ pub fn create(
     try hashed_writer.writer.flush();
     try file_writer.interface.flush();
 
-    const bytes = try staged.file.length(io);
+    // The flushed writer already knows the exact byte count. Windows atomic
+    // files are write-only and cannot be queried for FileAllInformation.
+    const bytes = file_writer.logicalPos();
     var digest: [32]u8 = undefined;
     hashed_writer.hasher.final(&digest);
     const b3 = try hash.blake3Digest(allocator, digest);
