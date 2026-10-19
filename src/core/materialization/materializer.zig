@@ -373,9 +373,13 @@ pub const Materializer = struct {
                     });
                     new_provides.lua_cmodule = try cmodules.toOwnedSlice(self.allocator);
 
-                    const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
-                    defer build_files_dir.close(self.io);
-                    const art_hash_raw = try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    // Windows cannot publish/rename an output tree while its
+                    // hashing directory handle remains open.
+                    const art_hash_raw = blk: {
+                        const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
+                        defer build_files_dir.close(self.io);
+                        break :blk try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    };
                     defer self.allocator.free(art_hash_raw);
                     const art_hash = try std.fmt.allocPrint(self.allocator, "b3:{s}", .{art_hash_raw});
                     defer self.allocator.free(art_hash);
@@ -453,9 +457,13 @@ pub const Materializer = struct {
                         new_provides.lua_cmodule = try cmodules.toOwnedSlice(self.allocator);
                     }
 
-                    const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
-                    defer build_files_dir.close(self.io);
-                    const art_hash_raw = try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    // Windows cannot publish/rename an output tree while its
+                    // hashing directory handle remains open.
+                    const art_hash_raw = blk: {
+                        const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
+                        defer build_files_dir.close(self.io);
+                        break :blk try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    };
                     defer self.allocator.free(art_hash_raw);
                     const art_hash = try std.fmt.allocPrint(self.allocator, "b3:{s}", .{art_hash_raw});
                     defer self.allocator.free(art_hash);
@@ -589,9 +597,13 @@ pub const Materializer = struct {
                         new_provides.asset = try clist.toOwnedSlice(self.allocator);
                     }
 
-                    const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
-                    defer build_files_dir.close(self.io);
-                    const art_hash_raw = try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    // Windows cannot publish/rename an output tree while its
+                    // hashing directory handle remains open.
+                    const art_hash_raw = blk: {
+                        const build_files_dir = try std.Io.Dir.cwd().openDir(self.io, build_out_path, .{ .iterate = true });
+                        defer build_files_dir.close(self.io);
+                        break :blk try @import("../identity/hash.zig").artifact_hash(self.allocator, self.io, build_files_dir);
+                    };
                     defer self.allocator.free(art_hash_raw);
                     const art_hash = try std.fmt.allocPrint(self.allocator, "b3:{s}", .{art_hash_raw});
                     defer self.allocator.free(art_hash);
