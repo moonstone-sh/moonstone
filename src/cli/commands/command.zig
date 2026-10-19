@@ -40,6 +40,7 @@ pub const version = @import("version.zig").VersionCommand;
 pub const env = @import("env.zig").EnvCommand;
 
 pub const artifact = struct {
+    pub const hash = @import("artifact_hash.zig").ArtifactHashCommand;
     pub const create = @import("artifact_create.zig").ArtifactCreateCommand;
 };
 

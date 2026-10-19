@@ -155,6 +155,7 @@ pub fn main(init: std.process.Init) !void {
 
         router.CommandNode.group("artifact", "Create deterministic portable artifacts", &.{
             router.CommandNode.from(command_mod.artifact.create),
+            router.CommandNode.from(command_mod.artifact.hash),
         }),
 
         router.CommandNode.group("provision", "Inspect already-provisioned tool executables", &.{
