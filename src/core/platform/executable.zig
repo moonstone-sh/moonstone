@@ -83,8 +83,7 @@ fn resolveWindows(
     directory: []const u8,
     name: []const u8,
 ) !?[]u8 {
-    if (try resolveUnix(allocator, io, directory, name)) |candidate| return candidate;
-    if (std.fs.path.extension(name).len > 0) return null;
+    if (std.fs.path.extension(name).len > 0) return resolveUnix(allocator, io, directory, name);
 
     inline for (windows_executable_extensions) |extension| {
         const executable_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, extension });
@@ -92,7 +91,22 @@ fn resolveWindows(
         if (try resolveUnix(allocator, io, directory, executable_name)) |candidate| return candidate;
     }
 
-    return null;
+    return resolveUnix(allocator, io, directory, name);
+}
+
+test "Windows executable siblings take precedence over a POSIX launcher" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "tool", "tool.cmd" }) |name| {
+        const file = try tmp.dir.createFile(io, name, .{});
+        file.close(io);
+    }
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const resolved = (try resolveWindows(std.testing.allocator, io, directory, "tool")).?;
+    defer std.testing.allocator.free(resolved);
+    try std.testing.expect(std.mem.endsWith(u8, resolved, "tool.cmd"));
 }
 
 test "Windows resolution recognizes executable, command, and batch suffixes" {

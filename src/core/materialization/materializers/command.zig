@@ -67,7 +67,9 @@ pub fn build_internal(
             });
         }
     } else if (config.command) |cmd| {
-        try steps.append(allocator, .{
+        // Ballad source descriptors use literal `true` with no arguments as
+        // the legacy copy-only recipe. It declares no native build work.
+        if (!(std.mem.eql(u8, cmd, "true") and config.args.len == 0)) try steps.append(allocator, .{
             .cmd = try expandVariables(allocator, cmd, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
             .args = try expandArray(allocator, config.args, out_abs, src_abs, bdir, lua_include, lua_lib, lua_link_library, lua_bin_dir, lua_abi),
         });
@@ -312,15 +314,9 @@ fn collectOutputs(
                 try std.Io.Dir.cwd().createDirPath(io, parent);
             }
 
-            const cp_res = try owned_process.run(allocator, io, .{
-                .argv = &.{ "cp", src_abs, dest_abs },
-            });
-            defer allocator.free(cp_res.stdout);
-            defer allocator.free(cp_res.stderr);
-            if (cp_res.term != .exited or cp_res.term.exited != 0) {
-                std.log.err("Failed to copy '{s}' to '{s}': {s}", .{ src_abs, dest_abs, cp_res.stderr });
-                return error.CopyFailed;
-            }
+            // Native copying preserves permissions without requiring a POSIX
+            // executable in Windows PATH.
+            try std.Io.Dir.cwd().copyFile(src_abs, .cwd(), dest_abs, io, .{});
 
             if (category.executable) try ensureExecutable(io, dest_abs);
         }

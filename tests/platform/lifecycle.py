@@ -70,9 +70,22 @@ path = "bin/''' + binary.name + '"\n')
         moon('registry', 'fixture:', 'sync', cwd=project)
         moon('registry', 'fixture:', 'fetch', '--descriptor', 'moonstone/lua@5.4.123', '--output', str(work / 'fetched.toml'), cwd=project)
         assert (work / 'fetched.toml').exists()
+        # Real copy-only source materialization, unlike the prebuilt runtime.
+        # Publication must close hashing handles before renaming its output.
+        module = work / 'portable.lua'
+        module.write_text('return { portable = true }\n')
+        source_archive = work / 'source.tar.gz'
+        with tarfile.open(source_archive, 'w:gz') as tar:
+            tar.add(module, arcname='src/portable.lua')
+        source_descriptor = work / 'source-package.toml'
+        source_descriptor.write_text('[package]\nname = "fixture/portable"\nversion = "1.0.0"\nkind = "lib"\n[[artifacts]]\nid = "source"\nkind = "source"\ntarget = "source"\nlua_abi = "5.4"\nformat = "tar.gz"\nurl = "placeholder.tar.gz"\nhash = "b3:placeholder"\n[artifacts.materialize]\ntype = "command"\ncommand = "true"\n[artifacts.materialize.collect]\nlua_modules = [{ name = "portable.lua", path = "src/portable.lua" }]\n')
+        moon('registry', '--file', str(registry), 'publish', '--descriptor', str(source_descriptor), '--artifact', str(source_archive))
+        moon('registry', 'fixture:', 'sync', cwd=project)
+        moon('add', 'fixture/portable', '--no-sync', cwd=project)
         moon('set', 'lua@5.4.123', '--no-sync', cwd=project)
         moon('sync', '--offline', cwd=project)
         assert 'fixture runtime' in moon('exec', '--', 'lua', cwd=project)
+        assert (project / '.moonstone/env/share/lua/5.4/portable.lua').read_text() == module.read_text()
         setup = [json.loads(line) for line in moon('setup', '--force', '--json', cwd=project).splitlines()][-1]
         shim = Path(setup['data']['shim_dir']) / ('lua.cmd' if WINDOWS else 'lua')
         argv = [env.get('COMSPEC', 'cmd.exe'), '/d', '/v:off', '/c', str(shim)] if WINDOWS else [str(shim)]
