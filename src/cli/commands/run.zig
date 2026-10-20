@@ -18,8 +18,9 @@ pub const RunCommand = struct {
         try stdout.print(
             \\Usage: moon run <script-name> [-- [args...]]
             \\
-            \\Run a named shell command from moonstone.toml. Moonstone projects
-            \\the environment; the host shell interprets the command body.
+            \\Run a named command from moonstone.toml inside the project environment.
+            \\Plain commands forward arguments automatically on every platform.
+            \\Use { shell = "..." } for explicit host-shell expressions.
             \\
             \\Flags:
             \\  --prod           Exclude development dependencies
