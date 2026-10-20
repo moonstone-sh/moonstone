@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const moonstone = @import("moonstone");
 const MoonstoneToml = moonstone.domain.manifest.MoonstoneToml;
 const Kind = moonstone.domain.manifest.Kind;
@@ -505,11 +506,13 @@ pub const init_command = struct {
         });
 
         if (std.mem.eql(u8, template, "script")) {
-            try setScript(&pkg, allocator, "dev", "lua ./src/main.lua \"$@\"");
+            try setScript(&pkg, allocator, "dev", "lua ./src/main.lua");
         } else if (std.mem.eql(u8, template, "lua-zig")) {
-            try setScript(&pkg, allocator, "dev", "zig build install-zig && lua ./src/main.lua \"$@\"");
+            const dev_command = if (builtin.os.tag == .windows) "zig build install-zig && lua ./src/main.lua %*" else "zig build install-zig && lua ./src/main.lua \"$@\"";
+            try setScript(&pkg, allocator, "dev", dev_command);
+            pkg.scripts.items[pkg.scripts.items.len - 1].shell = true;
             try setScript(&pkg, allocator, "build", "zig build install-zig");
-            try setScript(&pkg, allocator, "run", "lua ./src/main.lua \"$@\"");
+            try setScript(&pkg, allocator, "run", "lua ./src/main.lua");
             try setScript(&pkg, allocator, "test", "zig build");
         } else if (std.mem.eql(u8, template, "love")) {
             try pkg.add_dependency(allocator, "moonstone/love", "11.5", .runtime, false);

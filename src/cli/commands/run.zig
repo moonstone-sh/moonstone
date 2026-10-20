@@ -92,6 +92,7 @@ pub const RunCommand = struct {
 
         if (emitter == null) {
             try stdout.print("> {s}\n\n", .{s_name});
+            try stdout.flush();
         }
 
         var run_env = if (ctx.working_directory != null)
@@ -106,6 +107,9 @@ pub const RunCommand = struct {
             if (emitter) |e| {
                 try e.fail(io, s_name, @errorName(err), .{});
                 return command_mod.CommonError.AlreadyReported;
+            }
+            if (err == error.ScriptRequiresExplicitShell or err == error.ScriptArgumentsForwardAutomatically) {
+                try stdout.writeAll("Plain scripts forward arguments automatically. Remove \"$@\"/%* from ordinary commands; put shell expressions in { shell = \"...\" }.\n");
             }
             try stdout.print("Error: script '{s}' failed: {s}\n", .{ s_name, @errorName(err) });
             return err;

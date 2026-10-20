@@ -13,7 +13,7 @@ fn writeScript(writer: *std.Io.Writer, script: moonstone.domain.script.ScriptDef
     try std.json.Stringify.value(script.name, .{}, writer);
     try writer.writeAll(",\"command\":");
     try std.json.Stringify.value(script.command, .{}, writer);
-    try writer.writeAll("}");
+    try writer.print(",\"shell\":{s}}}", .{if (script.shell) "true" else "false"});
 }
 
 pub const ListCommand = struct {
@@ -62,7 +62,7 @@ pub const SetCommand = struct {
     positionals: []const []const u8 = &.{},
     command: ?[]const u8 = null,
     pub fn printHelp(writer: *std.Io.Writer) !void {
-        try writer.writeAll("Usage: moon manifest script set <name> --command <opaque-shell-command>\n\nCreate or replace a named script in the current project manifest.\n--command is required. The host shell interprets its body when moon run\nexecutes it. Setting it does not execute it or sync dependencies.\n\nExample:\n  moon manifest script set build --command 'lua build.lua'\n");
+        try writer.writeAll("Usage: moon manifest script set <name> --command <command>\n\nCreate or replace a named script in the current project manifest.\n--command is required. Arguments are forwarded automatically by moon run.\nUse an explicit shell table in moonstone.toml for shell expressions. Setting it does not execute it or sync dependencies.\n\nExample:\n  moon manifest script set build --command 'lua build.lua'\n");
     }
     pub fn run(self: SetCommand, ctx: *router.Context) !void {
         const script_name = if (self.positionals.len > 0) self.positionals[0] else return error.ScriptRequired;

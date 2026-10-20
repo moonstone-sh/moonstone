@@ -196,3 +196,42 @@ Windows progress defaults to ASCII. Unicode decorations are opt-in through
 `MOONSTONE_PROGRESS_GLYPHS=unicode`; filenames remain Unicode in either mode.
 See [native certification](../TESTING.md#native-lifecycle-release-gates) for the
 platform checks that block publication and targets without native runners.
+
+
+## Script arguments
+
+Plain scripts are commands, not shell expressions. Moonstone splits their fixed
+arguments using single/double quotes for grouping, then appends arguments from
+`moon run` directly. It does not expand variables, globs, pipes, or redirects.
+
+```toml
+[scripts]
+build = "lua build.lua"
+check = 'lua "scripts/check project.lua"'
+```
+
+```sh
+moon run build -- --watch "two words"
+```
+
+`build.lua` receives `--watch` and `two words` on Windows, macOS, and Linux.
+Empty arguments, Unicode, and shell metacharacters in forwarded arguments stay
+data. Remove trailing `"$@"` or `%*` from plain scripts; Moonstone reports a
+migration error rather than forwarding them as literal arguments.
+
+Use an explicit shell table for a pipeline, environment expansion, or a shell
+builtin. The shell body owns argument placement:
+
+```toml
+[scripts]
+build = { shell = 'lua generate.lua && lua build.lua "$@"' }
+```
+
+That example is POSIX shell syntax. On Windows, shell mode runs a temporary
+batch file with delayed expansion disabled; use `%*` to place its arguments.
+Explicit shell scripts remain platform-specific. Prefer a Lua script or a
+plain command when the same declaration must run on every host.
+
+Quotes in a plain command only group text. Backslashes remain path data except
+when escaping a quote or unquoted whitespace; single-quoted Windows paths keep
+backslashes literally. Forwarded arguments are never parsed again by Moonstone.
