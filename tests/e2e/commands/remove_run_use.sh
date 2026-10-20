@@ -16,7 +16,7 @@ moon add inspect@3.1.3 --no-sync
 # manifest's last table (a [[registries]] entry follows it).
 cat > /tmp/moonstone-contract-rru-scripts.toml <<'TOML'
 hello = "echo hello-from-contract"
-args = "printf 'args:<%s><%s><%s>\\n' \"$1\" \"$2\" \"$3\""
+args = { shell = "printf 'args:<%s><%s><%s>\\n' \"$1\" \"$2\" \"$3\"" }
 TOML
 awk 'FNR==NR { extra = extra $0 "\n"; next } { print } /^\[scripts\]$/ { printf "%s", extra }' \
   /tmp/moonstone-contract-rru-scripts.toml moonstone.toml > moonstone.toml.new && mv moonstone.toml.new moonstone.toml
