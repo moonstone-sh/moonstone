@@ -1673,7 +1673,7 @@ pub fn prepare_source_rock(
     errdefer allocator.free(build_out_path);
     try std.Io.Dir.cwd().createDirPath(io, build_out_path);
 
-    var translated = if (class == .command_build) try allocator.alloc(TranslatedModule, 0) else try translateBuiltinBuild(allocator, &intent, runtime_spec);
+    var translated = if (class == .command_build) try allocator.alloc(TranslatedModule, 0) else try translateBuiltinBuild(allocator, &intent, runtime_spec, options.target);
     errdefer deinit_translated_modules(allocator, translated);
     const external_path_requirements = try collect_external_path_requirements(allocator, &intent, class, translated);
     errdefer external_dependency.deinitRequirements(allocator, external_path_requirements);
@@ -1767,10 +1767,27 @@ pub fn prepare_source_rock(
     };
 }
 
+fn luaCmoduleExtensionForTarget(target: ?[]const u8) []const u8 {
+    const selected = target orelse "native";
+    const windows = if (std.mem.eql(u8, selected, "native"))
+        target_builtin.os.tag == .windows
+    else
+        std.mem.indexOf(u8, selected, "-windows") != null;
+    return if (windows) ".dll" else ".so";
+}
+
+test "LuaRocks native module extension follows the build target" {
+    try std.testing.expectEqualStrings(".dll", luaCmoduleExtensionForTarget("x86_64-windows-gnu"));
+    try std.testing.expectEqualStrings(".dll", luaCmoduleExtensionForTarget("aarch64-windows"));
+    try std.testing.expectEqualStrings(".so", luaCmoduleExtensionForTarget("x86_64-linux-musl"));
+    try std.testing.expectEqualStrings(".so", luaCmoduleExtensionForTarget("aarch64-macos"));
+}
+
 fn translateBuiltinBuild(
     allocator: std.mem.Allocator,
     rock: *const luarocks.RockspecIntent,
     lua_abi: []const u8,
+    target: ?[]const u8,
 ) ![]const TranslatedModule {
     var list = std.ArrayList(TranslatedModule).empty;
     errdefer {
@@ -1823,7 +1840,7 @@ fn translateBuiltinBuild(
                     });
                 } else if (is_c_file(val)) {
                     // Single C file
-                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, name_path, luaCmoduleExtensionForTarget(target) });
                     var srcs = try allocator.alloc([]const u8, 1);
                     srcs[0] = try allocator.dupe(u8, val);
 
@@ -1847,7 +1864,7 @@ fn translateBuiltinBuild(
                 // Bare array of source files — a common LuaRocks convention.
                 // e.g. lpeg = { 'lpcap.c', 'lpcode.c', ... }
                 // All entries must be C files; treat as a multi-source C module.
-                const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+                const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, name_path, luaCmoduleExtensionForTarget(target) });
 
                 var srcs_list = std.ArrayList([]const u8).empty;
                 errdefer {
@@ -1881,7 +1898,7 @@ fn translateBuiltinBuild(
                 const sources_val = m_obj.get("sources") orelse m_obj.get("source");
                 if (sources_val) |sv| {
                     // C Module
-                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}.so", .{ lua_ver_dot, name_path });
+                    const dest_path = try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, name_path, luaCmoduleExtensionForTarget(target) });
 
                     var srcs_list = std.ArrayList([]const u8).empty;
                     errdefer {
@@ -4241,7 +4258,7 @@ pub fn materialize_prepared_rock(
 
         const lib_prefix = try std.fmt.allocPrint(allocator, "lib/lua/{s}", .{lua_module_dir_version});
         defer allocator.free(lib_prefix);
-        lua_cmodules = try discover_modules_from_dir(allocator, io, lib_dir, lib_prefix, ".so");
+        lua_cmodules = try discover_modules_from_dir(allocator, io, lib_dir, lib_prefix, luaCmoduleExtensionForTarget(options.target));
         if (cmake_install_root) |root| try copy_provisions_from_root(allocator, io, root, build_out_dir, lua_cmodules);
     }
 

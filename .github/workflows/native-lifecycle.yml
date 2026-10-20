@@ -19,6 +19,8 @@ jobs:
       - run: zig build
         id: build
       - run: python -m pip install blake3
+      - run: python tests/platform/artifact_hash.py
+      - run: python tests/platform/native_rocks.py
       - run: python tests/platform/packaged_lifecycle.py
       - run: ./tests/windows/core.ps1
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -58,6 +60,7 @@ jobs:
           python-version: '3.12'
       - run: zig build -Dtarget=${{ matrix.target }}
       - run: python -m pip install blake3
+      - run: python tests/platform/artifact_hash.py
       - run: python tests/platform/packaged_lifecycle.py
       - run: bash tests/e2e/commands/runtime_commands.sh
       - run: bash tests/e2e/commands/self_lifecycle.sh

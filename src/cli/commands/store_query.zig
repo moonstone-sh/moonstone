@@ -20,6 +20,7 @@ const Warning = struct {
 };
 
 const QueryResult = struct {
+    provisions: ?moonstone.store.artifacts.ArtifactProvisions = null,
     package: []const u8,
     version: []const u8,
     resolver: []const u8,
@@ -43,6 +44,10 @@ const QueryResult = struct {
     warnings: []Warning,
 
     fn deinit(self: *QueryResult, allocator: std.mem.Allocator) void {
+        if (self.provisions) |value| {
+            var owned = value;
+            owned.deinit(allocator);
+        }
         allocator.free(self.package);
         allocator.free(self.version);
         allocator.free(self.resolver);
@@ -171,7 +176,10 @@ fn scanIndex(ctx: *router.Context, paths: moonstone.platform.fs.MOONSTONE_PATHS,
         var sm = moonstone.domain.manifest.StoreManifest.parse(ctx.allocator, content) catch continue;
         defer sm.deinit(ctx.allocator);
         if (!matchesFilters(query, sm)) continue;
-        try results.append(ctx.allocator, try makeResult(ctx, sm, try ctx.allocator.dupe(u8, item.artifact_path), item.manifest_path));
+        var result = try makeResult(ctx, sm, try ctx.allocator.dupe(u8, item.artifact_path), item.manifest_path);
+        errdefer result.deinit(ctx.allocator);
+        result.provisions = try (moonstone.store.artifacts.ArtifactStore{ .driver = &driver }).getProvisions(sm.artifact.artifact_hash);
+        try results.append(ctx.allocator, result);
     }
     return true;
 }

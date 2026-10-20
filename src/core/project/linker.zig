@@ -1702,7 +1702,10 @@ pub fn link_project_env_at(
         const search_str = try std.fmt.allocPrint(allocator, "lib/lua/{s}/", .{lua_ver_dot});
         defer allocator.free(search_str);
 
-        const final_dest_rel = if (std.mem.indexOf(u8, target_path, search_str) != null) blk: {
+        // Old Windows artifacts can contain PE modules with a .so spelling.
+        // Keep the immutable source untouched and project the loadable .dll name.
+        const preserve_layout = builtin.os.tag != .windows and std.mem.indexOf(u8, target_path, search_str) != null;
+        const final_dest_rel = if (preserve_layout) blk: {
             const pos = std.mem.indexOf(u8, target_path, search_str).?;
             break :blk target_path[pos..];
         } else blk: {
@@ -1712,7 +1715,7 @@ pub fn link_project_env_at(
             defer allocator.free(slash_name);
             break :blk try std.fmt.allocPrint(allocator, "lib/lua/{s}/{s}{s}", .{ lua_ver_dot, slash_name, cmodule_extension });
         };
-        const is_owned = std.mem.indexOf(u8, target_path, search_str) == null;
+        const is_owned = !preserve_layout;
         defer if (is_owned) allocator.free(final_dest_rel);
 
         const dest_dir_rel = std.fs.path.dirname(final_dest_rel).?;

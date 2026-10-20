@@ -628,3 +628,16 @@ Development remains `moon run dev`; release packaging is Ballad's job.
 - Moonstone core knows runtime artifacts and project environments.
 - Ballad knows export/release layouts.
 - LÖVE projects stay normal: `love .` from the project root.
+
+## Portable file hashing for build tools
+
+`moon artifact hash -- <file>` streams a file through BLAKE3 and prints its
+64-character lowercase digest. It works without a system `b3sum` executable.
+For automation, use `moon artifact hash --json -- <file>`:
+
+```json
+{"contract":"moonstone:artifact-hash:v1","bytes":5,"b3":"b3:ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"}
+```
+
+This example hashes the five bytes `hello`. Missing or unreadable files fail
+with a nonzero exit status; callers must never substitute an empty cache key.
