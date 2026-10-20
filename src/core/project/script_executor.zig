@@ -43,7 +43,15 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, manifest: *const manifest_m
 }
 
 fn spawnAndWait(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, options: Options) !Result {
-    var prepared = try @import("../platform/process.zig").prepareArgv(allocator, argv);
+    // Zig's Windows spawn searches the parent PATH, rather than the supplied
+    // environment. Resolve before preparing batch argv so project binaries and
+    // Windows executable suffixes use the same rules as `moon exec`.
+    const executable = try resolveCommand(allocator, io, argv[0], options.environ_map);
+    defer allocator.free(executable);
+    const resolved_argv = try allocator.dupe([]const u8, argv);
+    defer allocator.free(resolved_argv);
+    resolved_argv[0] = executable;
+    var prepared = try @import("../platform/process.zig").prepareArgv(allocator, resolved_argv);
     defer prepared.deinit(allocator);
     var child = try std.process.spawn(io, .{ .argv = prepared.argv, .environ_map = options.environ_map, .stdout = .inherit, .stderr = .inherit });
     const result = try child.wait(io);
@@ -51,4 +59,37 @@ fn spawnAndWait(allocator: std.mem.Allocator, io: std.Io, argv: []const []const 
         .exited => |code| if (code == 0) .success else .{ .exit_code = code },
         else => .signaled,
     };
+}
+
+fn resolveCommand(allocator: std.mem.Allocator, io: std.Io, name: []const u8, environ: *const std.process.Environ.Map) ![]u8 {
+    if (std.fs.path.isAbsolute(name) or std.mem.indexOfAny(u8, name, "/\\") != null)
+        return allocator.dupe(u8, name);
+    const path = environ.get("PATH") orelse return error.FileNotFound;
+    const separator: u8 = if (@import("builtin").os.tag == .windows) ';' else ':';
+    var directories = std.mem.splitScalar(u8, path, separator);
+    while (directories.next()) |directory| {
+        if (try @import("../platform/executable.zig").resolveInDirectory(allocator, io, if (directory.len == 0) "." else directory, name)) |candidate|
+            return candidate;
+    }
+    return error.FileNotFound;
+}
+
+test "scripts resolve commands through the supplied project PATH" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const filename = if (@import("builtin").os.tag == .windows) "project-probe.exe" else "project-probe";
+    try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = "fixture" });
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("PATH", directory);
+    const resolved = try resolveCommand(allocator, io, "project-probe", &environ);
+    defer allocator.free(resolved);
+    const expected = try std.fs.path.join(allocator, &.{ directory, filename });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, resolved);
+    try std.testing.expectError(error.FileNotFound, resolveCommand(allocator, io, "missing-project-probe", &environ));
 }
