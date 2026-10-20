@@ -6,7 +6,7 @@ Moonstone provides three related execution interfaces:
 | --- | --- | --- |
 | Inspect or export the environment | `moon env`, `moon env --shell zsh` | Produces data or shell code; the caller decides how to consume it. |
 | Execute one command | `moon exec -- lua build.lua` | Applies the environment to one child process. Arguments after `--` belong to that process. |
-| Execute a project task | `moon run build` | Looks up a named manifest script and runs its command body through the host shell. |
+| Execute a project task | `moon run build` | Runs a named command with automatic argument forwarding; shell expressions require explicit shell mode. |
 
 `moon env` is the primitive for shell integrations. Exporting shell code does
 not change the parent shell by itself. The supported export syntaxes are Bash,
