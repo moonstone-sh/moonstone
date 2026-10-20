@@ -48,9 +48,9 @@ echo "━━━ Test 1: PATH resolution (lua hits project-local) ━━━"
 cat >> moonstone.toml << 'EOF'
 [scripts]
 quoted = 'lua -e "print(\"hello world\")"'
-compound = 'echo before && lua ./src/main.lua && echo after'
-args = 'printf "ARGS"; for arg in "$@"; do printf "[%s]" "$arg"; done; printf "\\n"'
-bad = "exit 42"
+compound = { shell = 'echo before && lua ./src/main.lua && echo after' }
+args = { shell = 'printf "ARGS"; for arg in "$@"; do printf "[%s]" "$arg"; done; printf "\\n"' }
+bad = { shell = "exit 42" }
 EOF
 
 moon run dev | grep "MOONSTONE_LUA\[./src/main.lua\]"

@@ -20,11 +20,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix='moon lifecycle ü ') as tmp:
         work = Path(tmp)
         env = dict(os.environ, MOONSTONE_HOME=str(work / 'home'), MOONSTONE_NO_PROGRESS='1')
-        def moon(*args, cwd=work, failure=False):
+        def moon(*args, cwd=work, failure=False, expected_exit=None):
             result = subprocess.run([str(MOON), *args], cwd=cwd, env=env, capture_output=True)
             if (result.returncode != 0) != failure:
                 trace = subprocess.run([str(MOON), *args], cwd=cwd, env=dict(env, MOONSTONE_TRACE_ERRORS='1'), capture_output=True)
                 raise AssertionError((args, result.returncode, result.stdout, result.stderr, trace.stderr.decode('utf-8', errors='replace')))
+            if expected_exit is not None:
+                assert result.returncode == expected_exit, result.returncode
             assert b'\x1b[' not in result.stdout + result.stderr, (args, result.stdout, result.stderr)
             return result.stdout.decode('utf-8')
         source = work / 'runtime.c'
@@ -97,6 +99,8 @@ path = "bin/''' + binary.name + '"\n')
         moon('set', 'lua@5.4.123', '--no-sync', cwd=project)
         moon('sync', '--offline', cwd=project)
         assert 'fixture runtime' in moon('exec', '--', 'lua', cwd=project)
+        from script_arguments import verify
+        verify(moon, project)
         assert (project / '.moonstone/env/share/lua/5.4/portable.lua').read_text() == module.read_text()
         setup = [json.loads(line) for line in moon('setup', '--force', '--json', cwd=project).splitlines()][-1]
         shim = Path(setup['data']['shim_dir']) / ('lua.cmd' if WINDOWS else 'lua')

@@ -70,8 +70,9 @@ sets the project environment, including executable and Lua module paths, before
 starting the command.
 
 `moon run <name>` selects a named entry in `[scripts]`, projects the same
-environment, and lets the host shell interpret the script command. Keep script
-entries simple; put substantial orchestration in Lua or ordinary script files.
+environment, and forwards arguments directly to the declared command. Shell
+expressions require an explicit `{ shell = "..." }` declaration. Keep substantial
+orchestration in Lua or ordinary script files. See [script arguments](docs/CLI_WORKFLOWS.md#script-arguments).
 
 ## Runtime and ABI
 

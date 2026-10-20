@@ -1455,6 +1455,7 @@ pub const MoonstoneToml = struct {
             if (!std.mem.eql(u8, definition.name, name)) continue;
             allocator.free(definition.command);
             definition.command = try allocator.dupe(u8, command);
+            definition.shell = false;
             return;
         }
 
@@ -1837,6 +1838,18 @@ pub const MoonstoneToml = struct {
                         try self.scripts.append(allocator, definition);
                     },
                     .table => |step_table| {
+                        if (step_table.get("shell")) |shell_value| {
+                            if (shell_value != .string or step_table.count() != 1) return error.InvalidScriptCommand;
+                            var definition = script_mod.ScriptDefinition{
+                                .name = try allocator.dupe(u8, name),
+                                .command = try allocator.dupe(u8, shell_value.string),
+                                .shell = true,
+                            };
+                            errdefer definition.deinit(allocator);
+                            try definition.validate();
+                            try self.scripts.append(allocator, definition);
+                            continue;
+                        }
                         // A structured, per-platform step (dotted-key TOML,
                         // e.g. `build.posix.sh = "..."`). Skip it silently
                         // when no variant covers this host: the manifest may
@@ -1847,6 +1860,7 @@ pub const MoonstoneToml = struct {
                             .name = try allocator.dupe(u8, name),
                             .command = try allocator.dupe(u8, variant.command),
                             .platform = try allocator.dupe(u8, variant.platform),
+                            .shell = true,
                         };
                         errdefer definition.deinit(allocator);
                         try definition.validate();
@@ -1998,7 +2012,9 @@ pub const MoonstoneToml = struct {
             try writer.print("\n[scripts]\n", .{});
             for (self.scripts.items) |script| {
                 try writer.print("{s} = ", .{script.name});
+                if (script.shell) try writer.writeAll("{ shell = ");
                 try writeTomlCommand(writer, script.command);
+                if (script.shell) try writer.writeAll(" }");
                 try writer.print("\n", .{});
             }
         }
@@ -3451,4 +3467,28 @@ test "StoreManifest Windows source paths round trip through TOML" {
     var parsed = try StoreManifest.parse(std.testing.allocator, output.writer.buffered());
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(original.origin.source, parsed.origin.source);
+}
+
+test "MoonstoneToml round trips explicit shell scripts" {
+    const allocator = std.testing.allocator;
+    var manifest = try MoonstoneToml.parse(allocator,
+        \\manifest_version = 2
+        \\[package]
+        \\name = "shell-scripts"
+        \\version = "1.0.0"
+        \\kind = "script"
+        \\[scripts]
+        \\build = "lua build.lua"
+        \\pipeline = { shell = "echo one && echo two" }
+    );
+    defer manifest.deinit(allocator);
+    try std.testing.expect(!manifest.findScript("build").?.shell);
+    try std.testing.expect(manifest.findScript("pipeline").?.shell);
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    try manifest.serialize(allocator, &output.writer);
+    var parsed = try MoonstoneToml.parse(allocator, output.writer.buffered());
+    defer parsed.deinit(allocator);
+    try std.testing.expect(parsed.findScript("pipeline").?.shell);
+    try std.testing.expectEqualStrings("echo one && echo two", parsed.findScript("pipeline").?.command);
 }

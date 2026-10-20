@@ -57,6 +57,7 @@ fn writeManifest(manifest: *const manifest_mod.MoonstoneToml, writer: anytype) !
         try writer.writeAll("{");
         try writeJsonField(writer, "name", script.name, true);
         try writeJsonField(writer, "command", script.command, false);
+        try writer.print(",\"shell\":{s}", .{if (script.shell) "true" else "false"});
         try writeOptionalJsonField(writer, "platform", script.platform, false);
         try writer.writeAll("}");
     }
