@@ -15,7 +15,7 @@ pub const RunCommand = struct {
     json: bool = false,
 
     pub fn printHelp(stdout: *std.Io.Writer) !void {
-        try stdout.print(
+        try stdout.writeAll(
             \\Usage: moon run <script-name> [-- [args...]]
             \\
             \\Run a named command from moonstone.toml inside the project environment.
@@ -28,7 +28,7 @@ pub const RunCommand = struct {
             \\  --interpreter <i> Override interpreter
             \\  --json           Emit newline-delimited JSON events
             \\
-        , .{});
+        );
     }
 
     pub fn complete(args: []const []const u8, ctx: *router.Context) anyerror![]const []const u8 {
