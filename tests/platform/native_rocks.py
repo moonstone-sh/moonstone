@@ -3,10 +3,31 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
+import time
+from contextlib import contextmanager
 
 repo = Path(__file__).resolve().parents[2]
 moon = repo/'zig-out/bin'/('moon.exe' if os.name == 'nt' else 'moon')
-with tempfile.TemporaryDirectory(prefix='moon native rocks ') as directory:
+@contextmanager
+def workspace():
+    directory = tempfile.mkdtemp(prefix='moon native rocks ')
+    try:
+        yield directory
+    finally:
+        # Native DLL scans can briefly retain a file after the child exits.
+        # Also use extended paths when removing deep CAS payloads on Windows.
+        target = ('\\\\?\\' + directory) if os.name == 'nt' else directory
+        for attempt in range(10):
+            try:
+                shutil.rmtree(target)
+                break
+            except OSError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.5)
+
+with workspace() as directory:
     root = Path(directory)
     env = dict(os.environ, MOONSTONE_HOME=str(root/'home'))
     def run(*args):
