@@ -29,6 +29,32 @@ coverage is still incomplete for the architectures noted below.
   coverage. Native Windows-on-ARM execution coverage remains to be added.*
 - Linux / Musl (`x86_64-linux-musl`, `aarch64-linux-musl`) - *Fully supported by Zig, ideal for ultra-minimalist distros.*
 
+## Native Lua Modules and the Lua C API
+
+A native Lua module (builtin, make, command or CMake rock, or a Moonstone C
+module) never carries its own copy of the Lua runtime. It uses the C API of
+the process that loads it: Moonstone's `lua`/`luajit`, or a host such as
+Neovim, LÖVE or OpenResty.
+
+| Target | How the module gets `lua_*` / `luaL_*` |
+| --- | --- |
+| Linux, BSD (ELF) | Left undefined; resolved from the loading process at `require` time. |
+| macOS (Mach-O) | `-undefined dynamic_lookup`; resolved from the loading process. |
+| Windows (PE) | Linked against the runtime's Lua import library. |
+
+Consequences:
+
+- Moonstone's ELF runtime executables export the Lua C API dynamically. A
+  custom runtime package must do the same (link with `-Wl,-E` or ship a shared
+  `liblua`), or its native modules fail to load with undefined-symbol errors.
+- Modules that ship compatibility definitions of runtime functions (for
+  example `luaL_setfuncs` or `luaL_testudata` from compat-5.3, as `luasystem`
+  does) build normally.
+- A module built for a runtime's ABI loads in any host with that ABI; for
+  example, `luajit@2.1` modules load inside Neovim.
+
+Covered by `tests/e2e/build/luarocks_cmodule_host_symbols_contract.sh`.
+
 ## Native Ecosystem Packages
 
 ### Homebrew (macOS / Linux)

@@ -126,20 +126,9 @@ pub fn build(
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_LIBRARY={s}", .{lua_link_library}));
     try conf_args.append(allocator, try std.fmt.allocPrint(allocator, "-DLua_LIBRARIES={s}", .{lua_link_library}));
 
-    if (comptime builtin.os.tag == .linux) {
-        // Linux CMake modules such as luv intentionally leave Lua symbols for
-        // the interpreter to provide. Moonstone's runtime executable does not
-        // promise those symbols through its dynamic export table, so link the
-        // selected runtime archive into the module closure explicitly. CMake
-        // inserts this variable before target objects; use a bounded whole
-        // archive group so static Lua objects are retained regardless of that
-        // ordering.
-        try conf_args.append(allocator, try std.fmt.allocPrint(
-            allocator,
-            "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,--whole-archive,{s},--no-whole-archive",
-            .{lua_link_library},
-        ));
-    }
+    // ELF CMake modules (luv and others) leave Lua C API symbols undefined for
+    // the loading host to provide; Moonstone's ELF runtimes export them. Never
+    // force the runtime archive into the module: that embeds a private VM copy.
 
     try steps.append(allocator, .{
         .command = try allocator.dupe(u8, "cmake"),
