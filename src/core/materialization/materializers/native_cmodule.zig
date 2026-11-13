@@ -23,6 +23,41 @@ fn is_elf_target(target: []const u8) bool {
         std.mem.indexOf(u8, target, "-dragonfly") != null;
 }
 
+/// How a native Lua module gets the Lua C API.
+const LuaLinkPolicy = enum {
+    /// ELF (Linux, BSD): leave lua_*/luaL_* undefined; the loading host
+    /// (Moonstone's lua/luajit, Neovim, LÖVE...) exports them. Linking the
+    /// runtime archive instead would put a private copy of the VM in every
+    /// module: modules that ship compat definitions (luaL_setfuncs for 5.1)
+    /// fail to link, and inside a host the module would depend on symbol
+    /// interposition to talk to the real VM.
+    host_symbols,
+    /// Mach-O: -undefined dynamic_lookup, resolved from the host at load time.
+    dynamic_lookup,
+    /// PE (Windows): the module must import the runtime's Lua library.
+    link_runtime_library,
+};
+
+fn lua_link_policy(target: []const u8) LuaLinkPolicy {
+    // An empty target compiles for the build host, same as "native".
+    const resolved = if (target.len == 0) "native" else target;
+    if (is_macos_target(resolved)) return .dynamic_lookup;
+    if (is_elf_target(resolved)) return .host_symbols;
+    return .link_runtime_library;
+}
+
+test "native Lua modules take the C API from the host on ELF and macOS" {
+    try std.testing.expectEqual(LuaLinkPolicy.host_symbols, lua_link_policy("x86_64-linux-gnu"));
+    try std.testing.expectEqual(LuaLinkPolicy.host_symbols, lua_link_policy("aarch64-linux-musl"));
+    try std.testing.expectEqual(LuaLinkPolicy.host_symbols, lua_link_policy("x86_64-freebsd"));
+    try std.testing.expectEqual(LuaLinkPolicy.dynamic_lookup, lua_link_policy("aarch64-macos"));
+    try std.testing.expectEqual(LuaLinkPolicy.link_runtime_library, lua_link_policy("x86_64-windows-gnu"));
+    try std.testing.expectEqual(lua_link_policy("native"), lua_link_policy(""));
+    if (comptime builtin.os.tag == .linux) {
+        try std.testing.expectEqual(LuaLinkPolicy.host_symbols, lua_link_policy("native"));
+    }
+}
+
 fn normalize_macos_uuid(io: std.Io, output_path: []const u8) !void {
     const mach_header_64_magic: u32 = 0xfeedfacf;
     const lc_uuid: u32 = 0x1b;
@@ -232,7 +267,8 @@ pub fn build(
     // 1. Resolve Lua headers path
     const lua_include = try find_lua_include(allocator, io, runtime_path);
     defer allocator.free(lua_include);
-    const lua_link_library = if (target_is_macos) null else try find_lua_link_library(allocator, io, runtime_path);
+    const link_policy = lua_link_policy(target);
+    const lua_link_library = if (link_policy == .link_runtime_library) try find_lua_link_library(allocator, io, runtime_path) else null;
     defer if (lua_link_library) |path| allocator.free(path);
 
     // 2. Prepare argv for zig cc
@@ -349,14 +385,10 @@ pub fn build(
         try argv.append(allocator, src);
     }
 
-    if (lua_link_library) |path| {
-        // Moonstone's Linux and Windows runtimes do not promise to export Lua
-        // C API symbols from the interpreter executable. Resolve them into the
-        // module from the matching runtime archive instead. The library must
-        // follow module objects so static archive resolution sees their uses.
-        try argv.append(allocator, path);
-    } else if (!target_is_macos) {
-        return error.RuntimeLuaLibraryNotFound;
+    if (link_policy == .link_runtime_library) {
+        // Windows modules import the C API from the runtime's Lua library. The
+        // library must follow module objects so archive resolution sees their uses.
+        try argv.append(allocator, lua_link_library orelse return error.RuntimeLuaLibraryNotFound);
     }
 
     // 3. Spawn compilation
